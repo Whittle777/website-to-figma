@@ -43,6 +43,8 @@ export function captureFromScrapeResponses(responses: { name: string; json: unkn
     const page: Obj = { url, measured };
     if (typeof meta.contentType === "string") page.contentType = meta.contentType;
     if (isObj(data.branding)) page.branding = data.branding;
+    // Saved rawHtml (bounded) lets the converter recover list structure and option labels.
+    if (typeof data.rawHtml === "string" && data.rawHtml.length <= LIMITS.maxHtmlChars) page.html = data.rawHtml;
     pages.push(page);
     if (typeof data.screenshot === "string") screenshotHints.push({ pageUrl: url, screenshotUrl: data.screenshot.slice(0, LIMITS.maxUrlChars) });
   }

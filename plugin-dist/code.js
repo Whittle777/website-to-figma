@@ -300,9 +300,140 @@
     return n;
   }
 
+  // src/shared/svgSanitize.ts
+  var MAX_INPUT = 32e3;
+  var MAX_ELEMENTS = 200;
+  var MAX_PATH = 2e4;
+  var MAX_NUMBERS = 2e4;
+  var MAX_COMMANDS = 2e4;
+  var MAX_ABS = 1e6;
+  var NUM = /^-?(?:\d+(?:\.\d*)?|\.\d+)(?:e[-+]?\d+)?$/i;
+  var PATH_D = /^[MmLlHhVvCcSsQqTtAaZz0-9eE.,\s+-]+$/;
+  var POINTS = /^[0-9eE.,\s+-]+$/;
+  var HEX = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
+  var RGB = /^rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*(?:,\s*(?:0|1|0?\.\d+)\s*)?\)$/i;
+  var SHAPES = {
+    path: { d: "d" },
+    circle: { cx: "num", cy: "num", r: "num" },
+    ellipse: { cx: "num", cy: "num", rx: "num", ry: "num" },
+    rect: { x: "num", y: "num", width: "num", height: "num", rx: "num", ry: "num" },
+    line: { x1: "num", y1: "num", x2: "num", y2: "num" },
+    polyline: { points: "points" },
+    polygon: { points: "points" }
+  };
+  var PAINT_ATTRS = /* @__PURE__ */ new Set(["fill", "stroke"]);
+  var NUMERIC_PAINT_ATTRS = /* @__PURE__ */ new Set(["stroke-width", "opacity", "fill-opacity", "stroke-opacity"]);
+  var ENUM_ATTRS = { "fill-rule": ["nonzero", "evenodd"], "clip-rule": ["nonzero", "evenodd"], "stroke-linecap": ["butt", "round", "square"], "stroke-linejoin": ["miter", "round", "bevel"] };
+  var DROPPED_ROOT = /* @__PURE__ */ new Set(["class", "style", "id", "xmlns", "version", "aria-hidden", "role", "focusable", "data-w2f-id", "width", "height"]);
+  var DROPPED = /* @__PURE__ */ new Set(["id", "aria-hidden", "data-w2f-id"]);
+  function boundedNumbers(v, maxCount) {
+    const nums = v.match(/-?(?:\d+(?:\.\d*)?|\.\d+)(?:e[-+]?\d+)?/gi) ?? [];
+    if (nums.length > maxCount) return false;
+    return nums.every((n) => {
+      const x = Number(n);
+      return Number.isFinite(x) && Math.abs(x) <= MAX_ABS;
+    });
+  }
+  function paint(v, currentColor) {
+    const s = v.trim();
+    if (s === "none") return "none";
+    if (s === "currentColor") return currentColor;
+    if (HEX.test(s) || RGB.test(s)) return s.toLowerCase();
+    return null;
+  }
+  function sanitizeSvg(input, width, height, currentColor) {
+    if (typeof input !== "string" || input.length > MAX_INPUT) return { ok: false, reason: "SVG too large" };
+    if (/<!|<\?|&|url\s*\(|javascript:|data:|href/i.test(input)) return { ok: false, reason: "SVG contains comments, entities, references or URLs" };
+    const tokens = input.match(/<\/?[^<>]*>|[^<>]+/g) ?? [];
+    if (tokens.join("") !== input) return { ok: false, reason: "malformed SVG markup" };
+    let viewBox = null;
+    const out = [];
+    const stack = [];
+    let count = 0;
+    for (const tok of tokens) {
+      if (!tok.startsWith("<")) {
+        if (tok.trim()) return { ok: false, reason: "SVG contains text content" };
+        continue;
+      }
+      if (tok.startsWith("</")) {
+        const name2 = tok.slice(2, -1).trim();
+        if (stack.pop() !== name2) return { ok: false, reason: "unbalanced SVG tags" };
+        if (name2 === "g") out.push("</g>");
+        continue;
+      }
+      const m = /^<([a-zA-Z]+)((?:\s+[a-zA-Z_:][\w:.-]*="[^"<>]*")*)\s*(\/?)>$/.exec(tok);
+      if (!m) return { ok: false, reason: "unsupported SVG tag syntax" };
+      const name = m[1];
+      const selfClosing = m[3] === "/";
+      if (++count > MAX_ELEMENTS) return { ok: false, reason: "too many SVG elements" };
+      const attrs = [...m[2].matchAll(/([a-zA-Z_:][\w:.-]*)="([^"<>]*)"/g)].map((a) => [a[1], a[2]]);
+      if (name === "svg") {
+        if (stack.length !== 0 || out.length !== 0) return { ok: false, reason: "nested or repeated <svg>" };
+        for (const [k, v] of attrs) {
+          if (k === "viewBox") {
+            const parts = v.trim().split(/[\s,]+/);
+            if (parts.length !== 4 || !parts.every((p) => NUM.test(p)) || !boundedNumbers(v, 4) || !(Number(parts[2]) > 0 && Number(parts[3]) > 0)) return { ok: false, reason: "invalid viewBox" };
+            viewBox = parts.join(" ");
+          } else if (!DROPPED_ROOT.has(k)) return { ok: false, reason: `unsupported <svg> attribute ${k}` };
+        }
+        if (selfClosing) return { ok: false, reason: "empty SVG" };
+        stack.push("svg");
+        continue;
+      }
+      if (stack.length === 0) return { ok: false, reason: "content outside <svg>" };
+      const shape = SHAPES[name];
+      if (!shape && name !== "g") return { ok: false, reason: `unsupported SVG element <${name}>` };
+      const kept = [];
+      let hasFill = false;
+      for (const [k, v] of attrs) {
+        const kind = shape?.[k];
+        if (kind === "num") {
+          if (!NUM.test(v.trim()) || !boundedNumbers(v, 1)) return { ok: false, reason: `invalid number in ${name}.${k}` };
+          kept.push(`${k}="${v.trim()}"`);
+        } else if (kind === "d") {
+          if (v.length > MAX_PATH || !PATH_D.test(v) || !boundedNumbers(v, MAX_NUMBERS) || (v.match(/[a-z]/gi) ?? []).filter((ch) => ch !== "e" && ch !== "E").length > MAX_COMMANDS) {
+            return { ok: false, reason: "invalid path data" };
+          }
+          kept.push(`d="${v.replace(/\s+/g, " ").trim()}"`);
+        } else if (kind === "points") {
+          if (v.length > MAX_PATH || !POINTS.test(v) || !boundedNumbers(v, MAX_NUMBERS)) return { ok: false, reason: "invalid points" };
+          kept.push(`points="${v.replace(/\s+/g, " ").trim()}"`);
+        } else if (PAINT_ATTRS.has(k)) {
+          const p = paint(v, currentColor);
+          if (p === null) return { ok: false, reason: `unsupported paint ${k}` };
+          if (k === "fill") hasFill = true;
+          kept.push(`${k}="${p}"`);
+        } else if (NUMERIC_PAINT_ATTRS.has(k)) {
+          if (!NUM.test(v.trim()) || !boundedNumbers(v, 1)) return { ok: false, reason: `invalid ${k}` };
+          kept.push(`${k}="${v.trim()}"`);
+        } else if (ENUM_ATTRS[k]) {
+          if (!ENUM_ATTRS[k].includes(v.trim())) return { ok: false, reason: `invalid ${k}` };
+          kept.push(`${k}="${v.trim()}"`);
+        } else if (!DROPPED.has(k)) return { ok: false, reason: `unsupported attribute ${name}.${k}` };
+      }
+      if (shape && !hasFill && currentColor) kept.push(`fill="${currentColor}"`);
+      out.push(`<${name}${kept.length ? " " + kept.join(" ") : ""}${shape ? "/>" : ">"}`);
+      if (!selfClosing && shape) stack.push(name);
+      if (!selfClosing && !shape) stack.push("g");
+      if (selfClosing && !shape) out.push("</g>");
+    }
+    if (stack.length !== 0) return { ok: false, reason: "unbalanced SVG tags" };
+    if (!viewBox) return { ok: false, reason: "SVG has no viewBox" };
+    if (count <= 1) return { ok: false, reason: "SVG has no shapes" };
+    const w = Math.max(0.01, Math.round(width * 1e3) / 1e3);
+    const h = Math.max(0.01, Math.round(height * 1e3) / 1e3);
+    return { ok: true, markup: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" width="${w}" height="${h}">${out.join("")}</svg>`, elements: count - 1 };
+  }
+  function isCanonicalSvg(markup) {
+    const m = /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" viewBox="[^"]*" width="([^"]*)" height="([^"]*)">/.exec(markup);
+    if (!m || !NUM.test(m[1]) || !NUM.test(m[2])) return false;
+    const r = sanitizeSvg(markup, Number(m[1]), Number(m[2]), null);
+    return r.ok && r.markup === markup;
+  }
+
   // src/shared/hifiSchema.ts
   var HIFI_SCHEMA_VERSION = 2;
-  var HEX = /^#[0-9a-f]{6}$/;
+  var HEX2 = /^#[0-9a-f]{6}$/;
   var SHA = /^[0-9a-f]{64}$/;
   var B64 = /^[A-Za-z0-9+/]*={0,2}$/;
   var C = class {
@@ -312,12 +443,12 @@
     fail(p, m) {
       if (this.errors.length < 50) this.errors.push(`${p}: ${m}`);
     }
-    obj(v, p, keys) {
+    obj(v, p, keys, optional = []) {
       if (typeof v !== "object" || v === null || Array.isArray(v)) {
         this.fail(p, "expected object");
         return false;
       }
-      for (const k of Object.keys(v)) if (!keys.includes(k)) this.fail(p, `unknown key "${k}"`);
+      for (const k of Object.keys(v)) if (!keys.includes(k) && !optional.includes(k)) this.fail(p, `unknown key "${k}"`);
       for (const k of keys) if (!Object.prototype.hasOwnProperty.call(v, k)) this.fail(p, `missing key "${k}"`);
       return true;
     }
@@ -326,6 +457,7 @@
       if (v.length > max) this.fail(p, `longer than ${max} chars`);
       if (!allowEmpty && v.length === 0) this.fail(p, "must not be empty");
       if (/[\u0000-\u001f\u007f]/.test(v)) this.fail(p, "contains control characters");
+      if (/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(v)) this.fail(p, "contains an unpaired UTF-16 surrogate");
       return true;
     }
     num(v, p, min, max) {
@@ -354,7 +486,7 @@
     }
     paint(v, p) {
       if (!this.obj(v, p, ["hex", "alpha"])) return;
-      if (typeof v.hex !== "string" || !HEX.test(v.hex)) this.fail(`${p}.hex`, "expected #rrggbb");
+      if (typeof v.hex !== "string" || !HEX2.test(v.hex)) this.fail(`${p}.hex`, "expected #rrggbb");
       this.num(v.alpha, `${p}.alpha`, 0, 1);
     }
     radius(v, p) {
@@ -374,10 +506,14 @@
     c.num(n.w, `${p}.w`, 0, COORD);
     c.num(n.h, `${p}.h`, 0, COORD);
   }
-  function checkNode(c, n, p, nodeCount, assetIds, kinds) {
+  function checkClip(c, n, p, clipCount) {
+    if (n.clip !== void 0) c.int(n.clip, `${p}.clip`, -1, clipCount - 1);
+  }
+  function checkNode(c, n, p, nodeCount, assetIds, kinds, clipCount) {
     const kind = n?.kind;
     if (kind === "box") {
-      if (!c.obj(n, p, ["kind", "x", "y", "w", "h", "name", "role", "fill", "border", "radius", "opacity", "prov"])) return;
+      if (!c.obj(n, p, ["kind", "x", "y", "w", "h", "name", "role", "fill", "border", "radius", "opacity", "prov"], ["clip"])) return;
+      checkClip(c, n, p, clipCount);
       checkRect(c, n, p);
       c.str(n.name, `${p}.name`, 120, false);
       c.oneOf(n.role, `${p}.role`, ["block", "button", "control"]);
@@ -390,7 +526,10 @@
       c.num(n.opacity, `${p}.opacity`, 0, 1);
       c.oneOf(n.prov, `${p}.prov`, ["measured", "inferred"]);
     } else if (kind === "text") {
-      if (!c.obj(n, p, ["kind", "x", "y", "w", "h", "name", "text", "graphemes", "fontStack", "generic", "weight", "italic", "size", "lineHeight", "color", "decoration", "button", "prov"])) return;
+      if (!c.obj(n, p, ["kind", "x", "y", "w", "h", "name", "text", "graphemes", "fontStack", "generic", "weight", "italic", "size", "lineHeight", "color", "decoration", "button", "prov"], ["clip", "align", "fit"])) return;
+      checkClip(c, n, p, clipCount);
+      if (n.align !== void 0) c.oneOf(n.align, `${p}.align`, ["left", "right"]);
+      if (n.fit !== void 0) c.bool(n.fit, `${p}.fit`);
       checkRect(c, n, p);
       c.str(n.name, `${p}.name`, 120, false);
       c.str(n.text, `${p}.text`, LIMITS.hifiMaxTextChars, false);
@@ -408,20 +547,49 @@
       }
       c.oneOf(n.prov, `${p}.prov`, ["measured", "inferred"]);
     } else if (kind === "image") {
-      if (!c.obj(n, p, ["kind", "x", "y", "w", "h", "name", "assetId", "fit", "radius", "prov"])) return;
+      if (!c.obj(n, p, ["kind", "x", "y", "w", "h", "name", "assetId", "fit", "radius", "prov"], ["clip"])) return;
+      checkClip(c, n, p, clipCount);
       checkRect(c, n, p);
       c.str(n.name, `${p}.name`, 120, false);
       if (n.assetId !== null && (typeof n.assetId !== "string" || !assetIds.has(n.assetId))) c.fail(`${p}.assetId`, "unknown asset");
       c.oneOf(n.fit, `${p}.fit`, ["fill", "fit"]);
       c.radius(n.radius, `${p}.radius`);
       c.oneOf(n.prov, `${p}.prov`, ["measured", "inferred"]);
+    } else if (kind === "shape") {
+      if (!c.obj(n, p, ["kind", "x", "y", "w", "h", "name", "shape", "fill", "stroke", "prov"], ["clip"])) return;
+      checkClip(c, n, p, clipCount);
+      checkRect(c, n, p);
+      c.str(n.name, `${p}.name`, 120, false);
+      c.oneOf(n.shape, `${p}.shape`, ["ellipse", "caret", "grip"]);
+      if (n.fill !== null) c.paint(n.fill, `${p}.fill`);
+      if (n.stroke !== null && c.obj(n.stroke, `${p}.stroke`, ["weight", "color"])) {
+        c.num(n.stroke.weight, `${p}.stroke.weight`, 0, 100);
+        c.paint(n.stroke.color, `${p}.stroke.color`);
+      }
+      c.oneOf(n.prov, `${p}.prov`, ["inferred"]);
+    } else if (kind === "svg") {
+      if (!c.obj(n, p, ["kind", "x", "y", "w", "h", "name", "markup", "prov"], ["clip"])) return;
+      checkClip(c, n, p, clipCount);
+      checkRect(c, n, p);
+      c.str(n.name, `${p}.name`, 120, false);
+      if (typeof n.markup !== "string" || n.markup.length > 4e4 || !isCanonicalSvg(n.markup)) c.fail(`${p}.markup`, "expected canonical sanitized SVG");
+      c.oneOf(n.prov, `${p}.prov`, ["measured"]);
     } else {
-      c.fail(`${p}.kind`, "expected box | text | image");
+      c.fail(`${p}.kind`, "expected box | text | image | shape | svg");
     }
+  }
+  function checkNodeList(c, nodes, p, max, assetIds, clipCount) {
+    if (!c.arr(nodes, p, max)) return 0;
+    const kinds = nodes.map((n) => {
+      const o = n;
+      return o?.kind === "box" && o.role === "button" ? "button" : String(o?.kind);
+    });
+    nodes.forEach((n, j) => checkNode(c, n, `${p}[${j}]`, nodes.length, assetIds, kinds, clipCount));
+    return nodes.length;
   }
   function validateHifiDoc(input) {
     const c = new C();
-    if (!c.obj(input, "$", ["schema", "schemaVersion", "generator", "source", "site", "provenance", "assets", "pages", "warnings"])) return { ok: false, errors: c.errors };
+    if (!c.obj(input, "$", ["schema", "schemaVersion", "generator", "source", "site", "provenance", "assets", "pages", "warnings"], ["components", "fontMap"])) return { ok: false, errors: c.errors };
     const d = input;
     if (d.schema !== SCHEMA_ID) c.fail("$.schema", `expected "${SCHEMA_ID}"`);
     if (d.schemaVersion !== HIFI_SCHEMA_VERSION) c.fail("$.schemaVersion", "expected 2");
@@ -467,12 +635,42 @@
       if (assetPixels > LIMITS.hifiMaxTotalPixels) c.fail("$.assets", `more than ${LIMITS.hifiMaxTotalPixels} decoded pixels in total`);
     }
     let total = 0;
+    const componentIds = /* @__PURE__ */ new Set();
+    if (d.components !== void 0 && c.arr(d.components, "$.components", 20)) {
+      d.components.forEach((cm, i) => {
+        const p = `$.components[${i}]`;
+        if (!c.obj(cm, p, ["id", "kind", "name", "w", "h", "nodes"])) return;
+        if (typeof cm.id !== "string" || !/^c[0-9]{1,2}$/.test(cm.id) || componentIds.has(cm.id)) c.fail(`${p}.id`, 'expected unique "c<index>"');
+        else componentIds.add(cm.id);
+        c.oneOf(cm.kind, `${p}.kind`, ["nav", "footer"]);
+        c.str(cm.name, `${p}.name`, 120, false);
+        c.num(cm.w, `${p}.w`, 1, LIMITS.hifiMaxPageWidth);
+        c.num(cm.h, `${p}.h`, 1, LIMITS.hifiMaxPageHeight);
+        total += checkNodeList(c, cm.nodes, `${p}.nodes`, 2e3, assetIds, 0);
+      });
+    }
+    if (d.fontMap !== void 0 && c.arr(d.fontMap, "$.fontMap", 16)) {
+      d.fontMap.forEach((f, i) => {
+        if (!c.obj(f, `$.fontMap[${i}]`, ["match", "use"])) return;
+        c.str(f.match, `$.fontMap[${i}].match`, 100, false);
+        c.str(f.use, `$.fontMap[${i}].use`, 100, false);
+      });
+    }
     if (c.arr(d.pages, "$.pages", LIMITS.hifiMaxPages)) {
       if (d.pages.length === 0) c.fail("$.pages", "must contain at least one page");
       const ids = /* @__PURE__ */ new Set();
       d.pages.forEach((pg, i) => {
         const p = `$.pages[${i}]`;
-        if (!c.obj(pg, p, ["id", "url", "path", "title", "width", "height", "truncated", "referenceAssetId", "branding", "nodes", "warnings"])) return;
+        if (!c.obj(pg, p, ["id", "url", "path", "title", "width", "height", "truncated", "referenceAssetId", "branding", "nodes", "warnings"], ["notes", "parentId", "clips", "instances", "normalization"])) return;
+        if (pg.normalization !== void 0 && c.obj(pg.normalization, `${p}.normalization`, ["mode", "measuredWidth", "measuredHeight", "offsetX", "gutterPx", "gutters"])) {
+          const nz = pg.normalization;
+          c.oneOf(nz.mode, `${p}.normalization.mode`, ["centered-dpr1"]);
+          c.num(nz.measuredWidth, `${p}.normalization.measuredWidth`, 1, 1e5);
+          c.num(nz.measuredHeight, `${p}.normalization.measuredHeight`, 1, 1e6);
+          c.num(nz.offsetX, `${p}.normalization.offsetX`, -1e5, 1e5);
+          c.num(nz.gutterPx, `${p}.normalization.gutterPx`, 0, 25);
+          c.int(nz.gutters, `${p}.normalization.gutters`, 0, 500);
+        }
         if (typeof pg.id !== "string" || !/^p[0-9]{1,2}$/.test(pg.id) || ids.has(pg.id)) c.fail(`${p}.id`, 'expected unique "p<index>"');
         else ids.add(pg.id);
         c.httpUrl(pg.url, `${p}.url`);
@@ -490,20 +688,41 @@
             if (entries.length > 20) c.fail(`${p}.branding.colors`, "more than 20 entries");
             for (const [k, v] of entries) {
               if (!/^[A-Za-z][A-Za-z0-9]{0,31}$/.test(k)) c.fail(`${p}.branding.colors`, "invalid key");
-              if (typeof v !== "string" || !HEX.test(v)) c.fail(`${p}.branding.colors.${k}`, "expected #rrggbb");
+              if (typeof v !== "string" || !HEX2.test(v)) c.fail(`${p}.branding.colors.${k}`, "expected #rrggbb");
             }
           }
           c.labels(pg.branding.fonts, `${p}.branding.fonts`, 10);
         }
         c.labels(pg.warnings, `${p}.warnings`, LIMITS.hifiMaxWarnings);
-        const nodes = pg.nodes;
-        if (c.arr(nodes, `${p}.nodes`, LIMITS.hifiMaxNodesPerPage)) {
-          total += nodes.length;
-          const kinds = nodes.map((n) => {
-            const o = n;
-            return o?.kind === "box" && o.role === "button" ? "button" : String(o?.kind);
+        if (pg.notes !== void 0) c.labels(pg.notes, `${p}.notes`, LIMITS.hifiMaxWarnings);
+        if (pg.parentId !== void 0 && pg.parentId !== null) c.str(pg.parentId, `${p}.parentId`, 8, false);
+        let clipCount = 0;
+        if (pg.clips !== void 0 && c.arr(pg.clips, `${p}.clips`, 500)) {
+          clipCount = pg.clips.length;
+          pg.clips.forEach((cl, j) => {
+            if (!c.obj(cl, `${p}.clips[${j}]`, ["x", "y", "w", "h", "name"])) return;
+            checkRect(c, cl, `${p}.clips[${j}]`);
+            c.str(cl.name, `${p}.clips[${j}].name`, 120, false);
           });
-          nodes.forEach((n, j) => checkNode(c, n, `${p}.nodes[${j}]`, nodes.length, assetIds, kinds));
+        }
+        total += checkNodeList(c, pg.nodes, `${p}.nodes`, LIMITS.hifiMaxNodesPerPage, assetIds, clipCount);
+        if (pg.instances !== void 0 && c.arr(pg.instances, `${p}.instances`, 10)) {
+          pg.instances.forEach((ins, j) => {
+            const q = `${p}.instances[${j}]`;
+            if (!c.obj(ins, q, ["component", "x", "y", "overrides"])) return;
+            if (typeof ins.component !== "string" || !componentIds.has(ins.component)) c.fail(`${q}.component`, "unknown component");
+            c.num(ins.x, `${q}.x`, -COORD, COORD);
+            c.num(ins.y, `${q}.y`, -COORD, COORD);
+            if (c.arr(ins.overrides, `${q}.overrides`, 2e3)) {
+              ins.overrides.forEach((o, k) => {
+                const r = `${q}.overrides[${k}]`;
+                if (!c.obj(o, r, ["index"], ["fill", "color"])) return;
+                c.int(o.index, `${r}.index`, 0, LIMITS.hifiMaxNodesPerPage);
+                if (o.fill !== void 0 && o.fill !== null) c.paint(o.fill, `${r}.fill`);
+                if (o.color !== void 0) c.paint(o.color, `${r}.color`);
+              });
+            }
+          });
         }
       });
       if (total > LIMITS.hifiMaxNodesTotal) c.fail("$.pages", `more than ${LIMITS.hifiMaxNodesTotal} nodes in total`);
@@ -548,10 +767,23 @@
     if (bold) return "Bold";
     return italic ? "Italic" : "Regular";
   }
-  function resolveFont(stack, generic, weight, italic, available) {
+  function mappedFamily(stack, generic, rules) {
+    if (!rules?.length) return null;
+    const first = stack.find((f) => !GENERIC_KEYWORDS.has(f.toLowerCase()))?.toLowerCase();
+    const aliases = { sans: ["sans", "sans-serif"], serif: ["serif"], mono: ["mono", "monospace"] };
+    return rules.find((r) => first && r.match.toLowerCase() === first || aliases[generic].includes(r.match.toLowerCase())) ?? null;
+  }
+  function resolveFont(stack, generic, weight, italic, available, rule) {
     const wanted = styleName(weight, italic);
     const concrete = stack.filter((f) => !GENERIC_KEYWORDS.has(f.toLowerCase()));
     const first = concrete[0];
+    if (rule) {
+      for (const style of [wanted, "Regular"]) {
+        if (available.has(`${rule.use}|${style}`)) {
+          return { family: rule.use, style, fallback: rule.use !== first || style !== wanted, reason: `operator font map: ${rule.match} -> ${rule.use}${style !== wanted ? ` (style ${wanted} unavailable)` : ""}` };
+        }
+      }
+    }
     const candidates = [...concrete, ...GENERIC_FALLBACKS[generic]];
     for (const family of candidates) {
       if (available.has(`${family}|${wanted}`)) {
@@ -762,10 +994,10 @@
     const byNode = /* @__PURE__ */ new Map();
     for (let round = 0; round < 6; round++) {
       const needed = /* @__PURE__ */ new Map();
-      for (const page of doc.pages) {
-        for (const n of page.nodes) {
+      for (const list of [...doc.pages.map((p) => p.nodes), ...(doc.components ?? []).map((c) => c.nodes)]) {
+        for (const n of list) {
           if (n.kind !== "text") continue;
-          const r = resolveFont(n.fontStack, n.generic, n.weight, n.italic, available);
+          const r = resolveFont(n.fontStack, n.generic, n.weight, n.italic, available, mappedFamily(n.fontStack, n.generic, doc.fontMap));
           if (!r) throw new Error(`No loadable font for "${n.fontStack.join(", ")}" (not even Inter). Nothing was created.`);
           byNode.set(n, r);
           const key = `${r.family}|${r.style}`;
@@ -799,12 +1031,12 @@
     }
     return t;
   }
-  function buildBox(track2, parent, b, buttonLabel) {
+  function buildBox(track2, parent, b, buttonLabel, off, prefix) {
     const n = b.role === "button" ? track2(figma.createFrame()) : track2(figma.createRectangle());
     parent.appendChild(n);
-    n.name = b.role === "button" ? `Button / ${buttonLabel ?? "untitled"}` : b.name;
-    n.x = b.x;
-    n.y = b.y;
+    n.name = `${prefix}${b.role === "button" ? `Button / ${buttonLabel ?? "untitled"}` : b.name}`;
+    n.x = b.x - off.x;
+    n.y = b.y - off.y;
     n.resize(Math.max(0.01, b.w), Math.max(0.01, b.h));
     n.fills = b.fill ? [solid(b.fill)] : [];
     if (b.border) {
@@ -818,21 +1050,21 @@
     n.setPluginData("w2f", JSON.stringify({ prov: b.prov, role: b.role }));
     return n;
   }
-  function buildImage(track2, parent, im, hashes) {
+  function buildImage(track2, parent, im, hashes, off, prefix) {
     const r = track2(figma.createRectangle());
     parent.appendChild(r);
-    r.x = im.x;
-    r.y = im.y;
+    r.x = im.x - off.x;
+    r.y = im.y - off.y;
     r.resize(Math.max(0.01, im.w), Math.max(0.01, im.h));
     radii(r, im.radius);
     const hash = im.assetId ? hashes.get(im.assetId) : void 0;
     if (hash) {
-      r.name = im.name;
+      r.name = `${prefix}${im.name}`;
       r.fills = [{ type: "IMAGE", imageHash: hash, scaleMode: im.fit === "fit" ? "FIT" : "FILL" }];
       r.setPluginData("w2f", JSON.stringify({ prov: im.prov, assetId: im.assetId }));
       return true;
     }
-    r.name = `MISSING IMAGE / ${im.name}`;
+    r.name = `${prefix}MISSING IMAGE / ${im.name}`;
     r.fills = [{ type: "SOLID", color: { r: 0.93, g: 0.93, b: 0.93 } }];
     r.strokes = [{ type: "SOLID", color: { r: 0.8, g: 0.2, b: 0.2 } }];
     r.strokeWeight = 1;
@@ -840,51 +1072,164 @@
     r.setPluginData("w2f", JSON.stringify({ prov: im.prov, missing: true }));
     return false;
   }
-  function buildText(track2, parent, t, font, offset) {
+  async function buildShape(track2, parent, sh, off, prefix) {
+    const name = `${prefix}${sh.name}`;
+    if (sh.shape === "ellipse") {
+      const e = track2(figma.createEllipse());
+      parent.appendChild(e);
+      e.name = name;
+      e.x = sh.x - off.x;
+      e.y = sh.y - off.y;
+      e.resize(Math.max(0.01, sh.w), Math.max(0.01, sh.h));
+      e.fills = sh.fill ? [solid(sh.fill)] : [];
+      e.strokes = sh.stroke ? [solid(sh.stroke.color)] : [];
+      if (sh.stroke) e.strokeWeight = sh.stroke.weight;
+      e.setPluginData("w2f", JSON.stringify({ prov: sh.prov, approximation: true }));
+      return;
+    }
+    const v = track2(figma.createVector());
+    parent.appendChild(v);
+    v.name = name;
+    const { w, h } = sh;
+    if (sh.shape === "caret") {
+      await v.setVectorNetworkAsync({
+        vertices: [{ x: 0, y: 0 }, { x: w, y: 0 }, { x: w / 2, y: h }],
+        segments: [{ start: 0, end: 1 }, { start: 1, end: 2 }, { start: 2, end: 0 }],
+        regions: [{ windingRule: "NONZERO", loops: [[0, 1, 2]] }]
+      });
+      v.fills = sh.fill ? [solid(sh.fill)] : [];
+      v.strokes = [];
+    } else {
+      await v.setVectorNetworkAsync({
+        vertices: [{ x: w * 0.2, y: h }, { x: w, y: h * 0.2 }, { x: w * 0.5, y: h }, { x: w, y: h * 0.5 }, { x: w * 0.8, y: h }, { x: w, y: h * 0.8 }],
+        segments: [{ start: 0, end: 1 }, { start: 2, end: 3 }, { start: 4, end: 5 }],
+        regions: []
+      });
+      v.fills = [];
+      v.strokes = sh.stroke ? [solid(sh.stroke.color)] : [];
+      if (sh.stroke) v.strokeWeight = sh.stroke.weight;
+    }
+    v.x = sh.x - off.x;
+    v.y = sh.y - off.y;
+    v.setPluginData("w2f", JSON.stringify({ prov: sh.prov, approximation: true }));
+  }
+  function buildSvg(track2, parent, sv, off, prefix) {
+    if (!isCanonicalSvg(sv.markup)) return false;
+    const f = track2(figma.createNodeFromSvg(sv.markup));
+    parent.appendChild(f);
+    f.name = `${prefix}${sv.name}`;
+    f.x = sv.x - off.x;
+    f.y = sv.y - off.y;
+    f.setPluginData("w2f", JSON.stringify({ prov: sv.prov, sanitized: true }));
+    return true;
+  }
+  function buildText(track2, parent, t, font, offset, prefix) {
     const n = track2(figma.createText());
     parent.appendChild(n);
-    n.name = t.name;
+    n.name = `${prefix}${t.name}`;
     n.fontName = { family: font.family, style: font.style };
     n.characters = t.text;
     n.fontSize = t.size;
     n.lineHeight = { unit: "PIXELS", value: t.lineHeight };
     n.fills = [solid(t.color)];
     n.textDecoration = t.decoration === "underline" ? "UNDERLINE" : t.decoration === "strike" ? "STRIKETHROUGH" : "NONE";
-    n.textAutoResize = "WIDTH_AND_HEIGHT";
     n.x = t.x - offset.x;
     n.y = t.y - offset.y;
-    let fitted = false;
-    if (t.graphemes > 1 && t.w > 0) {
+    if (t.align === "right") {
+      n.textAutoResize = "HEIGHT";
+      n.resize(Math.max(1, t.w), n.height);
+      n.textAlignHorizontal = "RIGHT";
+    } else n.textAutoResize = "WIDTH_AND_HEIGHT";
+    let result = "not-fitted";
+    if (t.prov === "measured" && t.fit !== false && t.align !== "right" && t.graphemes > 1 && t.w > 0) {
       const ls = (t.w - n.width) / (t.graphemes - 1);
       if (Math.abs(ls) <= t.size * MAX_LETTER_SPACING_RATIO) {
         n.letterSpacing = { unit: "PIXELS", value: ls };
-        fitted = true;
-      }
+        result = "fitted";
+      } else result = "unfitted";
     }
-    n.setPluginData("w2f", JSON.stringify({ prov: t.prov, fitted, font: `${font.family} ${font.style}`, fallback: font.fallback, measuredStack: t.fontStack }));
-    return fitted;
+    n.setPluginData("w2f", JSON.stringify({ prov: t.prov, fit: result, font: `${font.family} ${font.style}`, fallback: font.fallback, reason: font.reason, measuredStack: t.fontStack }));
+    return result;
   }
-  function buildPage(track2, section, page, y, fonts, hashes, doc, failedLoads, stats) {
-    const x0 = 80;
-    const ref = page.referenceAssetId ? doc.assets.find((a) => a.id === page.referenceAssetId) : void 0;
+  async function renderNodes(track2, parent, nodes, clipGroups, fonts, hashes, stats, prefix) {
+    const zero = { x: 0, y: 0 };
+    const clipFrames = [];
+    const buttonFrames = /* @__PURE__ */ new Map();
+    let unfitted = 0;
+    const clipOf = (n) => n.clip !== void 0 && n.clip >= 0 ? n.clip : -1;
+    const place = async (n, i, target, off) => {
+      if (n.kind === "box") {
+        const labelText = n.role === "button" ? nodes.find((t) => t.kind === "text" && t.button === i)?.text.trim() ?? null : null;
+        const built = buildBox(track2, target, n, labelText, off, prefix(i));
+        if (built.type === "FRAME") buttonFrames.set(i, built);
+      } else if (n.kind === "image") {
+        if (buildImage(track2, target, n, hashes, off, prefix(i))) stats.images++;
+        else stats.placeholders++;
+      } else if (n.kind === "shape") {
+        await buildShape(track2, target, n, off, prefix(i));
+        stats.shapes++;
+      } else if (n.kind === "svg") {
+        if (buildSvg(track2, target, n, off, prefix(i))) stats.svgs++;
+      }
+    };
+    for (const [i, n] of nodes.entries()) if (n.kind !== "text" && clipOf(n) < 0) await place(n, i, parent, zero);
+    for (const c of clipGroups) {
+      const f = track2(figma.createFrame());
+      parent.appendChild(f);
+      f.name = c.name;
+      f.x = c.x;
+      f.y = c.y;
+      f.resize(Math.max(0.01, c.w), Math.max(0.01, c.h));
+      f.fills = [];
+      f.clipsContent = true;
+      clipFrames.push(f);
+    }
+    for (const [i, n] of nodes.entries()) {
+      const ci = clipOf(n);
+      if (n.kind !== "text" && ci >= 0) await place(n, i, clipFrames[ci], clipGroups[ci]);
+    }
+    for (const [i, n] of nodes.entries()) {
+      if (n.kind !== "text") continue;
+      const font = fonts.get(n);
+      const button = n.button >= 0 ? buttonFrames.get(n.button) : void 0;
+      const ci = clipOf(n);
+      const box = n.button >= 0 ? nodes[n.button] : null;
+      const target = button ?? (ci >= 0 ? clipFrames[ci] : parent);
+      const off = button && box ? { x: box.x, y: box.y } : ci >= 0 ? clipGroups[ci] : zero;
+      const r = buildText(track2, target, n, font, off, prefix(i));
+      if (r === "fitted") stats.fitted++;
+      if (r === "unfitted") unfitted++;
+      if (font.fallback) stats.fontFallbacks++;
+    }
+    stats.nodes += nodes.length;
+    return unfitted;
+  }
+  function fontLines(nodes, fonts) {
     const subs = /* @__PURE__ */ new Map();
-    for (const n of page.nodes) {
+    for (const n of nodes) {
       if (n.kind !== "text") continue;
       const f = fonts.get(n);
       if (f.fallback) {
-        const k = `"${n.fontStack.join(", ") || "(none)"}" ${n.weight >= 600 ? "bold" : "regular"}${n.italic ? " italic" : ""} -> ${f.family} ${f.style}`;
+        const k = `"${n.fontStack.join(", ") || "(none)"}" ${n.weight >= 600 ? "bold" : "regular"}${n.italic ? " italic" : ""} -> ${f.family} ${f.style}${f.reason.startsWith("operator font map") ? " (operator font map)" : ""}`;
         subs.set(k, (subs.get(k) ?? 0) + 1);
       }
     }
-    const fallbackLines = [...subs].slice(0, 8).map(([k, count]) => `Font fallback (${count} run${count === 1 ? "" : "s"}): ${k}`);
-    if (subs.size > 8) fallbackLines.push(`Font fallback: ${subs.size - 8} more substitution(s) not listed`);
+    const lines = [...subs].slice(0, 8).map(([k, count]) => `Font fallback (${count} run${count === 1 ? "" : "s"}): ${k}`);
+    if (subs.size > 8) lines.push(`Font fallback: ${subs.size - 8} more substitution(s) not listed`);
+    return lines;
+  }
+  async function buildPage(track2, section, page, y, fonts, hashes, doc, failedLoads, stats, componentNodes) {
+    const x0 = 80;
+    const ref = page.referenceAssetId ? doc.assets.find((a) => a.id === page.referenceAssetId) : void 0;
     const notes = [
       `${page.title} \u2014 ${page.url}`,
       `Measured absolute desktop snapshot (${page.width}\xD7${page.height}px). Editable, not responsive, not pixel-perfect.`,
       ...page.truncated ? ["TRUNCATED: see warnings below."] : [],
+      ...(page.notes ?? []).map((n) => `Note: ${n}`),
       ...page.warnings.map((w) => `Warning: ${w}`),
-      ...fallbackLines,
+      ...fontLines(page.nodes, fonts),
       ...failedLoads.map((f) => `Font load failure: ${f}`),
+      ...page.instances?.length ? [`Shared components: ${page.instances.length} instance(s) (${page.instances.map((i) => `${i.component}${i.overrides.length ? ` with ${i.overrides.length} override(s)` : ""}`).join(", ")})`] : [],
       ...page.branding ? [`Branding (page-level, not per-element): ${Object.entries(page.branding.colors).map(([k, v]) => `${k} ${v}`).join(", ")}${page.branding.fonts.length ? `; fonts ${page.branding.fonts.join(", ")}` : ""}`] : []
     ];
     const head = label(track2, section, notes.join("\n"), 14, false, x0, y, Math.max(600, page.width));
@@ -899,57 +1244,77 @@
     frame.fills = [];
     frame.clipsContent = true;
     frame.setPluginData("w2f", JSON.stringify({ url: page.url, truncated: page.truncated }));
-    const buttonFrames = /* @__PURE__ */ new Map();
-    page.nodes.forEach((n, i) => {
-      if (n.kind === "box") {
-        const labelText = n.role === "button" ? page.nodes.find((t) => t.kind === "text" && t.button === i)?.text.trim() ?? null : null;
-        const built = buildBox(track2, frame, n, labelText);
-        if (built.type === "FRAME") buttonFrames.set(i, built);
-      } else if (n.kind === "image") {
-        if (buildImage(track2, frame, n, hashes)) stats.images++;
-        else stats.placeholders++;
+    const unfitted = await renderNodes(track2, frame, page.nodes, page.clips ?? [], fonts, hashes, stats, () => "");
+    for (const ins of page.instances ?? []) {
+      const comp = componentNodes.get(ins.component);
+      if (!comp) continue;
+      const inst = track2(comp.createInstance());
+      frame.appendChild(inst);
+      inst.x = ins.x;
+      inst.y = ins.y;
+      for (const o of ins.overrides) {
+        const target = inst.findOne((n) => n.name.startsWith(`#${o.index} `));
+        if (!target || !("fills" in target)) continue;
+        if (o.fill !== void 0) target.fills = o.fill ? [solid(o.fill)] : [];
+        if (o.color) {
+          if (target.type === "TEXT") target.fills = [solid(o.color)];
+          else target.strokes = [solid(o.color)];
+        }
       }
-    });
-    let unfitted = 0;
-    for (const n of page.nodes) {
-      if (n.kind !== "text") continue;
-      const font = fonts.get(n);
-      const button = n.button >= 0 ? buttonFrames.get(n.button) : void 0;
-      const box = n.button >= 0 ? page.nodes[n.button] : null;
-      if (buildText(track2, button ?? frame, n, font, button && box ? { x: box.x, y: box.y } : { x: 0, y: 0 })) stats.fitted++;
-      else if (n.graphemes > 1) unfitted++;
-      if (font.fallback) stats.fontFallbacks++;
+      stats.instances++;
     }
     if (unfitted) {
       head.characters = head.characters + `
-Width fit skipped for ${unfitted} text run(s) (difference too large); natural width kept.`;
+Width fit skipped for ${unfitted} measured text run(s) (difference too large); natural width kept.`;
       stats.unfitted += unfitted;
     }
-    stats.nodes += page.nodes.length;
     let bottom = top + page.height;
     if (ref) {
-      const refW = page.width;
-      const refH = Math.round(refW * ref.height / ref.width);
       const rx = x0 + page.width + 80;
-      label(track2, section, "Reference screenshot (image, not editable)", 14, true, rx, top - 24);
+      label(track2, section, `Reference screenshot (image, not editable; ${ref.width}\xD7${ref.height}px at 1:1)`, 14, true, rx, top - 24);
       const r = track2(figma.createRectangle());
       section.appendChild(r);
       r.name = `Reference / ${page.path}`;
       r.x = rx;
       r.y = top;
-      r.resize(refW, Math.max(1, refH));
-      r.fills = [{ type: "IMAGE", imageHash: hashes.get(ref.id), scaleMode: "FIT" }];
+      r.resize(ref.width, ref.height);
+      r.fills = [{ type: "IMAGE", imageHash: hashes.get(ref.id), scaleMode: "FILL" }];
       r.setPluginData("w2f", JSON.stringify({ reference: true, sha256: ref.sha256 }));
-      bottom = Math.max(bottom, top + refH);
+      bottom = Math.max(bottom, top + ref.height);
     }
-    return bottom;
+    return { bottom, frame };
+  }
+  async function edge(track2, section, from, to) {
+    const gx = 40;
+    const pts = [
+      { x: from.x, y: from.y + 20 },
+      { x: gx, y: from.y + 20 },
+      { x: gx, y: to.y + 20 },
+      { x: to.x, y: to.y + 20 }
+    ];
+    const minX = Math.min(...pts.map((p) => p.x));
+    const minY = Math.min(...pts.map((p) => p.y));
+    const v = track2(figma.createVector());
+    section.appendChild(v);
+    v.name = `Sitemap edge / ${from.name} -> ${to.name}`;
+    await v.setVectorNetworkAsync({
+      vertices: pts.map((p, i) => i === pts.length - 1 ? { x: p.x - minX, y: p.y - minY, strokeCap: "ARROW_LINES" } : { x: p.x - minX, y: p.y - minY }),
+      segments: [{ start: 0, end: 1 }, { start: 1, end: 2 }, { start: 2, end: 3 }],
+      regions: []
+    });
+    v.x = minX;
+    v.y = minY;
+    v.strokes = [{ type: "SOLID", color: { r: 0.6, g: 0.6, b: 0.6 } }];
+    v.strokeWeight = 2;
+    v.fills = [];
+    return v;
   }
   async function buildHifiDoc(doc, track2, created, originX) {
     const bytes = verifyAssets(doc);
     const { byNode, failedLoads } = await resolveFonts(doc);
     const hashes = /* @__PURE__ */ new Map();
     for (const [id, b] of bytes) hashes.set(id, figma.createImage(b).hash);
-    const stats = { pages: 0, nodes: 0, images: 0, placeholders: 0, fontFallbacks: 0, fitted: 0, unfitted: 0, warnings: [...doc.warnings] };
+    const stats = { pages: 0, nodes: 0, images: 0, placeholders: 0, fontFallbacks: 0, fitted: 0, unfitted: 0, shapes: 0, svgs: 0, components: 0, instances: 0, edges: 0, warnings: [...doc.warnings] };
     const section = track2(figma.createSection());
     created.push(section);
     section.name = `website-to-figma \xB7 Hi-fi (measured) \xB7 ${doc.site.host}`;
@@ -957,6 +1322,7 @@ Width fit skipped for ${unfitted} text run(s) (difference too large); natural wi
     section.y = 0;
     const intro = [
       `Source: ${doc.source.label} (${doc.source.mode}). ${doc.provenance.notes.join(" ")}`,
+      ...doc.fontMap?.length ? [`Operator font map: ${doc.fontMap.map((f) => `${f.match} -> ${f.use}`).join(", ")}`] : [],
       ...doc.warnings.map((w) => `Warning: ${w}`),
       "Not affiliated with Figma or the site owner. Not pixel-perfect."
     ];
@@ -964,10 +1330,46 @@ Width fit skipped for ${unfitted} text run(s) (difference too large); natural wi
     const info = label(track2, section, intro.join("\n"), 14, false, 80, 40 + title.height + 8, 1200);
     let y = info.y + info.height + 60;
     let maxRight = 1300;
+    const componentNodes = /* @__PURE__ */ new Map();
+    if (doc.components?.length) {
+      label(track2, section, "Shared components (identical structure on 2+ pages; per-page paint differences are instance overrides)", 14, true, 80, y);
+      y += 30;
+      for (const c of doc.components) {
+        const comp = track2(figma.createComponent());
+        section.appendChild(comp);
+        comp.name = c.name;
+        comp.x = 80;
+        comp.y = y;
+        comp.resize(Math.max(1, c.w), Math.max(1, c.h));
+        comp.fills = [];
+        comp.clipsContent = false;
+        await renderNodes(track2, comp, c.nodes, [], byNode, hashes, stats, (i) => `#${i} `);
+        componentNodes.set(c.id, comp);
+        stats.components++;
+        y += c.h + 60;
+        maxRight = Math.max(maxRight, 80 + c.w + 80);
+      }
+      y += 60;
+    }
+    const frames = /* @__PURE__ */ new Map();
     for (const page of doc.pages) {
-      y = buildPage(track2, section, page, y, byNode, hashes, doc, failedLoads, stats) + 120;
-      maxRight = Math.max(maxRight, 80 + page.width * 2 + 240);
+      const r = await buildPage(track2, section, page, y, byNode, hashes, doc, failedLoads, stats, componentNodes);
+      frames.set(page.id, r.frame);
+      y = r.bottom + 120;
+      const ref = page.referenceAssetId ? doc.assets.find((a) => a.id === page.referenceAssetId) : void 0;
+      maxRight = Math.max(maxRight, 80 + page.width + 80 + (ref ? ref.width : 0) + 80);
       stats.pages++;
+    }
+    const edges = [];
+    for (const page of doc.pages) {
+      const from = page.parentId ? frames.get(page.parentId) : void 0;
+      const to = frames.get(page.id);
+      if (from && to) edges.push(await edge(track2, section, from, to));
+    }
+    if (edges.length) {
+      const g = track2(figma.group(edges, section, 0));
+      g.name = "Sitemap edges (vectors, URL path hierarchy)";
+      stats.edges = edges.length;
     }
     section.resizeWithoutConstraints(maxRight, y);
     if (stats.fontFallbacks) stats.warnings.push(`Font fallback used for ${stats.fontFallbacks} text run(s); see each page's notes`);
@@ -990,10 +1392,10 @@ Width fit skipped for ${unfitted} text run(s) (difference too large); natural wi
 
   // src/shared/layout.ts
   function navSignature(nav) {
-    return "nav-" + fnv1a(["nav", ...nav.items].join(""));
+    return "nav-" + fnv1a(["nav", ...nav.items].join("\x1f"));
   }
   function footerSignature(footer) {
-    return "footer-" + fnv1a(["footer", ...footer.items, "", footer.text].join(""));
+    return "footer-" + fnv1a(["footer", ...footer.items, "\x1e", footer.text].join("\x1f"));
   }
   function cardShape(card) {
     if (card.title && card.text) return "title+text";

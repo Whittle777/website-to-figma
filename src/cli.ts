@@ -34,7 +34,8 @@ const USAGE = `Usage:
       printed standard estimate (limit x 1) is not a worst case.
   website-to-figma fixture hifi [--out FILE]
       Write a SYNTHETIC hi-fi (schemaVersion 2) sample with generated images.
-  website-to-figma hifi --capture FILE [--assets MANIFEST] --out FILE
+  website-to-figma hifi --capture FILE [--assets MANIFEST] [--font-map MATCH=Family]...
+                        [--normalize-reference centered-dpr1] --out FILE
       Offline: convert an operator-supplied measured DOM capture plus local,
       SHA-256-pinned PNG/JPEG/GIF assets into a schemaVersion 2 import file.
       Never fetches anything.
@@ -46,25 +47,27 @@ const USAGE = `Usage:
 
 class UsageError extends Error {}
 
-function parseFlags(args: string[]): { positional: string[]; flags: Map<string, string | true>; excludes: string[]; scrapes: string[] } {
+function parseFlags(args: string[]): { positional: string[]; flags: Map<string, string | true>; excludes: string[]; scrapes: string[]; fontMaps: string[] } {
   const positional: string[] = [];
   const flags = new Map<string, string | true>();
   const excludes: string[] = [];
   const scrapes: string[] = [];
+  const fontMaps: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     if (a === "--yes" || a === "--help" || a === "-h" || a === "--no-map" || a === "--confirm-existing-credits" || a === "--confirm-no-topup") {
       flags.set(a.replace(/^-+/, ""), true);
-    } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label") {
+    } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label" || a === "--font-map" || a === "--normalize-reference") {
       const v = args[++i];
       if (v === undefined) throw new UsageError(`${a} needs a value`);
       if (a === "--exclude") excludes.push(v);
       else if (a === "--scrape") scrapes.push(v);
+      else if (a === "--font-map") fontMaps.push(v);
       else flags.set(a.slice(2), v);
     } else if (a.startsWith("-")) throw new UsageError(`Unknown option ${a}`);
     else positional.push(a);
   }
-  return { positional, flags, excludes, scrapes };
+  return { positional, flags, excludes, scrapes, fontMaps };
 }
 
 function intFlag(v: string | true | undefined, name: string, fallback: number): number {
@@ -115,7 +118,7 @@ function summary(doc: SiteMapDoc, path: string): string {
 
 async function main(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv;
-  const { positional, flags, excludes: rawExcludes, scrapes } = parseFlags(rest);
+  const { positional, flags, excludes: rawExcludes, scrapes, fontMaps } = parseFlags(rest);
   if (!cmd || cmd === "--help" || cmd === "-h" || flags.has("help")) {
     console.log(USAGE);
     return 0;
@@ -150,8 +153,16 @@ async function main(argv: string[]): Promise<number> {
     const out = flags.get("out");
     if (typeof capturePath !== "string" || typeof out !== "string") throw new UsageError("hifi needs --capture FILE and --out FILE");
     const capture = readBoundedJson(capturePath, LIMITS.hifiMaxJsonBytes, "capture");
-    const loaded = typeof manifestPath === "string" ? loadAssetManifest(manifestPath) : { assets: [], warnings: [] };
-    const doc = convertCapture({ capture, assets: loaded.assets, assetWarnings: loaded.warnings });
+    const loaded = typeof manifestPath === "string" ? loadAssetManifest(manifestPath) : { assets: [], warnings: [], rejectedReferences: [] };
+    const fontMap = fontMaps.map((f) => {
+      const m = /^([^=]{1,100})=([^=]{1,100})$/.exec(f);
+      if (!m) throw new UsageError(`--font-map must be MATCH=Figma Family (got ${JSON.stringify(f)})`);
+      return { match: m[1]!.trim(), use: m[2]!.trim() };
+    });
+    if (fontMap.length > 16) throw new UsageError("at most 16 --font-map entries");
+    const norm = flags.get("normalize-reference");
+    if (norm !== undefined && norm !== "centered-dpr1") throw new UsageError('--normalize-reference accepts only "centered-dpr1"');
+    const doc = convertCapture({ capture, assets: loaded.assets, assetWarnings: loaded.warnings, rejectedReferences: loaded.rejectedReferences, fontMap, normalizeReference: norm === "centered-dpr1" ? "centered-dpr1" : undefined });
     console.log(hifiSummary(doc, writeHifi(doc, out)));
     return 0;
   }

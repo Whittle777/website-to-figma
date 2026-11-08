@@ -179,6 +179,56 @@ translated or guessed.
   - Pages are capped at 4096×30000 px and 6000 nodes per page (30000 total). Truncation is shown
     on the canvas.
   - The import file is limited to 72 MB. v1 keeps its own validator and 1 MB bound.
+  - **Saved `rawHtml`:** used only for list, option and ancestry facts. It's bounded before
+    parsing (1,000,000 characters, 15,000 opening tags, the depth and node budget), and nothing
+    in it is executed or fetched.
+  - **SVG:** numbers must be finite with magnitude at most 1e6, with at most 20,000 numbers and
+    commands per attribute. `<?xml`, `data:`, `style`/`class` on shapes, and any unknown element or
+    attribute reject the whole SVG. The plugin re-checks the canonical form before
+    `createNodeFromSvg`, and the imported root is tracked for rollback; its descendants go with it.
+- **Evidence-gated corrections:** each correction runs only when its evidence is present, and is
+  recorded in the page notes:
+  - **Default: measured geometry is kept.** If the measured page size differs from the reference
+    screenshot's pixel size, a warning says so and nothing is moved.
+  - **Opt-in `--normalize-reference centered-dpr1`.** By passing this flag the operator
+    acknowledges two assumptions: the page centers fixed-width content, and the screenshot was
+    taken at device pixel ratio 1. It applies two **inferred** normalizations:
+    - **Width:** full-bleed boxes are stretched to the reference width, margin-anchored boxes are
+      narrowed, and centered content is shifted by half the width difference. Boxes outside the
+      target are counted.
+    - **Hidden scrollbars:** if the measured page is taller than the reference by Δ, and Δ/N per
+      horizontally overflowing container is 5–25 px, that amount is removed from each container
+      and everything below moves up. Otherwise there's a warning.
+
+    Each page records `normalization { mode, measuredWidth, measuredHeight, offsetX, gutterPx,
+    gutters }` and an "INFERRED normalization" note, so the original measurement stays recoverable.
+  - **Clip groups:** horizontally overflowing containers always become clip groups. This is
+    observed overflow. References are always shown at their native pixel size, 1:1.
+  - **Clip membership:** taken from the observed DOM ancestry in the saved `rawHtml`, with
+    geometry as a fallback. Without `rawHtml`, cells that start outside their container can't be
+    attributed.
+  - **Text repair:** text fragments split inside a surrogate pair or grapheme cluster are rejoined
+    from the adjacent runs. Unpairable leftovers are removed with a warning, and the validator
+    rejects lone surrogates.
+  - **List markers:** reconstructed only for `<li>` with measured `display: list-item`, using
+    list type and ordinal from `rawHtml`. The glyph and offset are inferred, and nav lists are
+    skipped.
+  - **Controls:**
+    - multi-select option rows use their measured rects plus labels from `rawHtml`
+    - radios use their measured `%` radius
+    - the checked-radio center, select caret and textarea grip are inferred static approximations
+    - inferred labels are never width-fitted
+  - **SVG:** inline SVGs pass through an allowlist sanitizer: `path`/`circle`/`ellipse`/`rect`/
+    `line`/`poly*`/`g` only, numeric and colour attributes only, no scripts, styles, references,
+    URLs, entities, text or `foreignObject`, at most 32 KB and 200 elements. Canonical markup is
+    rebuilt and imported with `figma.createNodeFromSvg`. Anything else is omitted with the reason.
+  - **Shared components:** identical nav/footer regions across pages (structure, text and geometry)
+    become shared components. Each page gets instances, with paint differences as overrides.
+    Sitemap edges follow the URL path hierarchy.
+  - **Fonts:** the measured CSS stack order is honoured against the fonts installed in Figma. The
+    browser's resolved OS font is never claimed. `--font-map monospace="Roboto Mono"`
+    (repeatable, `MATCH=Family`) is an explicit operator choice and is reported as
+    "operator font map" on the canvas.
 - **Reporting:** each page's notes on the canvas list:
   - font substitutions (measured stack → actual Figma font) and font-load failures
   - missing images (dashed `MISSING IMAGE` placeholders)
@@ -192,9 +242,9 @@ translated or guessed.
   - This is an **absolute desktop snapshot**, not responsive auto-layout, and not pixel-perfect.
   - Browser fonts and emoji artwork differ.
   - Static controls aren't interactive.
-  - Reference screenshots taller than 4096 px are rejected with a warning, because tiling them
-    would need a PNG codec dependency that isn't approved.
-  - Shared nav and footer components aren't generated for hi-fi pages.
+  - Reference screenshots taller than 4096 px are rejected with a warning. Their hash-verified
+    size is still used as evidence. Tiling them would need a PNG codec dependency that isn't
+    approved.
   - Importing into real Figma has **not** been verified from this repo. The renderer is tested
     against a fake `figma` object only.
 

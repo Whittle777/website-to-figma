@@ -6186,6 +6186,143 @@ var init_generate = __esm({
   }
 });
 
+// src/shared/svgSanitize.ts
+function boundedNumbers(v, maxCount) {
+  const nums = v.match(/-?(?:\d+(?:\.\d*)?|\.\d+)(?:e[-+]?\d+)?/gi) ?? [];
+  if (nums.length > maxCount) return false;
+  return nums.every((n) => {
+    const x = Number(n);
+    return Number.isFinite(x) && Math.abs(x) <= MAX_ABS;
+  });
+}
+function paint(v, currentColor) {
+  const s = v.trim();
+  if (s === "none") return "none";
+  if (s === "currentColor") return currentColor;
+  if (HEX.test(s) || RGB.test(s)) return s.toLowerCase();
+  return null;
+}
+function sanitizeSvg(input, width, height, currentColor) {
+  if (typeof input !== "string" || input.length > MAX_INPUT) return { ok: false, reason: "SVG too large" };
+  if (/<!|<\?|&|url\s*\(|javascript:|data:|href/i.test(input)) return { ok: false, reason: "SVG contains comments, entities, references or URLs" };
+  const tokens = input.match(/<\/?[^<>]*>|[^<>]+/g) ?? [];
+  if (tokens.join("") !== input) return { ok: false, reason: "malformed SVG markup" };
+  let viewBox = null;
+  const out = [];
+  const stack = [];
+  let count = 0;
+  for (const tok of tokens) {
+    if (!tok.startsWith("<")) {
+      if (tok.trim()) return { ok: false, reason: "SVG contains text content" };
+      continue;
+    }
+    if (tok.startsWith("</")) {
+      const name3 = tok.slice(2, -1).trim();
+      if (stack.pop() !== name3) return { ok: false, reason: "unbalanced SVG tags" };
+      if (name3 === "g") out.push("</g>");
+      continue;
+    }
+    const m = /^<([a-zA-Z]+)((?:\s+[a-zA-Z_:][\w:.-]*="[^"<>]*")*)\s*(\/?)>$/.exec(tok);
+    if (!m) return { ok: false, reason: "unsupported SVG tag syntax" };
+    const name2 = m[1];
+    const selfClosing = m[3] === "/";
+    if (++count > MAX_ELEMENTS) return { ok: false, reason: "too many SVG elements" };
+    const attrs = [...m[2].matchAll(/([a-zA-Z_:][\w:.-]*)="([^"<>]*)"/g)].map((a) => [a[1], a[2]]);
+    if (name2 === "svg") {
+      if (stack.length !== 0 || out.length !== 0) return { ok: false, reason: "nested or repeated <svg>" };
+      for (const [k, v] of attrs) {
+        if (k === "viewBox") {
+          const parts = v.trim().split(/[\s,]+/);
+          if (parts.length !== 4 || !parts.every((p) => NUM.test(p)) || !boundedNumbers(v, 4) || !(Number(parts[2]) > 0 && Number(parts[3]) > 0)) return { ok: false, reason: "invalid viewBox" };
+          viewBox = parts.join(" ");
+        } else if (!DROPPED_ROOT.has(k)) return { ok: false, reason: `unsupported <svg> attribute ${k}` };
+      }
+      if (selfClosing) return { ok: false, reason: "empty SVG" };
+      stack.push("svg");
+      continue;
+    }
+    if (stack.length === 0) return { ok: false, reason: "content outside <svg>" };
+    const shape = SHAPES[name2];
+    if (!shape && name2 !== "g") return { ok: false, reason: `unsupported SVG element <${name2}>` };
+    const kept = [];
+    let hasFill = false;
+    for (const [k, v] of attrs) {
+      const kind = shape?.[k];
+      if (kind === "num") {
+        if (!NUM.test(v.trim()) || !boundedNumbers(v, 1)) return { ok: false, reason: `invalid number in ${name2}.${k}` };
+        kept.push(`${k}="${v.trim()}"`);
+      } else if (kind === "d") {
+        if (v.length > MAX_PATH || !PATH_D.test(v) || !boundedNumbers(v, MAX_NUMBERS) || (v.match(/[a-z]/gi) ?? []).filter((ch) => ch !== "e" && ch !== "E").length > MAX_COMMANDS) {
+          return { ok: false, reason: "invalid path data" };
+        }
+        kept.push(`d="${v.replace(/\s+/g, " ").trim()}"`);
+      } else if (kind === "points") {
+        if (v.length > MAX_PATH || !POINTS.test(v) || !boundedNumbers(v, MAX_NUMBERS)) return { ok: false, reason: "invalid points" };
+        kept.push(`points="${v.replace(/\s+/g, " ").trim()}"`);
+      } else if (PAINT_ATTRS.has(k)) {
+        const p = paint(v, currentColor);
+        if (p === null) return { ok: false, reason: `unsupported paint ${k}` };
+        if (k === "fill") hasFill = true;
+        kept.push(`${k}="${p}"`);
+      } else if (NUMERIC_PAINT_ATTRS.has(k)) {
+        if (!NUM.test(v.trim()) || !boundedNumbers(v, 1)) return { ok: false, reason: `invalid ${k}` };
+        kept.push(`${k}="${v.trim()}"`);
+      } else if (ENUM_ATTRS[k]) {
+        if (!ENUM_ATTRS[k].includes(v.trim())) return { ok: false, reason: `invalid ${k}` };
+        kept.push(`${k}="${v.trim()}"`);
+      } else if (!DROPPED.has(k)) return { ok: false, reason: `unsupported attribute ${name2}.${k}` };
+    }
+    if (shape && !hasFill && currentColor) kept.push(`fill="${currentColor}"`);
+    out.push(`<${name2}${kept.length ? " " + kept.join(" ") : ""}${shape ? "/>" : ">"}`);
+    if (!selfClosing && shape) stack.push(name2);
+    if (!selfClosing && !shape) stack.push("g");
+    if (selfClosing && !shape) out.push("</g>");
+  }
+  if (stack.length !== 0) return { ok: false, reason: "unbalanced SVG tags" };
+  if (!viewBox) return { ok: false, reason: "SVG has no viewBox" };
+  if (count <= 1) return { ok: false, reason: "SVG has no shapes" };
+  const w = Math.max(0.01, Math.round(width * 1e3) / 1e3);
+  const h = Math.max(0.01, Math.round(height * 1e3) / 1e3);
+  return { ok: true, markup: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" width="${w}" height="${h}">${out.join("")}</svg>`, elements: count - 1 };
+}
+function isCanonicalSvg(markup) {
+  const m = /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" viewBox="[^"]*" width="([^"]*)" height="([^"]*)">/.exec(markup);
+  if (!m || !NUM.test(m[1]) || !NUM.test(m[2])) return false;
+  const r = sanitizeSvg(markup, Number(m[1]), Number(m[2]), null);
+  return r.ok && r.markup === markup;
+}
+var MAX_INPUT, MAX_ELEMENTS, MAX_PATH, MAX_NUMBERS, MAX_COMMANDS, MAX_ABS, NUM, PATH_D, POINTS, HEX, RGB, SHAPES, PAINT_ATTRS, NUMERIC_PAINT_ATTRS, ENUM_ATTRS, DROPPED_ROOT, DROPPED;
+var init_svgSanitize = __esm({
+  "src/shared/svgSanitize.ts"() {
+    "use strict";
+    MAX_INPUT = 32e3;
+    MAX_ELEMENTS = 200;
+    MAX_PATH = 2e4;
+    MAX_NUMBERS = 2e4;
+    MAX_COMMANDS = 2e4;
+    MAX_ABS = 1e6;
+    NUM = /^-?(?:\d+(?:\.\d*)?|\.\d+)(?:e[-+]?\d+)?$/i;
+    PATH_D = /^[MmLlHhVvCcSsQqTtAaZz0-9eE.,\s+-]+$/;
+    POINTS = /^[0-9eE.,\s+-]+$/;
+    HEX = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
+    RGB = /^rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*(?:,\s*(?:0|1|0?\.\d+)\s*)?\)$/i;
+    SHAPES = {
+      path: { d: "d" },
+      circle: { cx: "num", cy: "num", r: "num" },
+      ellipse: { cx: "num", cy: "num", rx: "num", ry: "num" },
+      rect: { x: "num", y: "num", width: "num", height: "num", rx: "num", ry: "num" },
+      line: { x1: "num", y1: "num", x2: "num", y2: "num" },
+      polyline: { points: "points" },
+      polygon: { points: "points" }
+    };
+    PAINT_ATTRS = /* @__PURE__ */ new Set(["fill", "stroke"]);
+    NUMERIC_PAINT_ATTRS = /* @__PURE__ */ new Set(["stroke-width", "opacity", "fill-opacity", "stroke-opacity"]);
+    ENUM_ATTRS = { "fill-rule": ["nonzero", "evenodd"], "clip-rule": ["nonzero", "evenodd"], "stroke-linecap": ["butt", "round", "square"], "stroke-linejoin": ["miter", "round", "bevel"] };
+    DROPPED_ROOT = /* @__PURE__ */ new Set(["class", "style", "id", "xmlns", "version", "aria-hidden", "role", "focusable", "data-w2f-id", "width", "height"]);
+    DROPPED = /* @__PURE__ */ new Set(["id", "aria-hidden", "data-w2f-id"]);
+  }
+});
+
 // src/shared/hifiSchema.ts
 function checkRect(c, n, p) {
   c.num(n.x, `${p}.x`, -COORD, COORD);
@@ -6193,10 +6330,14 @@ function checkRect(c, n, p) {
   c.num(n.w, `${p}.w`, 0, COORD);
   c.num(n.h, `${p}.h`, 0, COORD);
 }
-function checkNode(c, n, p, nodeCount, assetIds, kinds) {
+function checkClip(c, n, p, clipCount) {
+  if (n.clip !== void 0) c.int(n.clip, `${p}.clip`, -1, clipCount - 1);
+}
+function checkNode(c, n, p, nodeCount, assetIds, kinds, clipCount) {
   const kind = n?.kind;
   if (kind === "box") {
-    if (!c.obj(n, p, ["kind", "x", "y", "w", "h", "name", "role", "fill", "border", "radius", "opacity", "prov"])) return;
+    if (!c.obj(n, p, ["kind", "x", "y", "w", "h", "name", "role", "fill", "border", "radius", "opacity", "prov"], ["clip"])) return;
+    checkClip(c, n, p, clipCount);
     checkRect(c, n, p);
     c.str(n.name, `${p}.name`, 120, false);
     c.oneOf(n.role, `${p}.role`, ["block", "button", "control"]);
@@ -6209,7 +6350,10 @@ function checkNode(c, n, p, nodeCount, assetIds, kinds) {
     c.num(n.opacity, `${p}.opacity`, 0, 1);
     c.oneOf(n.prov, `${p}.prov`, ["measured", "inferred"]);
   } else if (kind === "text") {
-    if (!c.obj(n, p, ["kind", "x", "y", "w", "h", "name", "text", "graphemes", "fontStack", "generic", "weight", "italic", "size", "lineHeight", "color", "decoration", "button", "prov"])) return;
+    if (!c.obj(n, p, ["kind", "x", "y", "w", "h", "name", "text", "graphemes", "fontStack", "generic", "weight", "italic", "size", "lineHeight", "color", "decoration", "button", "prov"], ["clip", "align", "fit"])) return;
+    checkClip(c, n, p, clipCount);
+    if (n.align !== void 0) c.oneOf(n.align, `${p}.align`, ["left", "right"]);
+    if (n.fit !== void 0) c.bool(n.fit, `${p}.fit`);
     checkRect(c, n, p);
     c.str(n.name, `${p}.name`, 120, false);
     c.str(n.text, `${p}.text`, LIMITS.hifiMaxTextChars, false);
@@ -6227,20 +6371,49 @@ function checkNode(c, n, p, nodeCount, assetIds, kinds) {
     }
     c.oneOf(n.prov, `${p}.prov`, ["measured", "inferred"]);
   } else if (kind === "image") {
-    if (!c.obj(n, p, ["kind", "x", "y", "w", "h", "name", "assetId", "fit", "radius", "prov"])) return;
+    if (!c.obj(n, p, ["kind", "x", "y", "w", "h", "name", "assetId", "fit", "radius", "prov"], ["clip"])) return;
+    checkClip(c, n, p, clipCount);
     checkRect(c, n, p);
     c.str(n.name, `${p}.name`, 120, false);
     if (n.assetId !== null && (typeof n.assetId !== "string" || !assetIds.has(n.assetId))) c.fail(`${p}.assetId`, "unknown asset");
     c.oneOf(n.fit, `${p}.fit`, ["fill", "fit"]);
     c.radius(n.radius, `${p}.radius`);
     c.oneOf(n.prov, `${p}.prov`, ["measured", "inferred"]);
+  } else if (kind === "shape") {
+    if (!c.obj(n, p, ["kind", "x", "y", "w", "h", "name", "shape", "fill", "stroke", "prov"], ["clip"])) return;
+    checkClip(c, n, p, clipCount);
+    checkRect(c, n, p);
+    c.str(n.name, `${p}.name`, 120, false);
+    c.oneOf(n.shape, `${p}.shape`, ["ellipse", "caret", "grip"]);
+    if (n.fill !== null) c.paint(n.fill, `${p}.fill`);
+    if (n.stroke !== null && c.obj(n.stroke, `${p}.stroke`, ["weight", "color"])) {
+      c.num(n.stroke.weight, `${p}.stroke.weight`, 0, 100);
+      c.paint(n.stroke.color, `${p}.stroke.color`);
+    }
+    c.oneOf(n.prov, `${p}.prov`, ["inferred"]);
+  } else if (kind === "svg") {
+    if (!c.obj(n, p, ["kind", "x", "y", "w", "h", "name", "markup", "prov"], ["clip"])) return;
+    checkClip(c, n, p, clipCount);
+    checkRect(c, n, p);
+    c.str(n.name, `${p}.name`, 120, false);
+    if (typeof n.markup !== "string" || n.markup.length > 4e4 || !isCanonicalSvg(n.markup)) c.fail(`${p}.markup`, "expected canonical sanitized SVG");
+    c.oneOf(n.prov, `${p}.prov`, ["measured"]);
   } else {
-    c.fail(`${p}.kind`, "expected box | text | image");
+    c.fail(`${p}.kind`, "expected box | text | image | shape | svg");
   }
+}
+function checkNodeList(c, nodes, p, max, assetIds, clipCount) {
+  if (!c.arr(nodes, p, max)) return 0;
+  const kinds = nodes.map((n) => {
+    const o = n;
+    return o?.kind === "box" && o.role === "button" ? "button" : String(o?.kind);
+  });
+  nodes.forEach((n, j) => checkNode(c, n, `${p}[${j}]`, nodes.length, assetIds, kinds, clipCount));
+  return nodes.length;
 }
 function validateHifiDoc(input) {
   const c = new C();
-  if (!c.obj(input, "$", ["schema", "schemaVersion", "generator", "source", "site", "provenance", "assets", "pages", "warnings"])) return { ok: false, errors: c.errors };
+  if (!c.obj(input, "$", ["schema", "schemaVersion", "generator", "source", "site", "provenance", "assets", "pages", "warnings"], ["components", "fontMap"])) return { ok: false, errors: c.errors };
   const d = input;
   if (d.schema !== SCHEMA_ID) c.fail("$.schema", `expected "${SCHEMA_ID}"`);
   if (d.schemaVersion !== HIFI_SCHEMA_VERSION) c.fail("$.schemaVersion", "expected 2");
@@ -6286,12 +6459,42 @@ function validateHifiDoc(input) {
     if (assetPixels > LIMITS.hifiMaxTotalPixels) c.fail("$.assets", `more than ${LIMITS.hifiMaxTotalPixels} decoded pixels in total`);
   }
   let total = 0;
+  const componentIds = /* @__PURE__ */ new Set();
+  if (d.components !== void 0 && c.arr(d.components, "$.components", 20)) {
+    d.components.forEach((cm, i) => {
+      const p = `$.components[${i}]`;
+      if (!c.obj(cm, p, ["id", "kind", "name", "w", "h", "nodes"])) return;
+      if (typeof cm.id !== "string" || !/^c[0-9]{1,2}$/.test(cm.id) || componentIds.has(cm.id)) c.fail(`${p}.id`, 'expected unique "c<index>"');
+      else componentIds.add(cm.id);
+      c.oneOf(cm.kind, `${p}.kind`, ["nav", "footer"]);
+      c.str(cm.name, `${p}.name`, 120, false);
+      c.num(cm.w, `${p}.w`, 1, LIMITS.hifiMaxPageWidth);
+      c.num(cm.h, `${p}.h`, 1, LIMITS.hifiMaxPageHeight);
+      total += checkNodeList(c, cm.nodes, `${p}.nodes`, 2e3, assetIds, 0);
+    });
+  }
+  if (d.fontMap !== void 0 && c.arr(d.fontMap, "$.fontMap", 16)) {
+    d.fontMap.forEach((f, i) => {
+      if (!c.obj(f, `$.fontMap[${i}]`, ["match", "use"])) return;
+      c.str(f.match, `$.fontMap[${i}].match`, 100, false);
+      c.str(f.use, `$.fontMap[${i}].use`, 100, false);
+    });
+  }
   if (c.arr(d.pages, "$.pages", LIMITS.hifiMaxPages)) {
     if (d.pages.length === 0) c.fail("$.pages", "must contain at least one page");
     const ids = /* @__PURE__ */ new Set();
     d.pages.forEach((pg, i) => {
       const p = `$.pages[${i}]`;
-      if (!c.obj(pg, p, ["id", "url", "path", "title", "width", "height", "truncated", "referenceAssetId", "branding", "nodes", "warnings"])) return;
+      if (!c.obj(pg, p, ["id", "url", "path", "title", "width", "height", "truncated", "referenceAssetId", "branding", "nodes", "warnings"], ["notes", "parentId", "clips", "instances", "normalization"])) return;
+      if (pg.normalization !== void 0 && c.obj(pg.normalization, `${p}.normalization`, ["mode", "measuredWidth", "measuredHeight", "offsetX", "gutterPx", "gutters"])) {
+        const nz = pg.normalization;
+        c.oneOf(nz.mode, `${p}.normalization.mode`, ["centered-dpr1"]);
+        c.num(nz.measuredWidth, `${p}.normalization.measuredWidth`, 1, 1e5);
+        c.num(nz.measuredHeight, `${p}.normalization.measuredHeight`, 1, 1e6);
+        c.num(nz.offsetX, `${p}.normalization.offsetX`, -1e5, 1e5);
+        c.num(nz.gutterPx, `${p}.normalization.gutterPx`, 0, 25);
+        c.int(nz.gutters, `${p}.normalization.gutters`, 0, 500);
+      }
       if (typeof pg.id !== "string" || !/^p[0-9]{1,2}$/.test(pg.id) || ids.has(pg.id)) c.fail(`${p}.id`, 'expected unique "p<index>"');
       else ids.add(pg.id);
       c.httpUrl(pg.url, `${p}.url`);
@@ -6309,20 +6512,41 @@ function validateHifiDoc(input) {
           if (entries.length > 20) c.fail(`${p}.branding.colors`, "more than 20 entries");
           for (const [k, v] of entries) {
             if (!/^[A-Za-z][A-Za-z0-9]{0,31}$/.test(k)) c.fail(`${p}.branding.colors`, "invalid key");
-            if (typeof v !== "string" || !HEX.test(v)) c.fail(`${p}.branding.colors.${k}`, "expected #rrggbb");
+            if (typeof v !== "string" || !HEX2.test(v)) c.fail(`${p}.branding.colors.${k}`, "expected #rrggbb");
           }
         }
         c.labels(pg.branding.fonts, `${p}.branding.fonts`, 10);
       }
       c.labels(pg.warnings, `${p}.warnings`, LIMITS.hifiMaxWarnings);
-      const nodes = pg.nodes;
-      if (c.arr(nodes, `${p}.nodes`, LIMITS.hifiMaxNodesPerPage)) {
-        total += nodes.length;
-        const kinds = nodes.map((n) => {
-          const o = n;
-          return o?.kind === "box" && o.role === "button" ? "button" : String(o?.kind);
+      if (pg.notes !== void 0) c.labels(pg.notes, `${p}.notes`, LIMITS.hifiMaxWarnings);
+      if (pg.parentId !== void 0 && pg.parentId !== null) c.str(pg.parentId, `${p}.parentId`, 8, false);
+      let clipCount = 0;
+      if (pg.clips !== void 0 && c.arr(pg.clips, `${p}.clips`, 500)) {
+        clipCount = pg.clips.length;
+        pg.clips.forEach((cl, j) => {
+          if (!c.obj(cl, `${p}.clips[${j}]`, ["x", "y", "w", "h", "name"])) return;
+          checkRect(c, cl, `${p}.clips[${j}]`);
+          c.str(cl.name, `${p}.clips[${j}].name`, 120, false);
         });
-        nodes.forEach((n, j) => checkNode(c, n, `${p}.nodes[${j}]`, nodes.length, assetIds, kinds));
+      }
+      total += checkNodeList(c, pg.nodes, `${p}.nodes`, LIMITS.hifiMaxNodesPerPage, assetIds, clipCount);
+      if (pg.instances !== void 0 && c.arr(pg.instances, `${p}.instances`, 10)) {
+        pg.instances.forEach((ins, j) => {
+          const q = `${p}.instances[${j}]`;
+          if (!c.obj(ins, q, ["component", "x", "y", "overrides"])) return;
+          if (typeof ins.component !== "string" || !componentIds.has(ins.component)) c.fail(`${q}.component`, "unknown component");
+          c.num(ins.x, `${q}.x`, -COORD, COORD);
+          c.num(ins.y, `${q}.y`, -COORD, COORD);
+          if (c.arr(ins.overrides, `${q}.overrides`, 2e3)) {
+            ins.overrides.forEach((o, k) => {
+              const r = `${q}.overrides[${k}]`;
+              if (!c.obj(o, r, ["index"], ["fill", "color"])) return;
+              c.int(o.index, `${r}.index`, 0, LIMITS.hifiMaxNodesPerPage);
+              if (o.fill !== void 0 && o.fill !== null) c.paint(o.fill, `${r}.fill`);
+              if (o.color !== void 0) c.paint(o.color, `${r}.color`);
+            });
+          }
+        });
       }
     });
     if (total > LIMITS.hifiMaxNodesTotal) c.fail("$.pages", `more than ${LIMITS.hifiMaxNodesTotal} nodes in total`);
@@ -6353,14 +6577,15 @@ function parseImportJson(text) {
   }
   return { ok: false, errors: ["$.schemaVersion: unsupported version (expected 1 or 2)"] };
 }
-var HIFI_SCHEMA_VERSION, HEX, SHA, B64, C, COORD;
+var HIFI_SCHEMA_VERSION, HEX2, SHA, B64, C, COORD;
 var init_hifiSchema = __esm({
   "src/shared/hifiSchema.ts"() {
     "use strict";
     init_limits();
     init_schema();
+    init_svgSanitize();
     HIFI_SCHEMA_VERSION = 2;
-    HEX = /^#[0-9a-f]{6}$/;
+    HEX2 = /^#[0-9a-f]{6}$/;
     SHA = /^[0-9a-f]{64}$/;
     B64 = /^[A-Za-z0-9+/]*={0,2}$/;
     C = class {
@@ -6368,12 +6593,12 @@ var init_hifiSchema = __esm({
       fail(p, m) {
         if (this.errors.length < 50) this.errors.push(`${p}: ${m}`);
       }
-      obj(v, p, keys) {
+      obj(v, p, keys, optional = []) {
         if (typeof v !== "object" || v === null || Array.isArray(v)) {
           this.fail(p, "expected object");
           return false;
         }
-        for (const k of Object.keys(v)) if (!keys.includes(k)) this.fail(p, `unknown key "${k}"`);
+        for (const k of Object.keys(v)) if (!keys.includes(k) && !optional.includes(k)) this.fail(p, `unknown key "${k}"`);
         for (const k of keys) if (!Object.prototype.hasOwnProperty.call(v, k)) this.fail(p, `missing key "${k}"`);
         return true;
       }
@@ -6382,6 +6607,7 @@ var init_hifiSchema = __esm({
         if (v.length > max) this.fail(p, `longer than ${max} chars`);
         if (!allowEmpty && v.length === 0) this.fail(p, "must not be empty");
         if (/[\u0000-\u001f\u007f]/.test(v)) this.fail(p, "contains control characters");
+        if (/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(v)) this.fail(p, "contains an unpaired UTF-16 surrogate");
         return true;
       }
       num(v, p, min, max) {
@@ -6410,7 +6636,7 @@ var init_hifiSchema = __esm({
       }
       paint(v, p) {
         if (!this.obj(v, p, ["hex", "alpha"])) return;
-        if (typeof v.hex !== "string" || !HEX.test(v.hex)) this.fail(`${p}.hex`, "expected #rrggbb");
+        if (typeof v.hex !== "string" || !HEX2.test(v.hex)) this.fail(`${p}.hex`, "expected #rrggbb");
         this.num(v.alpha, `${p}.alpha`, 0, 1);
       }
       radius(v, p) {
@@ -6443,6 +6669,205 @@ var init_fonts = __esm({
   }
 });
 
+// src/hifi/corrections.ts
+function widthMap(measured, target) {
+  const off = (measured - target) / 2;
+  const counts = { fullBleed: 0, marginAnchored: 0, shifted: 0, outside: 0 };
+  return {
+    measured,
+    target,
+    offset: off,
+    counts,
+    apply(b) {
+      if (b.x <= 0.5 && b.x + b.w >= measured - 0.5) {
+        counts.fullBleed++;
+        return { ...b, x: 0, w: target };
+      }
+      if (b.x < off - 0.5 && b.x + b.w > off + target + 0.5) {
+        counts.marginAnchored++;
+        return { ...b, w: r3(b.w - (measured - target)) };
+      }
+      counts.shifted++;
+      if (b.x < off - 0.5 || b.x + b.w > off + target + 0.5) counts.outside++;
+      return { ...b, x: r3(b.x - off) };
+    }
+  };
+}
+function rejoinFragments(texts) {
+  const out = [];
+  let repaired = 0;
+  let removed = 0;
+  for (const t of texts) {
+    const prev = out[out.length - 1];
+    const s = typeof t.text === "string" ? t.text : "";
+    if (prev && typeof prev.text === "string" && prev.parent === t.parent && Math.abs(Number(prev.y) - Number(t.y)) < 1) {
+      const p = prev.text;
+      if (HIGH.test(p) && LOW.test(s) || JOINER_ONLY.test(s)) {
+        const right = Math.max(Number(prev.x) + Number(prev.w), Number(t.x) + Number(t.w));
+        prev.text = p + s;
+        prev.w = r3(right - Number(prev.x));
+        prev.h = Math.max(Number(prev.h), Number(t.h));
+        repaired++;
+        continue;
+      }
+    }
+    out.push({ ...t });
+  }
+  for (const t of out) {
+    if (typeof t.text !== "string") continue;
+    const cleaned = t.text.replace(LONE, () => {
+      removed++;
+      return "";
+    });
+    t.text = cleaned;
+  }
+  return { texts: out.filter((t) => typeof t.text !== "string" || t.text.trim() !== ""), repaired, removed };
+}
+function chainOf(o, facts) {
+  if (!facts) return null;
+  const own3 = typeof o.id === "string" ? o.id : null;
+  const parent = typeof o.parent === "string" ? o.parent : null;
+  if (own3 && facts.ancestors.has(own3)) return facts.ancestors.get(own3);
+  if (parent && facts.ancestors.has(parent)) return [...facts.ancestors.get(parent), parent];
+  return null;
+}
+function memberOf(o, b, containers, facts) {
+  const chain = chainOf(o, facts);
+  if (chain) {
+    for (let k = chain.length - 1; k >= 0; k--) {
+      const i = containers.findIndex((c) => c.id === chain[k]);
+      if (i >= 0) return i;
+    }
+    return -1;
+  }
+  return innermost(b, containers);
+}
+function overflowContainers(elements, items, facts = null) {
+  const cands = elements.filter((e2) => CONTAINER_TAGS.has(String(e2.tag))).map((e2) => ({ tag: String(e2.tag), id: String(e2.id ?? ""), x: Number(e2.x), y: Number(e2.y), w: Number(e2.w), h: Number(e2.h) })).filter((c) => c.w > 0 && c.h > 0);
+  const overflowing = /* @__PURE__ */ new Set();
+  for (const o of [...elements, ...items]) {
+    const n = { x: Number(o.x), y: Number(o.y), w: Number(o.w), h: Number(o.h) };
+    if (!Number.isFinite(n.x + n.y + n.w + n.h)) continue;
+    let best = null;
+    const chain = chainOf(o, facts);
+    if (chain) {
+      for (let k = chain.length - 1; k >= 0 && !best; k--) best = cands.find((c) => c.id !== "" && c.id === chain[k]) ?? null;
+    } else {
+      for (const c of cands) {
+        if (typeof o.id === "string" && o.id === c.id) continue;
+        if (c.x === n.x && c.y === n.y && c.w === n.w && c.h === n.h) continue;
+        if (!inside(n, c)) continue;
+        if (!best || c.w * c.h < best.w * best.h) best = c;
+      }
+    }
+    if (best && n.x + n.w > best.x + best.w + 0.5) overflowing.add(best);
+  }
+  return [...overflowing].sort((a, b) => a.y - b.y);
+}
+function innermost(b, containers) {
+  let best = -1;
+  containers.forEach((c, i) => {
+    if (c.x === b.x && c.y === b.y && c.w === b.w && c.h === b.h) return;
+    if (inside(b, c) && (best < 0 || c.w * c.h < containers[best].w * containers[best].h)) best = i;
+  });
+  return best;
+}
+function gutterFix(containers, measuredHeight, referenceHeight) {
+  if (containers.length === 0) return { fix: null, note: null };
+  if (referenceHeight === null) {
+    return { fix: null, note: `${containers.length} horizontally overflowing container(s) detected; no reference height to confirm hidden scrollbars, heights kept as measured` };
+  }
+  const delta = measuredHeight - referenceHeight;
+  if (Math.abs(delta) < 1) return { fix: null, note: null };
+  const k = delta / containers.length;
+  if (!(k >= 5 && k <= 25)) {
+    return { fix: null, note: `${containers.length} overflowing container(s); measured-vs-reference height delta ${r3(delta)}px is not consistent with hidden scrollbars, heights kept as measured` };
+  }
+  const bottoms = containers.map((c) => c.y + c.h);
+  const shift = (y) => bottoms.filter((b) => b <= y + 0.1).length * k;
+  return {
+    fix: {
+      k: r3(k),
+      apply: (b) => ({ ...b, y: r3(b.y - shift(b.y)) }),
+      containerHeight: (c) => r3(c.h - k)
+    },
+    note: `Removed ${containers.length} hidden horizontal-scrollbar gutter(s) of ${r3(k)}px (measured height ${r3(measuredHeight)}px vs reference ${referenceHeight}px); content below each moved up`
+  };
+}
+function htmlFacts(raw) {
+  if (typeof raw !== "string" || raw.length === 0) return null;
+  let html = raw.slice(0, LIMITS.maxHtmlChars);
+  const cut = tagLimitIndex(html, LIMITS.maxHtmlTags);
+  if (cut !== -1) html = html.slice(0, cut);
+  const root = parse(html, { comment: false, blockTextElements: { script: false, noscript: false, style: false, pre: true } });
+  const facts = { li: /* @__PURE__ */ new Map(), option: /* @__PURE__ */ new Map(), multiple: /* @__PURE__ */ new Set(), ancestors: /* @__PURE__ */ new Map() };
+  let budget = LIMITS.maxHtmlNodes;
+  const walk = (n, depth, lists, inNav, chain) => {
+    if (n.nodeType !== NodeType.ELEMENT_NODE || depth > LIMITS.maxHtmlDepth || --budget < 0) return;
+    const el = n;
+    const tag = el.tagName;
+    const id = el.getAttribute("data-w2f-id") ?? "";
+    const nav = inNav || tag === "NAV" || tag === "MENU";
+    if (id && /^[A-Za-z0-9_-]{1,20}$/.test(id)) facts.ancestors.set(id, chain);
+    if (tag === "LI" && id && lists.length) {
+      const list = lists[lists.length - 1];
+      let marker;
+      if (list.tagName === "OL") {
+        const items = list.childNodes.filter((c) => c.nodeType === NodeType.ELEMENT_NODE && c.tagName === "LI");
+        const start = Number(list.getAttribute("start") ?? "1");
+        const ordinal = (Number.isFinite(start) ? start : 1) + items.indexOf(el);
+        const explicit = Number(el.getAttribute("value"));
+        marker = `${Number.isFinite(explicit) && el.getAttribute("value") !== void 0 ? explicit : ordinal}.`;
+      } else {
+        const level = lists.filter((l) => l.tagName === "UL").length;
+        marker = level <= 1 ? "\u2022" : level === 2 ? "\u25E6" : "\u25AA";
+      }
+      facts.li.set(id, { marker, inNav: nav });
+    }
+    if (tag === "OPTION" && id) facts.option.set(id, cleanText(el.text, 200));
+    if (tag === "SELECT" && id && el.getAttribute("multiple") !== void 0) facts.multiple.add(id);
+    const nextLists = tag === "UL" || tag === "OL" ? [...lists, el] : lists;
+    const nextChain = id && /^[A-Za-z0-9_-]{1,20}$/.test(id) ? [...chain, id] : chain;
+    for (const c of el.childNodes) walk(c, depth + 1, nextLists, nav, nextChain);
+  };
+  walk(root, 0, [], false, []);
+  return facts;
+}
+function parentByPath(paths) {
+  const seg = (p) => new URL(p, "https://x.invalid").pathname.split("/").filter(Boolean);
+  return paths.map((p, i) => {
+    const mine = seg(p);
+    let best = -1;
+    let bestLen = -1;
+    paths.forEach((q, j) => {
+      if (j === i) return;
+      const s = seg(q);
+      if (s.length < mine.length && s.every((x, k) => x === mine[k]) && s.length > bestLen) {
+        best = j;
+        bestLen = s.length;
+      }
+    });
+    return best >= 0 ? `p${best}` : null;
+  });
+}
+var r3, HIGH, LOW, JOINER_ONLY, LONE, CONTAINER_TAGS, inside;
+var init_corrections = __esm({
+  "src/hifi/corrections.ts"() {
+    "use strict";
+    init_dist();
+    init_limits();
+    init_text();
+    init_extract();
+    r3 = (n) => Math.round(n * 1e3) / 1e3;
+    HIGH = /[\ud800-\udbff]$/;
+    LOW = /^[\udc00-\udfff]/;
+    JOINER_ONLY = /^[\uFE0E\uFE0F\u200D\u20E3\u{1F3FB}-\u{1F3FF}]+$/u;
+    LONE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
+    CONTAINER_TAGS = /* @__PURE__ */ new Set(["pre", "figure", "div", "section", "article", "aside", "main", "blockquote", "details", "form", "fieldset"]);
+    inside = (n, c) => n.x >= c.x - 0.5 && n.x < c.x + c.w && n.y >= c.y - 0.1 && n.y + n.h <= c.y + c.h + 0.1;
+  }
+});
+
 // src/hifi/convert.ts
 function parseColor(v) {
   const s = str(v, 80).trim().toLowerCase();
@@ -6454,9 +6879,10 @@ function parseColor(v) {
   if (!Number.isFinite(alpha) || alpha <= 0) return null;
   return { hex: "#" + c.map((x) => x.toString(16).padStart(2, "0")).join(""), alpha: Math.min(1, round(alpha)) };
 }
-function parseRadius(v) {
+function parseRadius(v, w = 0, h = 0) {
   const head = str(v, 80).split("/")[0].trim();
-  const parts = head.split(/\s+/).filter(Boolean).map((t) => /^\d+(\.\d+)?px$/.test(t) ? Number(t.slice(0, -2)) : 0);
+  const base = Math.min(w, h);
+  const parts = head.split(/\s+/).filter(Boolean).map((t) => /^\d+(\.\d+)?px$/.test(t) ? Number(t.slice(0, -2)) : /^\d+(\.\d+)?%$/.test(t) && base > 0 ? Math.min(base / 2, Number(t.slice(0, -1)) / 100 * base) : 0);
   const [a = 0, b = a, c = a, d = b] = parts;
   return [a, b, c, d].map((x) => Math.min(1e4, round(x)));
 }
@@ -6527,6 +6953,7 @@ function convertCapture(input) {
   let first = null;
   const pages = [];
   let totalNodes = 0;
+  const regionsByPage = [];
   for (const [pi, rp] of rawPages.entries()) {
     if (!isObj(rp)) throw new CaptureError(`capture.pages[${pi}]: expected object`);
     const url2 = parseHttpUrl(str(rp.url, LIMITS.maxUrlChars));
@@ -6549,19 +6976,54 @@ function convertCapture(input) {
     const m = rp.measured;
     if (!isObj(m)) throw new CaptureError(`capture.pages[${pi}].measured: expected object`);
     const warnings = [];
-    const elements = arr(m.elements, LIMITS.captureMaxElements, "measured.elements").filter(isObj);
-    const texts = arr(m.texts, LIMITS.captureMaxTexts, "measured.texts").filter(isObj);
-    const images = arr(m.images, LIMITS.captureMaxImages, "measured.images").filter(isObj);
-    const svgCount = arr(m.svgs, LIMITS.captureMaxElements, "measured.svgs").length;
+    const notes = [];
+    const rawElements = arr(m.elements, LIMITS.captureMaxElements, "measured.elements").filter(isObj);
+    const rawTexts = arr(m.texts, LIMITS.captureMaxTexts, "measured.texts").filter(isObj);
+    const rawImages = arr(m.images, LIMITS.captureMaxImages, "measured.images").filter(isObj);
+    const rawSvgs = arr(m.svgs, LIMITS.captureMaxElements, "measured.svgs").filter(isObj);
     const vw = isObj(m.viewport) ? fin(m.viewport.width) : null;
     if (vw === null || vw <= 0) throw new CaptureError(`capture.pages[${pi}].measured.viewport.width: required (measured)`);
-    let width = round(vw);
     let truncated = false;
+    const refId = str(rp.referenceAssetId, 64);
+    const refAsset = refId ? byOperatorId.get(refId) : input.assets.find((a) => a.kind === "reference" && a.pageUrl && canonicalizeUrl(a.pageUrl) === canonical);
+    const refRejected = (input.rejectedReferences ?? []).find((r) => refId ? r.operatorId === refId : !!r.pageUrl && canonicalizeUrl(r.pageUrl) === canonical);
+    const refDims = refAsset && refAsset.kind === "reference" ? { w: refAsset.width, h: refAsset.height } : refRejected ? { w: refRejected.width, h: refRejected.height } : null;
+    if (refRejected && !(refAsset && refAsset.kind === "reference")) {
+      warn(warnings, `Reference screenshot (${refRejected.width}x${refRejected.height}px) not imported: ${refRejected.reason}; its size is still used as evidence`);
+    }
+    const optIn = input.normalizeReference === "centered-dpr1";
+    const wm = optIn && refDims && refDims.w < vw - 0.5 ? widthMap(vw, refDims.w) : null;
+    if (!optIn && refDims && Math.abs(refDims.w - vw) > 0.5) {
+      warn(warnings, `Measured width ${round(vw)}px differs from the reference's ${refDims.w}px; measured geometry kept (opt in with --normalize-reference centered-dpr1)`);
+    }
+    const mapBox = (o) => {
+      const r = rectOf(o);
+      return r ? { ...o, ...wm ? wm.apply(r) : r } : o;
+    };
+    let elements = rawElements.map(mapBox);
+    const rejoined = rejoinFragments(rawTexts.map(mapBox));
+    let texts = rejoined.texts;
+    let images = rawImages.map(mapBox);
+    let svgs = rawSvgs.map(mapBox);
+    let width = round(vw);
+    if (wm && refDims) {
+      width = refDims.w;
+      const c = wm.counts;
+      notes.push(`INFERRED normalization (opt-in centered-dpr1): width ${round(vw)}px -> ${refDims.w}px; ${c.fullBleed} full-bleed stretched, ${c.marginAnchored} margin-anchored narrowed, ${c.shifted} shifted ${round(-wm.offset)}px`);
+      if (c.outside) warn(warnings, `${c.outside} box(es) extend outside the ${refDims.w}px target width (overflow is clipped where a container was measured)`);
+    } else if (refDims && refDims.w > vw + 0.5) {
+      warn(warnings, `Reference (${refDims.w}px) is wider than the measured viewport (${round(vw)}px); measured width kept`);
+    } else if (!refDims) {
+      notes.push(`No reference screenshot size available; measured width ${round(vw)}px kept`);
+    }
+    const measuredWidth = round(vw);
     if (width > LIMITS.hifiMaxPageWidth) {
-      warn(warnings, `Measured width ${width}px exceeds ${LIMITS.hifiMaxPageWidth}px; frame clipped`);
+      warn(warnings, `Width ${width}px exceeds ${LIMITS.hifiMaxPageWidth}px; frame clipped`);
       width = LIMITS.hifiMaxPageWidth;
       truncated = true;
     }
+    if (rejoined.repaired) notes.push(`Rejoined ${rejoined.repaired} text fragment(s) that the capture split inside a surrogate pair or grapheme cluster`);
+    if (rejoined.removed) warn(warnings, `${rejoined.removed} unpaired UTF-16 surrogate(s) had no adjacent partner in the source runs and were removed`);
     const body = elements.find((e2) => e2.tag === "body");
     const bodyRect = body ? rectOf(body) : null;
     let height = bodyRect ? round(bodyRect.y + bodyRect.h) : 0;
@@ -6570,8 +7032,36 @@ function convertCapture(input) {
       if (r) height = Math.max(height, round(r.y + r.h));
     }
     if (height <= 0) throw new CaptureError(`capture.pages[${pi}]: no measured geometry`);
+    const facts = htmlFacts(rp.html);
+    let containers = overflowContainers(elements, [...texts, ...images], facts);
+    const measuredHeight = height;
+    const gf = optIn ? gutterFix(containers, height, refDims ? refDims.h : null) : { fix: null, note: null };
+    if (gf.note) (gf.fix ? notes : warnings).push(cleanText(gf.fix ? `INFERRED normalization (opt-in centered-dpr1): ${gf.note}` : gf.note, LIMITS.maxNoteChars));
+    if (!optIn && refDims && Math.abs(refDims.h - height) >= 1) {
+      warn(warnings, `Measured height ${height}px differs from the reference's ${refDims.h}px${containers.length ? ` (${containers.length} horizontally overflowing container(s) may hold hidden scrollbars)` : ""}; measured geometry kept`);
+    }
+    if (gf.fix) {
+      const fix = gf.fix;
+      const ids = new Map(containers.map((c) => [c.id, c]));
+      const shiftObj = (o) => {
+        const r = rectOf(o);
+        if (!r) return o;
+        const moved = fix.apply(r);
+        const c = ids.get(String(o.id ?? ""));
+        return { ...o, ...moved, ...c && c.tag === o.tag ? { h: fix.containerHeight(c) } : {} };
+      };
+      elements = elements.map(shiftObj);
+      texts = texts.map(shiftObj);
+      images = images.map(shiftObj);
+      svgs = svgs.map(shiftObj);
+      containers = containers.map((c) => ({ ...c, ...fix.apply(c), h: fix.containerHeight(c) }));
+      height = refDims.h;
+    }
+    const clips = containers.map((c) => ({ x: c.x, y: c.y, w: c.w, h: c.h, name: `Overflow clip / ${c.tag}` }));
+    const clipOf = (src2, r) => src2 ? memberOf(src2, r, containers, facts) : innermost(r, containers);
+    if (clips.length) notes.push(`${clips.length} measured container(s) clip horizontally overflowing content (static; not scrollable)`);
     if (height > LIMITS.hifiMaxPageHeight) {
-      warn(warnings, `Measured height ${height}px exceeds ${LIMITS.hifiMaxPageHeight}px; content below is truncated`);
+      warn(warnings, `Height ${height}px exceeds ${LIMITS.hifiMaxPageHeight}px; content below is truncated`);
       height = LIMITS.hifiMaxPageHeight;
       truncated = true;
     }
@@ -6581,96 +7071,143 @@ function convertCapture(input) {
     const textC = [];
     const buttonBoxes = [];
     let unparsedColors = 0;
+    let src = null;
+    const withClip = (n) => {
+      const c = clipOf(src, n);
+      return c >= 0 ? { ...n, clip: c } : n;
+    };
+    const inferredText = (r, text, s, name2, align) => {
+      const size = px(s.fontSize) || 16;
+      return withClip({
+        kind: "text",
+        ...r,
+        name: name2,
+        text: protectEdgeSpaces(text),
+        graphemes: Math.max(1, graphemeCount(text)),
+        fontStack: parseFontStack(str(s.fontFamily)),
+        generic: genericOf(parseFontStack(str(s.fontFamily))),
+        weight: weightOf(s.fontWeight),
+        italic: false,
+        size,
+        lineHeight: Math.max(1, round(Math.min(r.h, size * 1.5))),
+        color: parseColor(s.color) ?? { hex: "#000000", alpha: 1 },
+        decoration: "none",
+        button: -1,
+        prov: "inferred",
+        fit: false,
+        ...align ? { align } : {}
+      });
+    };
+    let missingOptionLabels = 0;
     for (const e2 of elements) {
       const r = rectOf(e2);
       if (!r || !inPage(r)) continue;
+      src = e2;
       const s = isObj(e2.style) ? e2.style : {};
       if (s.display === "none" || s.visibility === "hidden") continue;
       const tag = str(e2.tag, 20).toLowerCase();
       const control = isObj(e2.control) ? e2.control : null;
       const ctype = str(control?.type, 20).toLowerCase();
+      if (tag === "option") {
+        const label3 = facts?.option.get(str(e2.id, 20));
+        if (label3) textC.push({ prio: 1, node: inferredText({ x: round(r.x + 4), y: r.y, w: Math.max(1, r.w - 4), h: r.h }, label3, s, `option label / ${cleanText(label3, 40)}`) });
+        else missingOptionLabels++;
+        continue;
+      }
       const role2 = tag === "button" || tag === "input" && ["button", "submit", "reset"].includes(ctype) ? "button" : control ? "control" : "block";
       const fill = parseColor(s.backgroundColor);
       if (s.backgroundColor && !fill && !/rgba?\([^)]*,\s*0\)|transparent/.test(str(s.backgroundColor))) unparsedColors++;
       const sides = ["Top", "Right", "Bottom", "Left"].map((k) => ({ w: px(s[`border${k}Width`]), c: parseColor(s[`border${k}Color`]) }));
       const uniform = sides.every((x) => x.w === sides[0].w && x.c?.hex === sides[0].c?.hex && x.c?.alpha === sides[0].c?.alpha);
       const anyBorder = sides.some((x) => x.w > 0 && x.c);
-      if (!fill && !anyBorder && role2 === "block") continue;
-      const opacityRaw = Number(str(s.opacity, 10) || "1");
-      if (fill !== null || anyBorder && uniform || role2 !== "block") {
-        const box2 = {
-          kind: "box",
-          ...r,
-          name: `${tag}${role2 === "button" ? " / button" : ""}`,
-          role: role2,
-          fill,
-          border: anyBorder && uniform ? { weight: sides[0].w, color: sides[0].c } : null,
-          radius: parseRadius(s.borderRadius),
-          opacity: Number.isFinite(opacityRaw) ? Math.max(0, Math.min(1, opacityRaw)) : 1,
-          prov: "measured"
-        };
-        boxC.push({ node: box2, prio: role2 === "block" ? 3 : 1 });
-        if (role2 === "button") buttonBoxes.push(box2);
-      }
-      if (anyBorder && !uniform) {
-        const edges = [
-          { ...r, h: sides[0].w },
-          { x: round(r.x + r.w - sides[1].w), y: r.y, w: sides[1].w, h: r.h },
-          { x: r.x, y: round(r.y + r.h - sides[2].w), w: r.w, h: sides[2].w },
-          { ...r, w: sides[3].w }
-        ];
-        edges.forEach((er, i) => {
-          const side = sides[i];
-          if (side.w > 0 && side.c) {
-            boxC.push({ node: { kind: "box", ...er, name: `${tag} / border-${["top", "right", "bottom", "left"][i]}`, role: "block", fill: side.c, border: null, radius: [0, 0, 0, 0], opacity: 1, prov: "measured" }, prio: 3 });
-          }
-        });
-      }
-      if (role2 === "control" && control && tag !== "button") {
-        const label2 = cleanText(str(control.selected) || str(control.value) || str(control.placeholder), 200);
-        if (label2 && !["checkbox", "radio", "range", "color", "file"].includes(ctype)) {
-          const size = px(s.fontSize) || 16;
-          textC.push({
-            prio: 1,
-            node: {
-              kind: "text",
-              x: round(r.x + px(s.paddingLeft) + px(s.borderLeftWidth)),
-              y: round(r.y + px(s.paddingTop) + px(s.borderTopWidth)),
-              w: Math.max(1, round(r.w - px(s.paddingLeft) - px(s.paddingRight))),
-              h: Math.max(1, round(r.h - px(s.paddingTop) - px(s.paddingBottom))),
-              name: `control label (${ctype || tag})`,
-              text: protectEdgeSpaces(label2),
-              graphemes: graphemeCount(label2),
-              fontStack: parseFontStack(str(s.fontFamily)),
-              generic: genericOf(parseFontStack(str(s.fontFamily))),
-              weight: weightOf(s.fontWeight),
-              italic: false,
-              size,
-              lineHeight: Math.max(1, round(Math.min(r.h, size * 1.5))),
-              color: parseColor(s.color) ?? { hex: "#000000", alpha: 1 },
-              decoration: "none",
-              button: -1,
-              prov: "inferred"
-            }
+      if (fill || anyBorder || role2 !== "block") {
+        const opacityRaw = Number(str(s.opacity, 10) || "1");
+        if (fill !== null || anyBorder && uniform || role2 !== "block") {
+          const box2 = withClip({
+            kind: "box",
+            ...r,
+            name: `${tag}${role2 === "button" ? " / button" : ""}`,
+            role: role2,
+            fill,
+            border: anyBorder && uniform ? { weight: sides[0].w, color: sides[0].c } : null,
+            radius: parseRadius(s.borderRadius, r.w, r.h),
+            opacity: Number.isFinite(opacityRaw) ? Math.max(0, Math.min(1, opacityRaw)) : 1,
+            prov: "measured"
+          });
+          boxC.push({ node: box2, prio: role2 === "block" ? 3 : 1 });
+          if (role2 === "button") buttonBoxes.push(box2);
+        }
+        if (anyBorder && !uniform) {
+          const edges = [
+            { ...r, h: sides[0].w },
+            { x: round(r.x + r.w - sides[1].w), y: r.y, w: sides[1].w, h: r.h },
+            { x: r.x, y: round(r.y + r.h - sides[2].w), w: r.w, h: sides[2].w },
+            { ...r, w: sides[3].w }
+          ];
+          edges.forEach((er, i) => {
+            const side = sides[i];
+            if (side.w > 0 && side.c) boxC.push({ node: withClip({ kind: "box", ...er, name: `${tag} / border-${["top", "right", "bottom", "left"][i]}`, role: "block", fill: side.c, border: null, radius: [0, 0, 0, 0], opacity: 1, prov: "measured" }), prio: 3 });
           });
         }
       }
+      if (role2 !== "control" || !control) continue;
+      if (ctype === "radio" && control.checked === true) {
+        const d = round(Math.min(r.w, r.h) * 0.4);
+        boxC.push({ prio: 1, node: withClip({ kind: "shape", x: round(r.x + (r.w - d) / 2), y: round(r.y + (r.h - d) / 2), w: d, h: d, name: "radio checked center (static approximation)", shape: "ellipse", fill: { hex: "#ffffff", alpha: 1 }, stroke: null, prov: "inferred" }) });
+      }
+      if (tag === "select" && ctype === "select-one") {
+        boxC.push({ prio: 1, node: withClip({ kind: "shape", x: round(r.x + r.w - 20), y: round(r.y + r.h / 2 - 3), w: 10, h: 6, name: "select caret (static approximation)", shape: "caret", fill: parseColor(s.color) ?? { hex: "#000000", alpha: 1 }, stroke: null, prov: "inferred" }) });
+      }
+      if (tag === "textarea") {
+        boxC.push({ prio: 1, node: withClip({ kind: "shape", x: round(r.x + r.w - 12), y: round(r.y + r.h - 12), w: 10, h: 10, name: "textarea resize grip (static approximation)", shape: "grip", fill: null, stroke: { weight: 0.6, color: { hex: "#898ea4", alpha: 1 } }, prov: "inferred" }) });
+      }
+      const isMulti = ctype === "select-multiple" || (facts?.multiple.has(str(e2.id, 20)) ?? false);
+      const label2 = isMulti ? "" : cleanText(str(control.selected) || str(control.value) || str(control.placeholder), 200);
+      if (label2 && !["checkbox", "radio", "range", "color", "file"].includes(ctype)) {
+        textC.push({
+          prio: 1,
+          node: inferredText(
+            {
+              x: round(r.x + px(s.paddingLeft) + px(s.borderLeftWidth)),
+              y: round(r.y + px(s.paddingTop) + px(s.borderTopWidth)),
+              w: Math.max(1, round(r.w - px(s.paddingLeft) - px(s.paddingRight))),
+              h: Math.max(1, round(r.h - px(s.paddingTop) - px(s.paddingBottom)))
+            },
+            label2,
+            s,
+            `control label (${ctype || tag})`
+          )
+        });
+      }
     }
+    if (missingOptionLabels) warn(warnings, `${missingOptionLabels} option row(s) have no label in the saved rawHtml; left empty`);
     for (const im of images) {
       const r = rectOf(im);
       if (!r || !inPage(r)) continue;
+      src = im;
       const s = isObj(im.style) ? im.style : {};
       const asset = bySource.get(str(im.src, LIMITS.maxUrlChars)) ?? null;
       imgC.push({
         prio: 2,
         asset,
-        node: { kind: "image", ...r, name: `image / ${cleanText(str(im.alt, 80), 80) || "untitled"}`, assetId: null, fit: str(s.objectFit) === "contain" ? "fit" : "fill", radius: parseRadius(s.borderRadius), prov: "measured" }
+        node: withClip({ kind: "image", ...r, name: `image / ${cleanText(str(im.alt, 80), 80) || "untitled"}`, assetId: null, fit: str(s.objectFit) === "contain" ? "fit" : "fill", radius: parseRadius(s.borderRadius, r.w, r.h), prov: "measured" })
       });
     }
+    const svgRejects = /* @__PURE__ */ new Map();
+    for (const sv of svgs) {
+      const r = rectOf(sv);
+      if (!r || !inPage(r)) continue;
+      src = null;
+      const res = sanitizeSvg(str(sv.html, 4e4), r.w, r.h, parseColor(sv.color)?.hex ?? null);
+      if (res.ok) imgC.push({ prio: 2, node: withClip({ kind: "svg", ...r, name: "svg / sanitized vector", markup: res.markup, prov: "measured" }) });
+      else svgRejects.set(res.reason, (svgRejects.get(res.reason) ?? 0) + 1);
+    }
+    for (const [reason, n] of svgRejects) warn(warnings, `${n} inline SVG(s) omitted: ${reason}`);
     let shortened = 0;
     for (const t of texts) {
       const r = rectOf(t);
       if (!r || !inPage(r)) continue;
+      src = t;
       const raw = str(t.text, LIMITS.hifiMaxTextChars * 2);
       const text = raw.replace(/[\u0000-\u001f\u007f]/g, " ");
       if (!text.trim()) continue;
@@ -6686,7 +7223,7 @@ function convertCapture(input) {
       textC.push({
         prio: 0,
         buttonOf: buttonBoxes.find((b) => cx >= b.x && cx <= b.x + b.w && cy >= b.y && cy <= b.y + b.h),
-        node: {
+        node: withClip({
           kind: "text",
           ...r,
           name: `${str(t.tag, 20) || "text"} / ${cleanText(bounded, 40)}`,
@@ -6702,9 +7239,33 @@ function convertCapture(input) {
           decoration: deco.includes("underline") ? "underline" : deco.includes("line-through") ? "strike" : "none",
           button: -1,
           prov: "measured"
-        }
+        })
       });
     }
+    const listItems = elements.filter((e2) => str(e2.tag) === "li");
+    if (listItems.length && !facts) warn(warnings, `${listItems.length} list item(s): no rawHtml in the capture, so list markers were not reconstructed`);
+    let markers = 0;
+    let unanchored = 0;
+    for (const e2 of facts ? listItems : []) {
+      const r = rectOf(e2);
+      const s = isObj(e2.style) ? e2.style : {};
+      src = e2;
+      const fact = facts.li.get(str(e2.id, 20));
+      if (!r || !inPage(r) || !fact || fact.inNav || s.display !== "list-item") continue;
+      const first2 = texts.find((t) => t.parent === e2.id);
+      const fr = first2 ? rectOf(first2) : null;
+      if (!first2 || !fr) {
+        unanchored++;
+        continue;
+      }
+      const fs = isObj(first2.style) ? first2.style : s;
+      const size = px(fs.fontSize) || 16;
+      const w = round(size * 2.5);
+      textC.push({ prio: 1, node: inferredText({ x: round(r.x - size * 0.4 - w), y: fr.y, w, h: fr.h }, fact.marker, { ...fs, fontWeight: "400" }, `list marker ${fact.marker}`, "right") });
+      markers++;
+    }
+    if (markers) notes.push(`${markers} list marker(s) reconstructed from rawHtml list structure (glyph and offset inferred; list-style is not captured)`);
+    if (unanchored) warn(warnings, `${unanchored} list item(s) had no text run to anchor a marker; no marker drawn`);
     const allC = [...boxC, ...imgC, ...textC];
     const budget = Math.max(0, Math.min(LIMITS.hifiMaxNodesPerPage, LIMITS.hifiMaxNodesTotal - totalNodes));
     const keep = new Set(allC.length <= budget ? allC : allC.map((c, i) => ({ c, i })).sort((a, b) => a.c.prio - b.c.prio || a.i - b.i).slice(0, budget).map((x) => x.c));
@@ -6725,7 +7286,6 @@ function convertCapture(input) {
     const droppedTexts = textC.filter((c) => !keep.has(c)).length;
     if (missingAssets) warn(warnings, `${missingAssets} image(s) have no supplied asset bytes; shown as labelled placeholders`);
     if (shortened) warn(warnings, `${shortened} text run(s) longer than ${LIMITS.hifiMaxTextChars} characters were shortened`);
-    if (svgCount) warn(warnings, `${svgCount} inline SVG element(s) omitted: SVG markup is not imported`);
     if (unparsedColors) warn(warnings, `${unparsedColors} color value(s) were not rgb()/rgba() and were not applied`);
     if (dropped) {
       truncated = true;
@@ -6733,16 +7293,13 @@ function convertCapture(input) {
     }
     totalNodes += nodes.length;
     let referenceAssetId = null;
-    const refId = str(rp.referenceAssetId, 64);
-    if (refId) {
-      const ref = byOperatorId.get(refId);
-      if (ref && ref.kind === "reference") referenceAssetId = assetIdFor(ref);
-      else warn(warnings, `Reference screenshot "${refId}" not available (missing or rejected asset; see document warnings)`);
-    } else {
-      const ref = input.assets.find((a) => a.kind === "reference" && a.pageUrl && canonicalizeUrl(a.pageUrl) === canonical);
-      if (ref) referenceAssetId = assetIdFor(ref);
-    }
-    if (!referenceAssetId && !refId) warn(warnings, "No reference screenshot supplied for this page");
+    if (refAsset && refAsset.kind === "reference") referenceAssetId = assetIdFor(refAsset);
+    else if (refId && !refRejected) warn(warnings, `Reference screenshot "${refId}" not available (missing or rejected asset; see document warnings)`);
+    else if (!refId && !refRejected) warn(warnings, "No reference screenshot supplied for this page");
+    regionsByPage.push({
+      nav: elements.map(rectWithTag).find((e2) => e2?.tag === "nav")?.r ?? null,
+      footer: elements.map(rectWithTag).find((e2) => e2?.tag === "footer")?.r ?? null
+    });
     pages.push({
       id: `p${pages.length}`,
       url: canonical,
@@ -6754,10 +7311,16 @@ function convertCapture(input) {
       referenceAssetId,
       branding: brandingOf(rp.branding),
       nodes,
-      warnings
+      warnings,
+      notes: notes.slice(0, LIMITS.hifiMaxWarnings).map((n) => cleanText(n, LIMITS.maxNoteChars)),
+      ...clips.length ? { clips } : {},
+      ...wm || gf.fix ? { normalization: { mode: "centered-dpr1", measuredWidth, measuredHeight, offsetX: wm ? round(-wm.offset) : 0, gutterPx: gf.fix ? gf.fix.k : 0, gutters: gf.fix ? containers.length : 0 } } : {}
     });
   }
   if (pages.length === 0 || !first) throw new CaptureError("capture: no usable HTML pages");
+  const parents = parentByPath(pages.map((p) => p.path));
+  pages.forEach((p, i) => p.parentId = parents[i] ?? null);
+  const components = extractComponents(pages, regionsByPage);
   const doc = {
     schema: SCHEMA_ID,
     schemaVersion: HIFI_SCHEMA_VERSION,
@@ -6768,18 +7331,96 @@ function convertCapture(input) {
       layout: "measured-dom",
       notes: [
         "Positions, sizes, colors, borders, radii and text runs are measured by the capture (absolute desktop snapshot, not responsive layout).",
+        "Width mapping and scrollbar-gutter removal are INFERRED, only with --normalize-reference centered-dpr1; such pages keep a normalization record (measured size, x offset, gutters).",
         "Fonts are mapped to fonts available in Figma at import; substitutions are reported.",
-        "Control label text is inferred from control values; it is marked inferred."
+        "Control labels, option labels, list markers and control parts are inferred and marked inferred."
       ]
     },
     assets: used,
     pages,
-    warnings: docWarnings
+    warnings: docWarnings,
+    ...components.length ? { components } : {},
+    ...input.fontMap && input.fontMap.length ? { fontMap: input.fontMap } : {}
   };
   const v = validateHifiDoc(doc);
   if (!v.ok) throw new CaptureError(`Internal error: converted document failed validation:
 ${v.errors.join("\n")}`);
   return v.doc;
+}
+function rectWithTag(e2) {
+  const r = rectOf(e2);
+  return r ? { tag: str(e2.tag, 20).toLowerCase(), r } : null;
+}
+function extractComponents(pages, regions) {
+  const components = [];
+  for (const kind of ["nav", "footer"]) {
+    const groups = /* @__PURE__ */ new Map();
+    pages.forEach((p, pi) => {
+      const region = regions[pi]?.[kind];
+      if (!region) return;
+      const idx = [];
+      p.nodes.forEach((n, i) => {
+        if (n.clip !== void 0 && n.clip >= 0) return;
+        if (n.x >= region.x - 0.5 && n.y >= region.y - 0.5 && n.x + n.w <= region.x + region.w + 0.5 && n.y + n.h <= region.y + region.h + 0.5) idx.push(i);
+      });
+      if (!idx.length) return;
+      const sig = JSON.stringify([round(region.w), round(region.h), ...idx.map((i) => signatureOf(p.nodes[i], region))]);
+      const list = groups.get(sig) ?? [];
+      list.push({ page: pi, region, idx });
+      groups.set(sig, list);
+    });
+    for (const members2 of groups.values()) {
+      if (members2.length < 2 || components.length >= 20) continue;
+      const id = `c${components.length}`;
+      const base = members2[0];
+      const baseNodes = base.idx.map((i) => pages[base.page].nodes[i]);
+      const local = baseNodes.map((n) => relativize(n, base.region));
+      local.forEach((n, j) => {
+        if (n.kind === "text" && n.button >= 0) n.button = base.idx.indexOf(n.button);
+      });
+      components.push({ id, kind, name: `Shared ${kind} (${members2.length} pages)`, w: round(base.region.w), h: round(base.region.h), nodes: local });
+      for (const mbr of members2) {
+        const page = pages[mbr.page];
+        const overrides = [];
+        mbr.idx.forEach((i, j) => {
+          const n = page.nodes[i];
+          const b = baseNodes[j];
+          if (n.kind === "box" && b.kind === "box") {
+            if (JSON.stringify(n.fill) !== JSON.stringify(b.fill)) overrides.push({ index: j, fill: n.fill });
+            if (JSON.stringify(n.border) !== JSON.stringify(b.border) && n.border) overrides.push({ index: j, color: n.border.color });
+          }
+          if (n.kind === "text" && b.kind === "text" && JSON.stringify(n.color) !== JSON.stringify(b.color)) overrides.push({ index: j, color: n.color });
+        });
+        const removed = new Set(mbr.idx);
+        const remap = /* @__PURE__ */ new Map();
+        const kept = [];
+        page.nodes.forEach((n, i) => {
+          if (removed.has(i)) return;
+          remap.set(i, kept.length);
+          kept.push(n);
+        });
+        for (const n of kept) if (n.kind === "text" && n.button >= 0) n.button = remap.get(n.button) ?? -1;
+        page.nodes = kept;
+        page.instances = [...page.instances ?? [], { component: id, x: round(mbr.region.x), y: round(mbr.region.y), overrides }];
+      }
+    }
+  }
+  return components;
+}
+function signatureOf(n, region) {
+  const g = [Math.round((n.x - region.x) * 2) / 2, Math.round((n.y - region.y) * 2) / 2, Math.round(n.w * 2) / 2, Math.round(n.h * 2) / 2];
+  if (n.kind === "text") return ["t", ...g, n.text, n.size, n.weight, n.italic];
+  if (n.kind === "box") return ["b", ...g, n.role, n.radius, n.border ? n.border.weight : 0];
+  if (n.kind === "image") return ["i", ...g, n.assetId];
+  if (n.kind === "svg") return ["s", ...g, n.markup.length];
+  return ["p", ...g, n.shape];
+}
+function relativize(n, region) {
+  const copy = JSON.parse(JSON.stringify(n));
+  copy.x = round(n.x - region.x);
+  copy.y = round(n.y - region.y);
+  delete copy.clip;
+  return copy;
 }
 var CaptureError, isObj, arr, fin, str, px, round, segmenter, NON_HTML_EXT;
 var init_convert = __esm({
@@ -6789,6 +7430,8 @@ var init_convert = __esm({
     init_text();
     init_fonts();
     init_hifiSchema();
+    init_svgSanitize();
+    init_corrections();
     init_schema();
     init_urlGuard();
     init_canonicalize();
@@ -6965,6 +7608,8 @@ function loadedFromBytes(operatorId, kind, bytes, sourceUrl) {
   return { operatorId, kind, mime: info.mime, width: info.width, height: info.height, sha256: createHash("sha256").update(bytes).digest("hex"), sourceUrl, bytes };
 }
 function syntheticCapture() {
+  const homeShared = navAndFooter("rgb(13, 71, 161)", 600);
+  const aboutShared = navAndFooter("rgb(33, 33, 33)", 400);
   return {
     schema: "website-to-figma/capture",
     schemaVersion: 1,
@@ -6975,32 +7620,43 @@ function syntheticCapture() {
         contentType: "text/html; charset=utf-8",
         referenceAssetId: "ref-home",
         branding: { colors: { primary: "#0d47a1", background: "#fff", bogus: "red" }, fonts: [{ family: "Avenir Next" }] },
+        html: '<html><body><ul><li data-w2f-id="li1">Synthetic list item</li></ul><ol start="3"><li data-w2f-id="li2">Third</li></ol></body></html>',
         measured: {
           viewport: { width: 800, height: 600 },
           title: "Synthetic Home",
           elements: [
             { tag: "body", x: 0, y: 0, w: 800, h: 600, style: box({ backgroundColor: "rgb(255, 255, 255)" }) },
-            { tag: "header", x: 0, y: 0, w: 800, h: 120, style: box({ backgroundColor: "rgb(245, 247, 255)", borderBottomWidth: "1px", borderBottomColor: "rgb(137, 142, 164)" }) },
-            { tag: "a", x: 40, y: 20, w: 80, h: 36, style: box({ ...border("1px", "rgb(13, 71, 161)"), borderRadius: "5px" }) },
+            { tag: "header", x: 0, y: 60, w: 800, h: 60, style: box({ backgroundColor: "rgb(245, 247, 255)", borderBottomWidth: "1px", borderBottomColor: "rgb(137, 142, 164)" }) },
+            ...homeShared.elements,
             { tag: "button", x: 40, y: 160, w: 140, h: 44, style: box({ backgroundColor: "rgb(13, 71, 161)", ...border("2px", "rgb(10, 50, 120)"), borderRadius: "5px 5px 8px 8px" }), control: { type: "submit" } },
             { tag: "input", x: 200, y: 160, w: 220, h: 44, style: box({ backgroundColor: "rgb(255, 255, 255)", ...border("1px", "rgb(137, 142, 164)"), borderRadius: "5px", paddingLeft: "10px", paddingTop: "10px", paddingRight: "10px", paddingBottom: "10px", fontSize: "16px", fontFamily: sans, color: "rgb(88, 88, 88)" }), control: { type: "text", value: "", placeholder: "Your email" } },
-            { tag: "blockquote", x: 40, y: 230, w: 500, h: 60, style: box({ borderLeftWidth: "4px", borderLeftColor: "rgb(13, 71, 161)" }) }
+            { tag: "blockquote", x: 40, y: 230, w: 500, h: 60, style: box({ borderLeftWidth: "4px", borderLeftColor: "rgb(13, 71, 161)" }) },
+            { tag: "li", id: "li1", x: 60, y: 360, w: 300, h: 24, style: box({ display: "list-item" }) },
+            { tag: "li", id: "li2", x: 60, y: 390, w: 300, h: 24, style: box({ display: "list-item" }) },
+            { tag: "input", id: "radio1", x: 440, y: 362, w: 20, h: 20, style: box({ backgroundColor: "rgb(13, 71, 161)", borderRadius: "100%" }), control: { type: "radio", checked: true } },
+            { tag: "pre", id: "pre1", x: 40, y: 440, w: 300, h: 50, style: box({ backgroundColor: "rgb(245, 247, 255)", paddingBottom: "10px" }) }
           ],
           texts: [
-            { text: "Home", x: 58, y: 28, w: 44, h: 20, tag: "a", style: st({ color: "rgb(13, 71, 161)" }) },
+            ...homeShared.texts,
             { text: "Synthetic Fixture", x: 40, y: 64, w: 360, h: 48, tag: "h1", style: st({ fontSize: "40px", fontWeight: "700" }) },
             { text: "Send", x: 88, y: 172, w: 44, h: 20, tag: "button", style: st({ color: "rgb(255, 255, 255)", fontWeight: "700" }) },
             { text: "A sentence with an ", x: 40, y: 320, w: 160, h: 26, tag: "p", style: st({}) },
             { text: "inline link", x: 200, y: 320, w: 80, h: 26, tag: "a", style: st({ color: "rgb(13, 71, 161)", textDecorationLine: "underline" }) },
             { text: " and code ", x: 280, y: 320, w: 76, h: 26, tag: "p", style: st({ fontStyle: "italic" }) },
             { text: "x = 1", x: 356, y: 320, w: 50, h: 26, tag: "code", code: true, style: st({ fontFamily: "Consolas, Menlo, monospace", color: "rgb(216, 27, 96)" }) },
-            { text: "Hi \u{1F44B}\u{1F3FD} family \u{1F468}\u200D\u{1F469}\u200D\u{1F467}", x: 40, y: 250, w: 200, h: 26, tag: "blockquote", style: st({}) }
+            { text: "Hi \u{1F44B}\u{1F3FD} family \u{1F468}\u200D\u{1F469}\u200D\u{1F467}", x: 40, y: 250, w: 200, h: 26, tag: "blockquote", style: st({}) },
+            { text: "Synthetic list item", x: 60, y: 362, w: 150, h: 22, tag: "li", parent: "li1", style: st({}) },
+            { text: "Third", x: 60, y: 392, w: 40, h: 22, tag: "li", parent: "li2", style: st({}) },
+            { text: "const aVeryLongSyntheticLine = true;", x: 50, y: 450, w: 420, h: 20, tag: "code", code: true, parent: "pre1", style: st({ fontFamily: "Consolas, monospace" }) }
           ],
           images: [
             { src: "https://example.com/img/photo.png", alt: "Synthetic photo", x: 560, y: 160, w: 200, h: 120, style: { borderRadius: "5px", objectFit: "cover" } },
             { src: "https://example.com/img/missing.png", alt: "Missing image", x: 560, y: 300, w: 200, h: 100, style: { borderRadius: "0px" } }
           ],
-          svgs: [{ x: 700, y: 20, w: 24, h: 24, html: "<svg></svg>" }]
+          svgs: [
+            { x: 700, y: 130, w: 16, h: 16, color: "rgb(33, 33, 33)", html: '<svg class="icon" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" style="fill: currentColor"><path d="M1 1 L15 1 L8 15 Z" fill="currentColor"></path></svg>' },
+            { x: 730, y: 130, w: 16, h: 16, color: "rgb(33, 33, 33)", html: '<svg viewBox="0 0 16 16"><script>alert(1)</script></svg>' }
+          ]
         }
       },
       {
@@ -7013,8 +7669,8 @@ function syntheticCapture() {
         measured: {
           viewport: { width: 800, height: 400 },
           title: "Synthetic About",
-          elements: [{ tag: "body", x: 0, y: 0, w: 800, h: 400, style: box({ backgroundColor: "rgb(255, 255, 255)" }) }],
-          texts: [{ text: "About this synthetic fixture", x: 40, y: 40, w: 300, h: 30, tag: "h2", style: st({ fontSize: "26px", fontWeight: "700" }) }],
+          elements: [{ tag: "body", x: 0, y: 0, w: 800, h: 400, style: box({ backgroundColor: "rgb(255, 255, 255)" }) }, ...aboutShared.elements],
+          texts: [...aboutShared.texts, { text: "About this synthetic fixture", x: 40, y: 140, w: 300, h: 30, tag: "h2", style: st({ fontSize: "26px", fontWeight: "700" }) }],
           images: []
         }
       }
@@ -7024,14 +7680,14 @@ function syntheticCapture() {
 function syntheticAssets() {
   return [
     loadedFromBytes("photo", "image", syntheticPng(120, 72, [13, 71, 161], [245, 247, 255]), "https://example.com/img/photo.png"),
-    loadedFromBytes("ref-home", "reference", syntheticPng(160, 120, [255, 255, 255], [230, 230, 230]), null)
+    loadedFromBytes("ref-home", "reference", syntheticPng(800, 600, [255, 255, 255], [230, 230, 230]), null)
   ];
 }
 function buildHifiFixture() {
   const doc = convertCapture({ capture: syntheticCapture(), assets: syntheticAssets(), assetWarnings: [] });
   return { ...doc, source: { mode: "fixture", label: HIFI_FIXTURE_LABEL } };
 }
-var HIFI_FIXTURE_LABEL, CRC, sans, st, box, border;
+var HIFI_FIXTURE_LABEL, CRC, sans, st, box, border, navAndFooter;
 var init_hifiSynthetic = __esm({
   "src/fixtures/hifiSynthetic.ts"() {
     "use strict";
@@ -7051,6 +7707,17 @@ var init_hifiSynthetic = __esm({
     st = (o) => ({ fontFamily: sans, fontSize: "16px", fontWeight: "400", fontStyle: "normal", color: "rgb(33, 33, 33)", textDecorationLine: "none", ...o });
     box = (o) => ({ backgroundColor: "rgba(0, 0, 0, 0)", borderTopWidth: "0px", borderRightWidth: "0px", borderBottomWidth: "0px", borderLeftWidth: "0px", borderTopColor: "rgb(0, 0, 0)", borderRightColor: "rgb(0, 0, 0)", borderBottomColor: "rgb(0, 0, 0)", borderLeftColor: "rgb(0, 0, 0)", borderRadius: "0px", opacity: "1", display: "block", visibility: "visible", ...o });
     border = (w, c) => ({ borderTopWidth: w, borderRightWidth: w, borderBottomWidth: w, borderLeftWidth: w, borderTopColor: c, borderRightColor: c, borderBottomColor: c, borderLeftColor: c });
+    navAndFooter = (activeColor, h) => ({
+      elements: [
+        { tag: "nav", id: "nav1", header: true, x: 0, y: 0, w: 800, h: 60, style: box({}) },
+        { tag: "a", id: "nav-a", header: true, x: 40, y: 12, w: 80, h: 36, style: box({ ...border("1px", "rgb(13, 71, 161)"), borderRadius: "5px" }) },
+        { tag: "footer", id: "foot1", footer: true, x: 0, y: h - 60, w: 800, h: 60, style: box({ backgroundColor: "rgb(245, 247, 255)" }) }
+      ],
+      texts: [
+        { text: "Home", x: 58, y: 20, w: 44, h: 20, tag: "a", parent: "nav-a", header: true, style: st({ color: activeColor }) },
+        { text: "Synthetic footer", x: 40, y: h - 40, w: 140, h: 20, tag: "p", parent: "foot1", footer: true, style: st({ color: "rgb(88, 88, 88)" }) }
+      ]
+    });
   }
 });
 
@@ -7121,6 +7788,7 @@ function loadAssetManifest(manifestPath) {
   const root = realpathSync2(dirname2(resolve2(manifestPath)));
   const assets = [];
   const warnings = [];
+  const rejectedReferences = [];
   let total = 0;
   let pixels = 0;
   const ids = /* @__PURE__ */ new Set();
@@ -7186,7 +7854,11 @@ function loadAssetManifest(manifestPath) {
       continue;
     }
     if (info.width < 1 || info.height < 1 || info.width > LIMITS.hifiMaxImageDim || info.height > LIMITS.hifiMaxImageDim) {
-      reject(`${info.width}x${info.height}px exceeds Figma's ${LIMITS.hifiMaxImageDim}px image limit`);
+      const why = `${info.width}x${info.height}px exceeds Figma's ${LIMITS.hifiMaxImageDim}px image limit (tiling would need an approved PNG codec dependency)`;
+      reject(why);
+      if (a.kind === "reference" && info.width >= 1 && info.height >= 1 && info.width <= 1e5 && info.height <= 1e6) {
+        rejectedReferences.push({ operatorId: id, pageUrl, width: info.width, height: info.height, reason: why });
+      }
       continue;
     }
     total += bytes.length;
@@ -7197,7 +7869,7 @@ function loadAssetManifest(manifestPath) {
     pixels += info.width * info.height;
     assets.push({ operatorId: id, kind: a.kind, mime: info.mime, width: info.width, height: info.height, sha256: actual, sourceUrl, pageUrl, bytes });
   }
-  return { assets, warnings };
+  return { assets, warnings, rejectedReferences };
 }
 var MAX_MANIFEST_BYTES;
 var init_assets = __esm({
@@ -7240,6 +7912,7 @@ function captureFromScrapeResponses(responses, label) {
     const page = { url: url2, measured };
     if (typeof meta.contentType === "string") page.contentType = meta.contentType;
     if (isObj2(data.branding)) page.branding = data.branding;
+    if (typeof data.rawHtml === "string" && data.rawHtml.length <= LIMITS.maxHtmlChars) page.html = data.rawHtml;
     pages.push(page);
     if (typeof data.screenshot === "string") screenshotHints.push({ pageUrl: url2, screenshotUrl: data.screenshot.slice(0, LIMITS.maxUrlChars) });
   }
@@ -37393,20 +38066,22 @@ function parseFlags(args) {
   const flags = /* @__PURE__ */ new Map();
   const excludes = [];
   const scrapes = [];
+  const fontMaps = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--yes" || a === "--help" || a === "-h" || a === "--no-map" || a === "--confirm-existing-credits" || a === "--confirm-no-topup") {
       flags.set(a.replace(/^-+/, ""), true);
-    } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label") {
+    } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label" || a === "--font-map" || a === "--normalize-reference") {
       const v = args[++i];
       if (v === void 0) throw new UsageError(`${a} needs a value`);
       if (a === "--exclude") excludes.push(v);
       else if (a === "--scrape") scrapes.push(v);
+      else if (a === "--font-map") fontMaps.push(v);
       else flags.set(a.slice(2), v);
     } else if (a.startsWith("-")) throw new UsageError(`Unknown option ${a}`);
     else positional.push(a);
   }
-  return { positional, flags, excludes, scrapes };
+  return { positional, flags, excludes, scrapes, fontMaps };
 }
 function intFlag(v, name2, fallback) {
   if (v === void 0) return fallback;
@@ -37451,7 +38126,7 @@ function summary(doc, path) {
 }
 async function main2(argv) {
   const [cmd, ...rest] = argv;
-  const { positional, flags, excludes: rawExcludes, scrapes } = parseFlags(rest);
+  const { positional, flags, excludes: rawExcludes, scrapes, fontMaps } = parseFlags(rest);
   if (!cmd || cmd === "--help" || cmd === "-h" || flags.has("help")) {
     console.log(USAGE);
     return 0;
@@ -37483,8 +38158,16 @@ async function main2(argv) {
     const out = flags.get("out");
     if (typeof capturePath !== "string" || typeof out !== "string") throw new UsageError("hifi needs --capture FILE and --out FILE");
     const capture = readBoundedJson(capturePath, LIMITS.hifiMaxJsonBytes, "capture");
-    const loaded = typeof manifestPath === "string" ? loadAssetManifest(manifestPath) : { assets: [], warnings: [] };
-    const doc = convertCapture({ capture, assets: loaded.assets, assetWarnings: loaded.warnings });
+    const loaded = typeof manifestPath === "string" ? loadAssetManifest(manifestPath) : { assets: [], warnings: [], rejectedReferences: [] };
+    const fontMap = fontMaps.map((f) => {
+      const m = /^([^=]{1,100})=([^=]{1,100})$/.exec(f);
+      if (!m) throw new UsageError(`--font-map must be MATCH=Figma Family (got ${JSON.stringify(f)})`);
+      return { match: m[1].trim(), use: m[2].trim() };
+    });
+    if (fontMap.length > 16) throw new UsageError("at most 16 --font-map entries");
+    const norm = flags.get("normalize-reference");
+    if (norm !== void 0 && norm !== "centered-dpr1") throw new UsageError('--normalize-reference accepts only "centered-dpr1"');
+    const doc = convertCapture({ capture, assets: loaded.assets, assetWarnings: loaded.warnings, rejectedReferences: loaded.rejectedReferences, fontMap, normalizeReference: norm === "centered-dpr1" ? "centered-dpr1" : void 0 });
     console.log(hifiSummary(doc, writeHifi(doc, out)));
     return 0;
   }
@@ -37609,7 +38292,8 @@ var init_cli = __esm({
       printed standard estimate (limit x 1) is not a worst case.
   website-to-figma fixture hifi [--out FILE]
       Write a SYNTHETIC hi-fi (schemaVersion 2) sample with generated images.
-  website-to-figma hifi --capture FILE [--assets MANIFEST] --out FILE
+  website-to-figma hifi --capture FILE [--assets MANIFEST] [--font-map MATCH=Family]...
+                        [--normalize-reference centered-dpr1] --out FILE
       Offline: convert an operator-supplied measured DOM capture plus local,
       SHA-256-pinned PNG/JPEG/GIF assets into a schemaVersion 2 import file.
       Never fetches anything.

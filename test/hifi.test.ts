@@ -62,7 +62,9 @@ describe("converter: measured capture -> schemaVersion 2", () => {
     expect(home.nodes[send.button]).toBe(button);
     // non-uniform border -> only measured edges, no empty base box
     expect(boxes.filter((b) => b.name.startsWith("blockquote"))).toEqual([expect.objectContaining({ name: "blockquote / border-left", x: 40, y: 230, w: 4, h: 60, fill: { hex: "#0d47a1", alpha: 1 } })]);
-    expect(boxes.find((b) => b.name === "a")).toMatchObject({ fill: null, border: { weight: 1 }, radius: [5, 5, 5, 5] });
+    // the nav link box is identical on both pages -> it lives in the shared nav component
+    const nav = doc.components!.find((c) => c.kind === "nav")!;
+    expect(nav.nodes.find((n) => n.kind === "box" && n.name === "a")).toMatchObject({ fill: null, border: { weight: 1 }, radius: [5, 5, 5, 5] });
   });
 
   it("keeps text runs, edge spaces as NBSP, graphemes, styles and provenance", () => {
@@ -73,8 +75,9 @@ describe("converter: measured capture -> schemaVersion 2", () => {
     expect(texts.find((t) => t.text === "x = 1")).toMatchObject({ generic: "mono", color: { hex: "#d81b60" } });
     expect(texts.find((t) => t.text === "inline link")).toMatchObject({ decoration: "underline" });
     expect(texts.find((t) => t.text === `${NBSP}and code${NBSP}`)).toMatchObject({ italic: true });
-    expect(texts.find((t) => t.text === "Your email")).toMatchObject({ prov: "inferred" });
-    expect(texts.filter((t) => t.prov === "inferred")).toHaveLength(1);
+    expect(texts.find((t) => t.text === "Your email")).toMatchObject({ prov: "inferred", fit: false });
+    expect(texts.filter((t) => t.prov === "inferred").map((t) => t.text)).toEqual(["Your email", "•", "3."]);
+    expect(texts.filter((t) => t.prov === "inferred").every((t) => t.fit === false)).toBe(true);
   });
 
   it("binds image fills to hash-pinned asset bytes and shows missing ones", () => {
@@ -84,8 +87,9 @@ describe("converter: measured capture -> schemaVersion 2", () => {
     expect(sha256Hex(new Uint8Array(Buffer.from(asset.dataBase64, "base64")))).toBe(asset.sha256);
     expect(missing!.assetId).toBeNull();
     expect(home.warnings.join("\n")).toMatch(/1 image\(s\) have no supplied asset bytes/);
-    expect(home.warnings.join("\n")).toMatch(/1 inline SVG element\(s\) omitted/);
-    expect(doc.assets.find((a) => a.id === home.referenceAssetId)).toMatchObject({ kind: "reference", width: 160, height: 120 });
+    expect(home.warnings.join("\n")).toMatch(/1 inline SVG\(s\) omitted: unsupported SVG element <script>/);
+    expect(home.nodes.filter((n) => n.kind === "svg")).toHaveLength(1);
+    expect(doc.assets.find((a) => a.id === home.referenceAssetId)).toMatchObject({ kind: "reference", width: 800, height: 600 });
   });
 
   it("skips non-HTML pages, keeps branding page-level and validated", () => {
@@ -218,7 +222,7 @@ describe("import validation: v2 strict, v1 unchanged", () => {
     expect(validateHifiDoc(good).ok).toBe(true);
     reject((d) => (d.pages[0].nodes[0].onclick = "x"), /unknown key "onclick"/);
     reject((d) => (d.pages[0].nodes[0].fill.hex = "red"), /expected #rrggbb/);
-    reject((d) => (d.pages[0].nodes[0].kind = "svg"), /expected box \| text \| image/);
+    reject((d) => (d.pages[0].nodes[0].kind = "bogus"), /expected box \| text \| image \| shape \| svg/);
     reject((d) => (d.pages[0].nodes.find((n: any) => n.kind === "text").button = 0), /must reference a button box/);
     reject((d) => (d.pages[0].nodes.find((n: any) => n.kind === "image").assetId = "a9"), /unknown asset/);
     reject((d) => (d.assets[0].dataBase64 += "AAAA"), /length does not match bytes/);
@@ -280,8 +284,10 @@ describe("hardening (review)", () => {
     for (let i = 0; i < LIMITS.hifiMaxNodesPerPage + 500; i++) m.elements.push({ tag: "div", x: 1, y: 1 + (i % 500), w: 2, h: 1, style: { backgroundColor: "rgb(1, 2, 3)" } });
     const out = convertCapture({ capture: cap, assets: syntheticAssets(), assetWarnings: [] });
     const p = out.pages[0]!;
-    expect(p.nodes.length).toBe(LIMITS.hifiMaxNodesPerPage);
-    expect(p.nodes.filter((n) => n.kind === "text").length).toBe(9);
+    expect(p.nodes.length).toBeLessThanOrEqual(LIMITS.hifiMaxNodesPerPage);
+    const measuredTexts = (cap.pages[0].measured.texts as { text: string }[]).map((t) => t.text.trim());
+    const kept = [...p.nodes, ...(out.components ?? []).flatMap((c) => c.nodes)].filter((n): n is TextNode => n.kind === "text").map((n) => n.text.replace(/\u00a0/g, " ").trim());
+    for (const t of measuredTexts) expect(kept).toContain(t);
     expect(p.nodes.some((n) => n.kind === "box" && n.role === "button")).toBe(true);
     expect(p.truncated).toBe(true);
     expect(p.warnings.join("\n")).toMatch(/node\(s\) omitted by the node cap \(0 of them text runs\)/);
@@ -305,7 +311,7 @@ describe("hardening (review)", () => {
       .filter((p: any) => p.url !== "https://example.com/feed.xml")
       .map((p: any, i: number) => ({
         name: `page${i}.json`,
-        json: { success: true, data: { metadata: { url: p.url, contentType: "text/html", statusCode: 200 }, branding: p.branding, screenshot: "https://storage.example.com/shot.png", actions: { javascriptReturns: [{ type: "object", value: { url: p.url, ...p.measured } }] }, rawHtml: "<html>…</html>" } },
+        json: { success: true, data: { metadata: { url: p.url, contentType: "text/html", statusCode: 200 }, branding: p.branding, screenshot: "https://storage.example.com/shot.png", actions: { javascriptReturns: [{ type: "object", value: { url: p.url, ...p.measured } }] }, ...(p.html ? { rawHtml: p.html } : {}) } },
       }));
     const { capture, screenshotHints } = captureFromScrapeResponses(responses, HIFI_LABEL_FOR_TEST);
     expect(screenshotHints).toHaveLength(2);

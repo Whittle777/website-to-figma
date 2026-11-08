@@ -45,10 +45,32 @@ export function styleName(weight: number, italic: boolean): string {
 }
 
 // `available` holds "Family|Style" keys (from figma.listAvailableFontsAsync).
-export function resolveFont(stack: string[], generic: GenericFamily, weight: number, italic: boolean, available: Set<string>): ResolvedFont | null {
+export interface FontMapRule {
+  match: string;
+  use: string;
+}
+
+// Operator mapping applies when `match` equals the run's first concrete family
+// (case-insensitive) or its generic class ("sans"/"sans-serif", "serif",
+// "mono"/"monospace"). Never inferred automatically.
+export function mappedFamily(stack: string[], generic: GenericFamily, rules: FontMapRule[] | undefined): FontMapRule | null {
+  if (!rules?.length) return null;
+  const first = stack.find((f) => !GENERIC_KEYWORDS.has(f.toLowerCase()))?.toLowerCase();
+  const aliases: Record<GenericFamily, string[]> = { sans: ["sans", "sans-serif"], serif: ["serif"], mono: ["mono", "monospace"] };
+  return rules.find((r) => (first && r.match.toLowerCase() === first) || aliases[generic].includes(r.match.toLowerCase())) ?? null;
+}
+
+export function resolveFont(stack: string[], generic: GenericFamily, weight: number, italic: boolean, available: Set<string>, rule?: FontMapRule | null): ResolvedFont | null {
   const wanted = styleName(weight, italic);
   const concrete = stack.filter((f) => !GENERIC_KEYWORDS.has(f.toLowerCase()));
   const first = concrete[0];
+  if (rule) {
+    for (const style of [wanted, "Regular"]) {
+      if (available.has(`${rule.use}|${style}`)) {
+        return { family: rule.use, style, fallback: rule.use !== first || style !== wanted, reason: `operator font map: ${rule.match} -> ${rule.use}${style !== wanted ? ` (style ${wanted} unavailable)` : ""}` };
+      }
+    }
+  }
   const candidates = [...concrete, ...GENERIC_FALLBACKS[generic]];
   for (const family of candidates) {
     if (available.has(`${family}|${wanted}`)) {

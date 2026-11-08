@@ -4,6 +4,14 @@
 //   cli/SHA256SUMS                  checksums of the two files above
 // Runs on Node >= 20.12 with no node_modules. Deterministic for a given lockfile.
 import { build } from "esbuild";
+
+// Escape raw C0 control characters (outside \t\n\r) that esbuild may emit
+// inside string literals, so the published bundle is plain printable ASCII.
+function escapeControls(file) {
+  const src = readFileSync(file, "utf8");
+  const out = src.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, (c) => "\\x" + c.charCodeAt(0).toString(16).padStart(2, "0"));
+  if (out !== src) writeFileSync(file, out);
+}
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -102,6 +110,7 @@ const PD = "plugin-dist";
 mkdirSync(`${PD}/samples`, { recursive: true });
 const plugin = await build({
   entryPoints: ["plugin/src/code.ts"],
+  charset: "ascii",
   outfile: `${PD}/code.js`,
   bundle: true,
   platform: "neutral",
@@ -111,6 +120,7 @@ const plugin = await build({
   metafile: true,
   logLevel: "warning",
 });
+escapeControls(`${PD}/code.js`);
 const pluginInputs = Object.keys(plugin.metafile.inputs).sort();
 const thirdParty = pluginInputs.filter((p) => p.includes("node_modules/"));
 const pcode = readFileSync(`${PD}/code.js`, "utf8");

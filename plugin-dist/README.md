@@ -10,6 +10,7 @@ Built by `npm run dist` from this commit's sources; not hand-edited. Bundled inp
 - `src/shared/layout.ts`
 - `src/shared/limits.ts`
 - `src/shared/schema.ts`
+- `src/shared/svgSanitize.ts`
 - `src/shared/text.ts`
 
 ## Install (Figma desktop app)

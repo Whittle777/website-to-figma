@@ -51,6 +51,29 @@ function node(type: string): FakeNode {
     setPluginData(k: string, v: string) {
       n.data[k] = v;
     },
+    async setVectorNetworkAsync(net: unknown) {
+      n.network = net;
+    },
+    findOne(pred: (x: FakeNode) => boolean): FakeNode | null {
+      const stack = [...n.children];
+      while (stack.length) {
+        const c = stack.shift()!;
+        if (pred(c)) return c;
+        stack.push(...c.children);
+      }
+      return null;
+    },
+    createInstance() {
+      const clone = (src: FakeNode): FakeNode => {
+        const c = node(src === n ? "INSTANCE" : src.type);
+        c.name = src.name;
+        c.fills = src.fills;
+        c.strokes = src.strokes;
+        for (const ch of src.children) (c.appendChild as (x: FakeNode) => void)(clone(ch));
+        return c;
+      };
+      return clone(n);
+    },
     remove() {
       n.removed = true;
     },
@@ -93,6 +116,19 @@ beforeEach(() => {
     },
     createImage: (b: Uint8Array) => ({ hash: `img-${b.length}` }),
     createSection: () => node("SECTION"),
+    createComponent: () => node("COMPONENT"),
+    createEllipse: () => node("ELLIPSE"),
+    createVector: () => node("VECTOR"),
+    createNodeFromSvg: (markup: string) => {
+      const f = node("FRAME");
+      f.markup = markup;
+      return f;
+    },
+    group: (nodes: FakeNode[]) => {
+      const g = node("GROUP");
+      g.children.push(...nodes);
+      return g;
+    },
     createFrame: () => node("FRAME"),
     createRectangle: () => node("RECTANGLE"),
     createText: () => {
@@ -130,7 +166,7 @@ describe("native hi-fi renderer (fake figma)", () => {
     tracked.length = 0;
     const sections: FakeNode[] = [];
     const stats = await buildHifiDoc(buildHifiFixture(), track as never, sections as never, 500);
-    expect(stats).toMatchObject({ pages: 2, images: 1, placeholders: 1 });
+    expect(stats).toMatchObject({ pages: 2, images: 1, placeholders: 1, components: 2, instances: 4, edges: 1, svgs: 1, shapes: 1 });
     expect(stats.fontFallbacks).toBeGreaterThan(0);
     expect(stats.warnings.join("\n")).toMatch(/Font fallback used/);
     const section = sections[0]!;
@@ -148,8 +184,24 @@ describe("native hi-fi renderer (fake figma)", () => {
     const img = pageFrame.children.find((c) => c.name === "image / Synthetic photo")!;
     expect(img.fills).toEqual([{ type: "IMAGE", imageHash: "img-276", scaleMode: "FILL" }]);
     expect(pageFrame.children.some((c) => c.name === "MISSING IMAGE / image / Missing image")).toBe(true);
+    // reference at its native pixel size (1:1), never rescaled to the page width
     const ref = section.children.find((c) => c.name === "Reference / /")!;
     expect(ref).toMatchObject({ x: 80 + 800 + 80, width: 800, height: 600 });
+    // overflow clip frame holds the clipped code run
+    const clip = pageFrame.children.find((c) => c.name === "Overflow clip / pre")!;
+    expect(clip).toMatchObject({ type: "FRAME", clipsContent: true, x: 40, y: 440, width: 300, height: 50 });
+    expect(clip.children.map((c) => c.characters)).toEqual(["const aVeryLongSyntheticLine = true;"]);
+    // inferred list markers are right-aligned and never width-fitted
+    const marker = pageFrame.children.find((c) => c.type === "TEXT" && c.characters === "3.")!;
+    expect(marker).toMatchObject({ textAlignHorizontal: "RIGHT" });
+    expect(JSON.parse(marker.data.w2f!)).toMatchObject({ prov: "inferred", fit: "not-fitted" });
+    // radio checked center is an inferred ellipse; svg came from canonical sanitized markup
+    expect(pageFrame.children.some((c) => c.type === "ELLIPSE" && c.name === "radio checked center (static approximation)")).toBe(true);
+    expect(pageFrame.children.find((c) => c.name === "svg / sanitized vector")!.markup).toMatch(/^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" viewBox="0 0 16 16" width="16" height="16"><path d="M1 1 L15 1 L8 15 Z" fill="#212121"\/><\/svg>$/);
+    // shared nav component + per-page instance overrides (inactive link color on /about)
+    const about = section.children.find((c) => c.name === "Page / /about (editable, measured)")!;
+    const navInstance = about.children.find((c) => c.type === "INSTANCE" && c.children.some((ch) => ch.name.startsWith("#1 ")))!;
+    expect((navInstance.findOne as (p: (c: FakeNode) => boolean) => FakeNode | null)((c) => c.name.startsWith("#1 "))!.fills).toEqual([{ type: "SOLID", color: { r: 33 / 255, g: 33 / 255, b: 33 / 255 }, opacity: 1 }]);
     const notes = section.children.find((c) => c.name === "Notes / /")!;
     expect(notes.characters).toMatch(/Warning: 1 image\(s\) have no supplied asset bytes/);
     expect(notes.characters).toMatch(/not responsive, not pixel-perfect/);
@@ -183,7 +235,7 @@ describe("native hi-fi renderer (fake figma)", () => {
     expect(stats.unfitted).toBe(baseline.unfitted + 1);
     expect(stats.warnings.join("\n")).toMatch(/Width fit skipped for \d+ text run\(s\)/);
     const notes = sections[0]!.children.find((c) => c.name === "Notes / /about")!;
-    expect(notes.characters).toMatch(/Width fit skipped for 1 text run\(s\)/);
+    expect(notes.characters).toMatch(/Width fit skipped for 1 measured text run\(s\)/);
     expect(notes.characters).toMatch(/Warning: No reference screenshot supplied for this page/);
   });
 

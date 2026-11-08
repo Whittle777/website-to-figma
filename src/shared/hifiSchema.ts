@@ -6,6 +6,7 @@ import { LIMITS } from "./limits";
 import { exceedsNesting, MAX_JSON_NESTING, SCHEMA_ID, utf8Length, validateSiteMap, type SiteMapDoc } from "./schema";
 import type { GenericFamily } from "./fonts";
 import type { ImageMime } from "./imageInfo";
+import { isCanonicalSvg } from "./svgSanitize";
 
 export const HIFI_SCHEMA_VERSION = 2;
 
@@ -25,7 +26,13 @@ interface Rect {
   h: number;
 }
 
-export interface BoxNode extends Rect {
+// Optional on every node: index into page.clips (a measured overflow
+// container the node is clipped by), or -1 / absent for none.
+interface Clippable {
+  clip?: number;
+}
+
+export interface BoxNode extends Rect, Clippable {
   kind: "box";
   name: string;
   role: "block" | "button" | "control";
@@ -36,7 +43,7 @@ export interface BoxNode extends Rect {
   prov: Provenance;
 }
 
-export interface TextNode extends Rect {
+export interface TextNode extends Rect, Clippable {
   kind: "text";
   name: string;
   text: string;
@@ -52,9 +59,13 @@ export interface TextNode extends Rect {
   // index into page.nodes of the button box that contains this text, or -1
   button: number;
   prov: Provenance;
+  // optional: right-aligned inferred markers; fit=false disables width fitting
+  // (inferred text has no measured run width to fit to)
+  align?: "left" | "right";
+  fit?: boolean;
 }
 
-export interface ImageNode extends Rect {
+export interface ImageNode extends Rect, Clippable {
   kind: "image";
   name: string;
   assetId: string | null;
@@ -63,7 +74,51 @@ export interface ImageNode extends Rect {
   prov: Provenance;
 }
 
-export type HifiNode = BoxNode | TextNode | ImageNode;
+// Static approximations of native control parts (always prov "inferred").
+export interface ShapeNode extends Rect, Clippable {
+  kind: "shape";
+  name: string;
+  shape: "ellipse" | "caret" | "grip";
+  fill: Paint | null;
+  stroke: { weight: number; color: Paint } | null;
+  prov: Provenance;
+}
+
+// Sanitized vector markup (see svgSanitize.ts); geometry measured.
+export interface SvgNode extends Rect, Clippable {
+  kind: "svg";
+  name: string;
+  markup: string;
+  prov: Provenance;
+}
+
+export type HifiNode = BoxNode | TextNode | ImageNode | ShapeNode | SvgNode;
+
+export interface ClipGroup extends Rect {
+  name: string;
+}
+
+export interface Instance {
+  component: string;
+  x: number;
+  y: number;
+  // per-node paint differences on this page (e.g. an active nav link)
+  overrides: { index: number; fill?: Paint | null; color?: Paint }[];
+}
+
+export interface HifiComponent {
+  id: string;
+  kind: "nav" | "footer";
+  name: string;
+  w: number;
+  h: number;
+  nodes: HifiNode[];
+}
+
+export interface FontMapEntry {
+  match: string;
+  use: string;
+}
 
 export interface HifiAsset {
   id: string;
@@ -89,6 +144,14 @@ export interface HifiPage {
   branding: { colors: Record<string, string>; fonts: string[] } | null;
   nodes: HifiNode[];
   warnings: string[];
+  // optional (added after the first v2 release; older v2 files omit them)
+  notes?: string[];
+  parentId?: string | null;
+  clips?: ClipGroup[];
+  instances?: Instance[];
+  // INFERRED normalization applied on operator opt-in; node geometry on this
+  // page = measured geometry transformed by this record.
+  normalization?: { mode: "centered-dpr1"; measuredWidth: number; measuredHeight: number; offsetX: number; gutterPx: number; gutters: number };
 }
 
 export interface HifiDoc {
@@ -101,6 +164,8 @@ export interface HifiDoc {
   assets: HifiAsset[];
   pages: HifiPage[];
   warnings: string[];
+  components?: HifiComponent[];
+  fontMap?: FontMapEntry[];
 }
 
 export type ImportResult = { ok: true; version: 1; doc: SiteMapDoc } | { ok: true; version: 2; doc: HifiDoc } | { ok: false; errors: string[] };
@@ -114,12 +179,12 @@ class C {
   fail(p: string, m: string) {
     if (this.errors.length < 50) this.errors.push(`${p}: ${m}`);
   }
-  obj(v: unknown, p: string, keys: readonly string[]): v is Record<string, unknown> {
+  obj(v: unknown, p: string, keys: readonly string[], optional: readonly string[] = []): v is Record<string, unknown> {
     if (typeof v !== "object" || v === null || Array.isArray(v)) {
       this.fail(p, "expected object");
       return false;
     }
-    for (const k of Object.keys(v)) if (!keys.includes(k)) this.fail(p, `unknown key "${k}"`);
+    for (const k of Object.keys(v)) if (!keys.includes(k) && !optional.includes(k)) this.fail(p, `unknown key "${k}"`);
     for (const k of keys) if (!Object.prototype.hasOwnProperty.call(v, k)) this.fail(p, `missing key "${k}"`);
     return true;
   }
@@ -129,6 +194,7 @@ class C {
     if (!allowEmpty && v.length === 0) this.fail(p, "must not be empty");
     // eslint-disable-next-line no-control-regex
     if (/[\u0000-\u001f\u007f]/.test(v)) this.fail(p, "contains control characters");
+    if (/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(v)) this.fail(p, "contains an unpaired UTF-16 surrogate");
     return true;
   }
   num(v: unknown, p: string, min: number, max: number): v is number {
@@ -180,10 +246,15 @@ function checkRect(c: C, n: Record<string, unknown>, p: string) {
   c.num(n.h, `${p}.h`, 0, COORD);
 }
 
-function checkNode(c: C, n: unknown, p: string, nodeCount: number, assetIds: Set<string>, kinds: string[]) {
+function checkClip(c: C, n: Record<string, unknown>, p: string, clipCount: number) {
+  if (n.clip !== undefined) c.int(n.clip, `${p}.clip`, -1, clipCount - 1);
+}
+
+function checkNode(c: C, n: unknown, p: string, nodeCount: number, assetIds: Set<string>, kinds: string[], clipCount: number) {
   const kind = (n as { kind?: unknown } | null)?.kind;
   if (kind === "box") {
-    if (!c.obj(n, p, ["kind", "x", "y", "w", "h", "name", "role", "fill", "border", "radius", "opacity", "prov"])) return;
+    if (!c.obj(n, p, ["kind", "x", "y", "w", "h", "name", "role", "fill", "border", "radius", "opacity", "prov"], ["clip"])) return;
+    checkClip(c, n, p, clipCount);
     checkRect(c, n, p);
     c.str(n.name, `${p}.name`, 120, false);
     c.oneOf(n.role, `${p}.role`, ["block", "button", "control"]);
@@ -196,7 +267,10 @@ function checkNode(c: C, n: unknown, p: string, nodeCount: number, assetIds: Set
     c.num(n.opacity, `${p}.opacity`, 0, 1);
     c.oneOf(n.prov, `${p}.prov`, ["measured", "inferred"]);
   } else if (kind === "text") {
-    if (!c.obj(n, p, ["kind", "x", "y", "w", "h", "name", "text", "graphemes", "fontStack", "generic", "weight", "italic", "size", "lineHeight", "color", "decoration", "button", "prov"])) return;
+    if (!c.obj(n, p, ["kind", "x", "y", "w", "h", "name", "text", "graphemes", "fontStack", "generic", "weight", "italic", "size", "lineHeight", "color", "decoration", "button", "prov"], ["clip", "align", "fit"])) return;
+    checkClip(c, n, p, clipCount);
+    if (n.align !== undefined) c.oneOf(n.align, `${p}.align`, ["left", "right"]);
+    if (n.fit !== undefined) c.bool(n.fit, `${p}.fit`);
     checkRect(c, n, p);
     c.str(n.name, `${p}.name`, 120, false);
     c.str(n.text, `${p}.text`, LIMITS.hifiMaxTextChars, false);
@@ -214,21 +288,51 @@ function checkNode(c: C, n: unknown, p: string, nodeCount: number, assetIds: Set
     }
     c.oneOf(n.prov, `${p}.prov`, ["measured", "inferred"]);
   } else if (kind === "image") {
-    if (!c.obj(n, p, ["kind", "x", "y", "w", "h", "name", "assetId", "fit", "radius", "prov"])) return;
+    if (!c.obj(n, p, ["kind", "x", "y", "w", "h", "name", "assetId", "fit", "radius", "prov"], ["clip"])) return;
+    checkClip(c, n, p, clipCount);
     checkRect(c, n, p);
     c.str(n.name, `${p}.name`, 120, false);
     if (n.assetId !== null && (typeof n.assetId !== "string" || !assetIds.has(n.assetId))) c.fail(`${p}.assetId`, "unknown asset");
     c.oneOf(n.fit, `${p}.fit`, ["fill", "fit"]);
     c.radius(n.radius, `${p}.radius`);
     c.oneOf(n.prov, `${p}.prov`, ["measured", "inferred"]);
+  } else if (kind === "shape") {
+    if (!c.obj(n, p, ["kind", "x", "y", "w", "h", "name", "shape", "fill", "stroke", "prov"], ["clip"])) return;
+    checkClip(c, n, p, clipCount);
+    checkRect(c, n, p);
+    c.str(n.name, `${p}.name`, 120, false);
+    c.oneOf(n.shape, `${p}.shape`, ["ellipse", "caret", "grip"]);
+    if (n.fill !== null) c.paint(n.fill, `${p}.fill`);
+    if (n.stroke !== null && c.obj(n.stroke, `${p}.stroke`, ["weight", "color"])) {
+      c.num(n.stroke.weight, `${p}.stroke.weight`, 0, 100);
+      c.paint(n.stroke.color, `${p}.stroke.color`);
+    }
+    c.oneOf(n.prov, `${p}.prov`, ["inferred"]);
+  } else if (kind === "svg") {
+    if (!c.obj(n, p, ["kind", "x", "y", "w", "h", "name", "markup", "prov"], ["clip"])) return;
+    checkClip(c, n, p, clipCount);
+    checkRect(c, n, p);
+    c.str(n.name, `${p}.name`, 120, false);
+    if (typeof n.markup !== "string" || n.markup.length > 40_000 || !isCanonicalSvg(n.markup)) c.fail(`${p}.markup`, "expected canonical sanitized SVG");
+    c.oneOf(n.prov, `${p}.prov`, ["measured"]);
   } else {
-    c.fail(`${p}.kind`, "expected box | text | image");
+    c.fail(`${p}.kind`, "expected box | text | image | shape | svg");
   }
+}
+
+function checkNodeList(c: C, nodes: unknown, p: string, max: number, assetIds: Set<string>, clipCount: number): number {
+  if (!c.arr(nodes, p, max)) return 0;
+  const kinds = nodes.map((n) => {
+    const o = n as { kind?: unknown; role?: unknown } | null;
+    return o?.kind === "box" && o.role === "button" ? "button" : String(o?.kind);
+  });
+  nodes.forEach((n, j) => checkNode(c, n, `${p}[${j}]`, nodes.length, assetIds, kinds, clipCount));
+  return nodes.length;
 }
 
 export function validateHifiDoc(input: unknown): { ok: true; doc: HifiDoc } | { ok: false; errors: string[] } {
   const c = new C();
-  if (!c.obj(input, "$", ["schema", "schemaVersion", "generator", "source", "site", "provenance", "assets", "pages", "warnings"])) return { ok: false, errors: c.errors };
+  if (!c.obj(input, "$", ["schema", "schemaVersion", "generator", "source", "site", "provenance", "assets", "pages", "warnings"], ["components", "fontMap"])) return { ok: false, errors: c.errors };
   const d = input;
   if (d.schema !== SCHEMA_ID) c.fail("$.schema", `expected "${SCHEMA_ID}"`);
   if (d.schemaVersion !== HIFI_SCHEMA_VERSION) c.fail("$.schemaVersion", "expected 2");
@@ -276,12 +380,42 @@ export function validateHifiDoc(input: unknown): { ok: true; doc: HifiDoc } | { 
   }
 
   let total = 0;
+  const componentIds = new Set<string>();
+  if (d.components !== undefined && c.arr(d.components, "$.components", 20)) {
+    d.components.forEach((cm, i) => {
+      const p = `$.components[${i}]`;
+      if (!c.obj(cm, p, ["id", "kind", "name", "w", "h", "nodes"])) return;
+      if (typeof cm.id !== "string" || !/^c[0-9]{1,2}$/.test(cm.id) || componentIds.has(cm.id)) c.fail(`${p}.id`, 'expected unique "c<index>"');
+      else componentIds.add(cm.id);
+      c.oneOf(cm.kind, `${p}.kind`, ["nav", "footer"]);
+      c.str(cm.name, `${p}.name`, 120, false);
+      c.num(cm.w, `${p}.w`, 1, LIMITS.hifiMaxPageWidth);
+      c.num(cm.h, `${p}.h`, 1, LIMITS.hifiMaxPageHeight);
+      total += checkNodeList(c, cm.nodes, `${p}.nodes`, 2_000, assetIds, 0);
+    });
+  }
+  if (d.fontMap !== undefined && c.arr(d.fontMap, "$.fontMap", 16)) {
+    d.fontMap.forEach((f, i) => {
+      if (!c.obj(f, `$.fontMap[${i}]`, ["match", "use"])) return;
+      c.str(f.match, `$.fontMap[${i}].match`, 100, false);
+      c.str(f.use, `$.fontMap[${i}].use`, 100, false);
+    });
+  }
   if (c.arr(d.pages, "$.pages", LIMITS.hifiMaxPages)) {
     if (d.pages.length === 0) c.fail("$.pages", "must contain at least one page");
     const ids = new Set<string>();
     d.pages.forEach((pg, i) => {
       const p = `$.pages[${i}]`;
-      if (!c.obj(pg, p, ["id", "url", "path", "title", "width", "height", "truncated", "referenceAssetId", "branding", "nodes", "warnings"])) return;
+      if (!c.obj(pg, p, ["id", "url", "path", "title", "width", "height", "truncated", "referenceAssetId", "branding", "nodes", "warnings"], ["notes", "parentId", "clips", "instances", "normalization"])) return;
+      if (pg.normalization !== undefined && c.obj(pg.normalization, `${p}.normalization`, ["mode", "measuredWidth", "measuredHeight", "offsetX", "gutterPx", "gutters"])) {
+        const nz = pg.normalization;
+        c.oneOf(nz.mode, `${p}.normalization.mode`, ["centered-dpr1"]);
+        c.num(nz.measuredWidth, `${p}.normalization.measuredWidth`, 1, 100_000);
+        c.num(nz.measuredHeight, `${p}.normalization.measuredHeight`, 1, 1_000_000);
+        c.num(nz.offsetX, `${p}.normalization.offsetX`, -100_000, 100_000);
+        c.num(nz.gutterPx, `${p}.normalization.gutterPx`, 0, 25);
+        c.int(nz.gutters, `${p}.normalization.gutters`, 0, 500);
+      }
       if (typeof pg.id !== "string" || !/^p[0-9]{1,2}$/.test(pg.id) || ids.has(pg.id)) c.fail(`${p}.id`, 'expected unique "p<index>"');
       else ids.add(pg.id);
       c.httpUrl(pg.url, `${p}.url`);
@@ -305,14 +439,35 @@ export function validateHifiDoc(input: unknown): { ok: true; doc: HifiDoc } | { 
         c.labels(pg.branding.fonts, `${p}.branding.fonts`, 10);
       }
       c.labels(pg.warnings, `${p}.warnings`, LIMITS.hifiMaxWarnings);
-      const nodes = pg.nodes;
-      if (c.arr(nodes, `${p}.nodes`, LIMITS.hifiMaxNodesPerPage)) {
-        total += nodes.length;
-        const kinds = nodes.map((n) => {
-          const o = n as { kind?: unknown; role?: unknown } | null;
-          return o?.kind === "box" && o.role === "button" ? "button" : String(o?.kind);
+      if (pg.notes !== undefined) c.labels(pg.notes, `${p}.notes`, LIMITS.hifiMaxWarnings);
+      if (pg.parentId !== undefined && pg.parentId !== null) c.str(pg.parentId, `${p}.parentId`, 8, false);
+      let clipCount = 0;
+      if (pg.clips !== undefined && c.arr(pg.clips, `${p}.clips`, 500)) {
+        clipCount = pg.clips.length;
+        pg.clips.forEach((cl, j) => {
+          if (!c.obj(cl, `${p}.clips[${j}]`, ["x", "y", "w", "h", "name"])) return;
+          checkRect(c, cl, `${p}.clips[${j}]`);
+          c.str(cl.name, `${p}.clips[${j}].name`, 120, false);
         });
-        nodes.forEach((n, j) => checkNode(c, n, `${p}.nodes[${j}]`, nodes.length, assetIds, kinds));
+      }
+      total += checkNodeList(c, pg.nodes, `${p}.nodes`, LIMITS.hifiMaxNodesPerPage, assetIds, clipCount);
+      if (pg.instances !== undefined && c.arr(pg.instances, `${p}.instances`, 10)) {
+        pg.instances.forEach((ins, j) => {
+          const q = `${p}.instances[${j}]`;
+          if (!c.obj(ins, q, ["component", "x", "y", "overrides"])) return;
+          if (typeof ins.component !== "string" || !componentIds.has(ins.component)) c.fail(`${q}.component`, "unknown component");
+          c.num(ins.x, `${q}.x`, -COORD, COORD);
+          c.num(ins.y, `${q}.y`, -COORD, COORD);
+          if (c.arr(ins.overrides, `${q}.overrides`, 2_000)) {
+            ins.overrides.forEach((o, k) => {
+              const r = `${q}.overrides[${k}]`;
+              if (!c.obj(o, r, ["index"], ["fill", "color"])) return;
+              c.int(o.index, `${r}.index`, 0, LIMITS.hifiMaxNodesPerPage);
+              if (o.fill !== undefined && o.fill !== null) c.paint(o.fill, `${r}.fill`);
+              if (o.color !== undefined) c.paint(o.color, `${r}.color`);
+            });
+          }
+        });
       }
     });
     if (total > LIMITS.hifiMaxNodesTotal) c.fail("$.pages", `more than ${LIMITS.hifiMaxNodesTotal} nodes in total`);

@@ -10,12 +10,12 @@ import { LIMITS } from "../shared/limits";
 import { inspectImage } from "../shared/imageInfo";
 import { cleanText } from "../shared/text";
 import { parseHttpUrl } from "../security/urlGuard";
-import { CaptureError, type LoadedAsset } from "./convert";
+import { CaptureError, type LoadedAsset, type RejectedReference } from "./convert";
 import { readBoundedFile, readBoundedJson } from "./files";
 
 const MAX_MANIFEST_BYTES = 1_000_000;
 
-export function loadAssetManifest(manifestPath: string): { assets: LoadedAsset[]; warnings: string[] } {
+export function loadAssetManifest(manifestPath: string): { assets: LoadedAsset[]; warnings: string[]; rejectedReferences: RejectedReference[] } {
   const m = readBoundedJson(manifestPath, MAX_MANIFEST_BYTES, "asset manifest");
   const o = m as { schema?: unknown; schemaVersion?: unknown; assets?: unknown };
   if (o?.schema !== "website-to-figma/asset-manifest" || o.schemaVersion !== 1 || !Array.isArray(o.assets)) {
@@ -25,6 +25,7 @@ export function loadAssetManifest(manifestPath: string): { assets: LoadedAsset[]
   const root = realpathSync(dirname(resolve(manifestPath)));
   const assets: LoadedAsset[] = [];
   const warnings: string[] = [];
+  const rejectedReferences: RejectedReference[] = [];
   let total = 0;
   let pixels = 0;
   const ids = new Set<string>();
@@ -90,7 +91,12 @@ export function loadAssetManifest(manifestPath: string): { assets: LoadedAsset[]
       continue;
     }
     if (info.width < 1 || info.height < 1 || info.width > LIMITS.hifiMaxImageDim || info.height > LIMITS.hifiMaxImageDim) {
-      reject(`${info.width}x${info.height}px exceeds Figma's ${LIMITS.hifiMaxImageDim}px image limit`);
+      const why = `${info.width}x${info.height}px exceeds Figma's ${LIMITS.hifiMaxImageDim}px image limit (tiling would need an approved PNG codec dependency)`;
+      reject(why);
+      // Hash-verified header size is still evidence for width/height reconciliation.
+      if (a.kind === "reference" && info.width >= 1 && info.height >= 1 && info.width <= 100_000 && info.height <= 1_000_000) {
+        rejectedReferences.push({ operatorId: id, pageUrl, width: info.width, height: info.height, reason: why });
+      }
       continue;
     }
     total += bytes.length;
@@ -101,5 +107,5 @@ export function loadAssetManifest(manifestPath: string): { assets: LoadedAsset[]
     pixels += info.width * info.height;
     assets.push({ operatorId: id, kind: a.kind, mime: info.mime, width: info.width, height: info.height, sha256: actual, sourceUrl, pageUrl, bytes });
   }
-  return { assets, warnings };
+  return { assets, warnings, rejectedReferences };
 }
