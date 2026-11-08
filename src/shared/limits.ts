@@ -30,4 +30,26 @@ export const LIMITS = {
   maxHtmlNodes: 20_000,
   maxHtmlDepth: 64,
   maxMapLinks: 500,
+  // Hi-fi (schemaVersion 2) import bounds. Assets travel as base64 inside the
+  // JSON, so its byte bound is larger than v1's; everything else stays bounded.
+  hifiMaxJsonBytes: 72_000_000,
+  hifiMaxPages: 20,
+  hifiMaxNodesPerPage: 6_000,
+  hifiMaxNodesTotal: 30_000,
+  hifiMaxAssets: 40,
+  hifiMaxAssetBytes: 12_000_000,
+  hifiMaxAssetsTotalBytes: 48_000_000,
+  // figma.createImage: "Images have a maximum size of 4096 pixels (4K) in width and height."
+  hifiMaxImageDim: 4096,
+  // Aggregate decoded-pixel budget across all assets (Figma decodes them).
+  hifiMaxTotalPixels: 100_000_000,
+  hifiMaxPageWidth: 4096,
+  hifiMaxPageHeight: 30_000,
+  hifiMaxTextChars: 2_000,
+  hifiMaxFontStack: 16,
+  hifiMaxWarnings: 50,
+  // Converter input bounds (untrusted operator capture).
+  captureMaxElements: 20_000,
+  captureMaxTexts: 20_000,
+  captureMaxImages: 500,
 } as const;

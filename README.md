@@ -19,6 +19,7 @@ Early development. What has and has not been verified:
 | CLI fixtures, normalization, caps, schema, URL safety, layout planning | Unit-tested (`npm test`) |
 | CLI + plugin typecheck and build | `npm run typecheck`, `npm run build` |
 | Firecrawl live crawl | **Never run yet.** It requires operator-confirmed account prerequisites, which the CLI doesn't verify. Request code is typed against `@mendable/firecrawl-js` 4.52.0 and tested with fake clients only. |
+| Hi-fi (schemaVersion 2) converter and renderer | Unit-tested with synthetic captures and a fake `figma` object; **not** imported into real Figma from this repo. |
 | Importing into Figma | **Not verified yet.** The plugin builds and typechecks against `@figma/plugin-typings`, but nobody has imported it into Figma from this repo yet. |
 
 ## Requirements
@@ -112,6 +113,90 @@ Before parsing, JSON text is limited to 1,000,000 bytes and 12 levels of nesting
 linear scan). The format has no `$ref` or anchors, and parsed JSON is a tree, so there are no
 cycles. The validator (`src/shared/schema.ts`) is strict: it rejects unknown keys and enforces length and
 count bounds plus tree integrity. Both the CLI and the plugin use the same validator.
+
+## Hi-fi import (schemaVersion 2): measured pages with real text, buttons and images
+
+The low-fidelity path (schemaVersion 1) is unchanged. The hi-fi path turns an **operator-supplied
+measured DOM capture** into editable Figma content:
+- real text runs with their measured fonts, sizes, colors and decoration
+- boxes with fills, borders and per-corner radii
+- buttons as editable frames that contain their editable labels
+- image fills from local, hash-pinned bytes
+- each page's screenshot placed beside it as a reference image
+
+```sh
+npx tsx src/cli.ts fixture hifi --out samples/hifi-synthetic.json   # synthetic sample, no network
+# Optional adapter: locally saved scrape responses -> capture (offline; nothing fetched)
+npx tsx src/cli.ts hifi-capture --scrape home.json --scrape about.json --label "my site" --out capture.json
+npx tsx src/cli.ts hifi --capture capture.json --assets assets/manifest.json --out site-v2.json
+npx tsx src/cli.ts validate site-v2.json                            # v1 and v2 both validate
+```
+
+**Input compatibility.** `hifi-capture` reads the measured value at
+`data.actions.javascriptReturns[].value`. It must have `viewport`, `elements` and `texts`, plus
+optional `url`, `title`, `images` and `svgs`, with the same field names as a measure-dom capture:
+- element: `tag`, `x`, `y`, `w`, `h`, `style{…computed…}`, `control`
+- text run: `text`, `x`, `y`, `w`, `h`, `tag`, `code`, `style`
+- image: `src`, `alt`, box, `style`
+
+`metadata.url`/`contentType` and `branding` are taken from the response when present. This path is
+tested **only** with synthetic data in that shape. A prototype's derived `site.json` is **not** an
+accepted input. Measured geometry is used as-is: if the measurement viewport differs from the
+screenshot (for example 1920 vs 1280), the editable frame uses the measured width, and nothing is
+translated or guessed.
+
+- **Inputs** (offline; this repo adds **no** capture or download capability):
+  - `capture.json` (`"schema": "website-to-figma/capture"`, `schemaVersion: 1`): per page, `url`,
+    optional `contentType`, `referenceAssetId` and `branding`, and `measured`. `measured` holds
+    `viewport.width`, element boxes with computed styles, grapheme-grouped text line fragments
+    and images (`src`, `alt`, box, style).
+  - `manifest.json` (`"schema": "website-to-figma/asset-manifest"`): `{ id, kind:
+    "image"|"reference", file, sha256, sourceUrl?, pageUrl? }`. Each `file` is a path inside the
+    manifest's directory. Images match capture `src` by `sourceUrl`. A reference matches a page by
+    the capture's `referenceAssetId`, or by its `pageUrl`.
+- **Provenance:**
+  - Geometry, colors, borders, radii and text runs are **measured**.
+  - Control label text is **inferred** from control values, and is marked as such.
+  - At import, text width is **fitted** with bounded letter spacing.
+  - Fonts are mapped to fonts available in Figma, and every substitution is reported.
+  - Branding is shown as **page-level** metadata only. It is never treated as per-element styling.
+- **Bounds and safety:**
+  - Assets must be PNG, JPEG or GIF, up to 4096 px per side (Figma's documented `createImage`
+    limit), 12 MB each and 48 MB in total, matching their SHA-256.
+  - Assets are read only from regular files inside the manifest directory: no symlinks, no `..`
+    and no absolute paths. Files are opened with `O_NOFOLLOW`, the parent path is
+    realpath-checked, and the size is checked on the open descriptor with a bounded read.
+    Every operator input file goes through the same bounded reader.
+  - Decoded pixels across all assets are capped at 100M.
+  - `sourceUrl` must pass the same structural URL guard as crawls, so private, reserved and
+    `198.18.0.0/15` literals are rejected. Nothing is ever fetched.
+  - The plugin decodes with `figma.base64Decode` and re-checks length, SHA-256 and image header
+    before creating any node.
+  - It uses only `figma.create*`, `createImage(bytes)` and `loadFontAsync`. The manifest still has
+    `networkAccess: ["none"]`.
+  - Inline SVG markup is **not** imported; it's counted in a warning.
+  - Non-HTML pages (for example `feed.xml`) are skipped with a warning.
+  - Pages are capped at 4096×30000 px and 6000 nodes per page (30000 total). Truncation is shown
+    on the canvas.
+  - The import file is limited to 72 MB. v1 keeps its own validator and 1 MB bound.
+- **Reporting:** each page's notes on the canvas list:
+  - font substitutions (measured stack → actual Figma font) and font-load failures
+  - missing images (dashed `MISSING IMAGE` placeholders)
+  - missing or rejected references, truncation, omitted SVGs
+  - text runs whose width couldn't be fitted
+
+  The node cap drops decorative boxes first and text last.
+- **Native package:** `plugin-dist/` is built by `npm run dist` and committed. It has the manifest
+  with a placeholder `id`, `code.js`, `ui.html`, synthetic samples, notices and `SHA256SUMS`.
+- **Not done yet:**
+  - This is an **absolute desktop snapshot**, not responsive auto-layout, and not pixel-perfect.
+  - Browser fonts and emoji artwork differ.
+  - Static controls aren't interactive.
+  - Reference screenshots taller than 4096 px are rejected with a warning, because tiling them
+    would need a PNG codec dependency that isn't approved.
+  - Shared nav and footer components aren't generated for hi-fi pages.
+  - Importing into real Figma has **not** been verified from this repo. The renderer is tested
+    against a fake `figma` object only.
 
 ## Figma plugin (development)
 

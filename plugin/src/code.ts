@@ -5,7 +5,9 @@
 //   2. a separate "Sitemap" section below it (page frames + vector edges),
 // both placed to the right of any existing content so nothing overlaps.
 import { LIMITS } from "../../src/shared/limits";
-import { parseSiteMapJson, type Block, type Card, type FooterBlock, type NavBlock, type Page, type SiteMapDoc } from "../../src/shared/schema";
+import { type Block, type Card, type FooterBlock, type NavBlock, type Page, type SiteMapDoc } from "../../src/shared/schema";
+import { parseImportJson, type HifiDoc } from "../../src/shared/hifiSchema";
+import { buildHifiDoc, type HifiStats } from "./hifi";
 import { cardShape, placeRow, placeSitemap, planComponents, type CardShape, type Size } from "../../src/shared/layout";
 
 const PAGE_W = 480;
@@ -50,7 +52,7 @@ function readMessage(raw: unknown): { type: "import"; json: string } | { type: "
   const m = raw as Record<string, unknown>;
   const keys = Object.keys(m);
   if (m.type === "close" && keys.length === 1) return { type: "close" };
-  if (m.type === "import" && keys.length === 2 && typeof m.json === "string" && m.json.length <= LIMITS.maxJsonBytes) {
+  if (m.type === "import" && keys.length === 2 && typeof m.json === "string" && m.json.length <= LIMITS.hifiMaxJsonBytes) {
     return { type: "import", json: m.json };
   }
   return null;
@@ -63,6 +65,11 @@ figma.ui.onmessage = async (raw: unknown) => {
     return;
   }
   if (msg.type === "close") {
+    // Never close mid-import: rollback must be able to run if the build fails.
+    if (busy) {
+      post({ type: "error", text: "An import is running; close is disabled until it finishes." });
+      return;
+    }
     figma.closePlugin();
     return;
   }
@@ -72,9 +79,19 @@ figma.ui.onmessage = async (raw: unknown) => {
   }
   busy = true;
   try {
-    const result = parseSiteMapJson(msg.json);
+    const result = parseImportJson(msg.json);
     if (!result.ok) {
       post({ type: "error", text: "JSON rejected by the website-to-figma schema validator. Nothing was created.", details: result.errors.slice(0, 12) });
+      return;
+    }
+    if (result.version === 2) {
+      post({ type: "status", text: "Valid hi-fi document. Verifying images, loading fonts and building frames..." });
+      const h = await buildV2(result.doc);
+      post({
+        type: "done",
+        text: `Created ${h.pages} hi-fi page(s): ${h.nodes} measured node(s), ${h.images} image fill(s), ${h.placeholders} missing-image placeholder(s), ${h.fitted} width-fitted text run(s).`,
+        details: h.warnings,
+      });
       return;
     }
     post({ type: "status", text: "Valid. Loading fonts and building frames..." });
@@ -219,6 +236,33 @@ function sectionTitle(section: SectionNode, title: string, subtitle: string): nu
   s.x = SECTION_PAD;
   s.y = h.y + h.height + 8;
   return s.y + s.height + 40;
+}
+
+// schemaVersion 2: same rollback contract as v1 (every created node tracked
+// and removed newest-first on failure). Asset bytes and fonts are verified and
+// loaded inside buildHifiDoc before any node is created.
+async function buildV2(doc: HifiDoc): Promise<HifiStats> {
+  const created: SceneNode[] = [];
+  const all: SceneNode[] = [];
+  tracked = all;
+  try {
+    const stats = await buildHifiDoc(doc, track, created, existingContentRight());
+    figma.currentPage.selection = created;
+    figma.viewport.scrollAndZoomIntoView(created);
+    return stats;
+  } catch (err) {
+    for (let i = all.length - 1; i >= 0; i--) {
+      const n = all[i]!;
+      try {
+        if (!n.removed) n.remove();
+      } catch {
+        // keep removing the rest
+      }
+    }
+    throw err;
+  } finally {
+    tracked = null;
+  }
 }
 
 async function build(doc: SiteMapDoc): Promise<BuildStats> {

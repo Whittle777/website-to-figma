@@ -16,6 +16,14 @@ node website-to-figma.mjs --help
 
 ## Commands
 
+Hi-fi (schemaVersion 2), offline only:
+`node website-to-figma.mjs hifi --capture capture.json --assets assets/manifest.json --out site-v2.json`
+`node website-to-figma.mjs hifi-capture --scrape saved-response.json --out capture.json`
+(offline adapter for saved scrape responses) and `node website-to-figma.mjs fixture hifi`. For the input formats, bounds and limits, see "Hi-fi
+import" in the repository README. Nothing is fetched; assets are local, hash-pinned PNG/JPEG/GIF
+files.
+
+
 ```sh
 node website-to-figma.mjs fixture 5|10|20 [--out FILE]   # synthetic, offline, no key
 node website-to-figma.mjs validate FILE

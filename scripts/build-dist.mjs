@@ -90,3 +90,69 @@ writeFileSync("cli/SHA256SUMS", [`${sha(OUT)}  website-to-figma.mjs`, `${sha("cl
 console.log(`Built ${OUT} (${code.length} bytes), ${entries.length} bundled packages${missing.length ? `, ${missing.length} without a license file: ${missing.map((e) => e.name).join(", ")}` : ""}`);
 console.log(readFileSync("cli/SHA256SUMS", "utf8").trimEnd());
 if (!existsSync("cli/README.md")) console.warn("cli/README.md missing");
+
+// ---------------------------------------------------------------------------
+// Native Figma development plugin package (public, code-only, deterministic):
+//   plugin-dist/manifest.json  (placeholder id; main code.js, ui ui.html)
+//   plugin-dist/code.js        (sandbox bundle built from plugin/src + src/shared)
+//   plugin-dist/ui.html        (copied verbatim from plugin/src/ui.html)
+//   plugin-dist/samples/       (SYNTHETIC samples only)
+//   plugin-dist/THIRD_PARTY_NOTICES.txt, README.md, SHA256SUMS
+const PD = "plugin-dist";
+mkdirSync(`${PD}/samples`, { recursive: true });
+const plugin = await build({
+  entryPoints: ["plugin/src/code.ts"],
+  outfile: `${PD}/code.js`,
+  bundle: true,
+  platform: "neutral",
+  format: "iife",
+  target: "es2020",
+  legalComments: "none",
+  metafile: true,
+  logLevel: "warning",
+});
+const pluginInputs = Object.keys(plugin.metafile.inputs).sort();
+const thirdParty = pluginInputs.filter((p) => p.includes("node_modules/"));
+const pcode = readFileSync(`${PD}/code.js`, "utf8");
+for (const forbidden of ["require(", "process.", "import(", "eval(", "new Function", "fetch(", "XMLHttpRequest", "createImageAsync"]) {
+  if (pcode.includes(forbidden)) throw new Error(`${PD}/code.js contains forbidden token: ${forbidden}`);
+}
+writeFileSync(`${PD}/ui.html`, readFileSync("plugin/src/ui.html"));
+const manifest = JSON.parse(readFileSync("plugin/manifest.json", "utf8"));
+manifest.main = "code.js";
+manifest.ui = "ui.html";
+writeFileSync(`${PD}/manifest.json`, JSON.stringify(manifest, null, 2) + "\n");
+for (const f of ["fixture-5.json", "hifi-synthetic.json"]) writeFileSync(`${PD}/samples/${f}`, readFileSync(`samples/${f}`));
+writeFileSync(
+  `${PD}/THIRD_PARTY_NOTICES.txt`,
+  thirdParty.length
+    ? `code.js bundles these third-party inputs:\n${thirdParty.join("\n")}\n`
+    : "code.js and ui.html bundle no third-party packages (esbuild inputs are only this repository's plugin/src and src/shared sources).\nwebsite-to-figma's own source has no license chosen yet; this file grants none.\n",
+);
+writeFileSync(
+  `${PD}/README.md`,
+  [
+    "# website-to-figma: native Figma development plugin (built package)",
+    "",
+    "Built by `npm run dist` from this commit's sources; not hand-edited. Bundled inputs:",
+    "",
+    ...pluginInputs.map((p) => `- \`${p}\``),
+    "",
+    "## Install (Figma desktop app)",
+    "1. Plugins > Development > New plugin... (Figma generates a manifest with an `id`); copy that id",
+    "   into `manifest.json` here, replacing `REPLACE-WITH-FIGMA-GENERATED-ID`.",
+    "2. Import this folder's `manifest.json` from Figma's development plugin menu.",
+    "3. Run it and choose a JSON file: `samples/fixture-5.json` (schemaVersion 1, low-fi) or",
+    "   `samples/hifi-synthetic.json` (schemaVersion 2, measured hi-fi; SYNTHETIC, not a real site).",
+    "",
+    "The plugin has `networkAccess: none`, validates everything before creating nodes, verifies each",
+    "embedded image (length, SHA-256, PNG/JPEG/GIF header, <= 4096 px) and rolls back on failure.",
+    "Not verified by importing into real Figma from this repository; not pixel-perfect; not affiliated",
+    "with Figma. Integrity: compare files with `SHA256SUMS`.",
+    "",
+  ].join("\n"),
+);
+const pdFiles = ["manifest.json", "code.js", "ui.html", "README.md", "THIRD_PARTY_NOTICES.txt", "samples/fixture-5.json", "samples/hifi-synthetic.json"];
+writeFileSync(`${PD}/SHA256SUMS`, pdFiles.map((f) => `${sha(`${PD}/${f}`)}  ${f}`).join("\n") + "\n");
+console.log(`Built ${PD}/ (${pcode.length} bytes code.js; third-party inputs: ${thirdParty.length})`);
+console.log(readFileSync(`${PD}/SHA256SUMS`, "utf8").trimEnd());

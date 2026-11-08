@@ -1,0 +1,2 @@
+code.js and ui.html bundle no third-party packages (esbuild inputs are only this repository's plugin/src and src/shared sources).
+website-to-figma's own source has no license chosen yet; this file grants none.

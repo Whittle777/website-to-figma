@@ -3,11 +3,17 @@
 //   fixture <5|10|20> [--out FILE]                 synthetic, offline, no key
 //   crawl <url> [--limit N] [--timeout S] [--out FILE] [--yes]
 //   validate <FILE>
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { buildFixture, FIXTURE_SIZES, type FixtureSize } from "./fixtures/generate";
 import { LIMITS } from "./shared/limits";
-import { parseSiteMapJson, utf8Length, type SiteMapDoc } from "./shared/schema";
+import { utf8Length, type SiteMapDoc } from "./shared/schema";
+import { parseImportJson, type HifiDoc } from "./shared/hifiSchema";
+import { buildHifiFixture } from "./fixtures/hifiSynthetic";
+import { CaptureError, convertCapture } from "./hifi/convert";
+import { loadAssetManifest } from "./hifi/assets";
+import { readBoundedFile, readBoundedJson } from "./hifi/files";
+import { captureFromScrapeResponses } from "./hifi/adapter";
 import { parseHttpUrl } from "./security/urlGuard";
 import { assertLimit } from "./normalize/build";
 import { MAX_TIMEOUT_SEC, planCrawl, runCrawl } from "./crawl/firecrawl";
@@ -26,34 +32,64 @@ const USAGE = `Usage:
       --max-credits is an accepted-risk budget compared with creditsUsed
       telemetry (best-effort cancel), not a provider-enforced ceiling. The
       printed standard estimate (limit x 1) is not a worst case.
+  website-to-figma fixture hifi [--out FILE]
+      Write a SYNTHETIC hi-fi (schemaVersion 2) sample with generated images.
+  website-to-figma hifi --capture FILE [--assets MANIFEST] --out FILE
+      Offline: convert an operator-supplied measured DOM capture plus local,
+      SHA-256-pinned PNG/JPEG/GIF assets into a schemaVersion 2 import file.
+      Never fetches anything.
+  website-to-figma hifi-capture --scrape FILE [--scrape FILE]... [--label TEXT] --out FILE
+      Offline adapter: locally saved scrape responses whose measured DOM is in
+      data.actions.javascriptReturns[].value -> capture format. Never fetches.
   website-to-figma validate <FILE>
-      Validate a site map JSON file against the current schema.`;
+      Validate a site map JSON file (schemaVersion 1 or 2).`;
 
 class UsageError extends Error {}
 
-function parseFlags(args: string[]): { positional: string[]; flags: Map<string, string | true>; excludes: string[] } {
+function parseFlags(args: string[]): { positional: string[]; flags: Map<string, string | true>; excludes: string[]; scrapes: string[] } {
   const positional: string[] = [];
   const flags = new Map<string, string | true>();
   const excludes: string[] = [];
+  const scrapes: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     if (a === "--yes" || a === "--help" || a === "-h" || a === "--no-map" || a === "--confirm-existing-credits" || a === "--confirm-no-topup") {
       flags.set(a.replace(/^-+/, ""), true);
-    } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance") {
+    } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label") {
       const v = args[++i];
       if (v === undefined) throw new UsageError(`${a} needs a value`);
       if (a === "--exclude") excludes.push(v);
+      else if (a === "--scrape") scrapes.push(v);
       else flags.set(a.slice(2), v);
     } else if (a.startsWith("-")) throw new UsageError(`Unknown option ${a}`);
     else positional.push(a);
   }
-  return { positional, flags, excludes };
+  return { positional, flags, excludes, scrapes };
 }
 
 function intFlag(v: string | true | undefined, name: string, fallback: number): number {
   if (v === undefined) return fallback;
   if (v === true || !/^\d+$/.test(v)) throw new UsageError(`--${name} must be a whole number`);
   return Number(v);
+}
+
+function writeHifi(doc: HifiDoc, out: string): string {
+  const text = JSON.stringify(doc) + "\n";
+  if (utf8Length(text) > LIMITS.hifiMaxJsonBytes) throw new Error(`Output exceeds ${LIMITS.hifiMaxJsonBytes} bytes; not written`);
+  const path = resolve(out);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, text);
+  return path;
+}
+
+function hifiSummary(doc: HifiDoc, path: string): string {
+  const lines = [`Wrote ${path} (schemaVersion 2, ${doc.source.mode}: ${doc.source.label})`, `  assets: ${doc.assets.length} (${doc.assets.map((a) => `${a.id} ${a.kind} ${a.width}x${a.height} sha256 ${a.sha256.slice(0, 12)}`).join("; ") || "none"})`];
+  for (const p of doc.pages) {
+    lines.push(`  ${p.path}: ${p.nodes.length} nodes, ${p.width}x${p.height}, reference ${p.referenceAssetId ?? "none"}${p.truncated ? ", TRUNCATED" : ""}`);
+    for (const w of p.warnings) lines.push(`    warning: ${w}`);
+  }
+  for (const w of doc.warnings) lines.push(`  warning: ${w}`);
+  return lines.join("\n");
 }
 
 function writeDoc(doc: SiteMapDoc, out: string): string {
@@ -79,9 +115,44 @@ function summary(doc: SiteMapDoc, path: string): string {
 
 async function main(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv;
-  const { positional, flags, excludes: rawExcludes } = parseFlags(rest);
+  const { positional, flags, excludes: rawExcludes, scrapes } = parseFlags(rest);
   if (!cmd || cmd === "--help" || cmd === "-h" || flags.has("help")) {
     console.log(USAGE);
+    return 0;
+  }
+
+  if (cmd === "fixture" && positional[0] === "hifi") {
+    const doc = buildHifiFixture();
+    const out = typeof flags.get("out") === "string" ? (flags.get("out") as string) : "out/hifi-synthetic.json";
+    console.log(hifiSummary(doc, writeHifi(doc, out)));
+    return 0;
+  }
+
+  if (cmd === "hifi-capture") {
+    const out = flags.get("out");
+    if (scrapes.length === 0 || typeof out !== "string") throw new UsageError("hifi-capture needs --scrape FILE (repeatable) and --out FILE");
+    const label = typeof flags.get("label") === "string" ? (flags.get("label") as string) : "operator capture";
+    const responses = scrapes.map((f) => ({ name: f, json: readBoundedJson(f, LIMITS.hifiMaxJsonBytes, f) }));
+    const { capture, screenshotHints } = captureFromScrapeResponses(responses, label);
+    const text = JSON.stringify(capture) + "\n";
+    if (utf8Length(text) > LIMITS.hifiMaxJsonBytes) throw new CaptureError("capture output too large; not written");
+    const path = resolve(out);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, text);
+    console.log(`Wrote ${path} (${capture.pages.length} page(s); nothing fetched)`);
+    for (const h of screenshotHints) console.log(`  screenshot URL present for ${h.pageUrl} (NOT downloaded; add local bytes to the asset manifest with kind "reference" and pageUrl)`);
+    return 0;
+  }
+
+  if (cmd === "hifi") {
+    const capturePath = flags.get("capture");
+    const manifestPath = flags.get("assets");
+    const out = flags.get("out");
+    if (typeof capturePath !== "string" || typeof out !== "string") throw new UsageError("hifi needs --capture FILE and --out FILE");
+    const capture = readBoundedJson(capturePath, LIMITS.hifiMaxJsonBytes, "capture");
+    const loaded = typeof manifestPath === "string" ? loadAssetManifest(manifestPath) : { assets: [], warnings: [] };
+    const doc = convertCapture({ capture, assets: loaded.assets, assetWarnings: loaded.warnings });
+    console.log(hifiSummary(doc, writeHifi(doc, out)));
     return 0;
   }
 
@@ -97,12 +168,12 @@ async function main(argv: string[]): Promise<number> {
   if (cmd === "validate") {
     const file = positional[0];
     if (!file) throw new UsageError("validate needs a file path");
-    const result = parseSiteMapJson(readFileSync(file, "utf8"));
+    const result = parseImportJson(new TextDecoder().decode(readBoundedFile(file, LIMITS.hifiMaxJsonBytes)));
     if (!result.ok) {
       console.error(`INVALID ${file}\n  ${result.errors.join("\n  ")}`);
       return 1;
     }
-    console.log(`VALID ${file} (${result.doc.pages.length} pages, schemaVersion ${result.doc.schemaVersion})`);
+    console.log(`VALID ${file} (${result.doc.pages.length} pages, schemaVersion ${result.version})`);
     return 0;
   }
 

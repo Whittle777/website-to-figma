@@ -17,7 +17,7 @@
 </head>
 <body>
 <h1>website-to-figma (development plugin)</h1>
-<p>Import a site map JSON produced by the website-to-figma CLI. The JSON is validated before anything is created. Output is low-fidelity grey wireframes, not a pixel copy.</p>
+<p>Import a site map JSON produced by the website-to-figma CLI: schemaVersion 1 (low-fidelity wireframes) or 2 (measured hi-fi with embedded, hash-checked images). Everything is validated before anything is created. Not a pixel-perfect copy.</p>
 <div class="row"><input id="file" type="file" accept=".json,application/json"></div>
 <textarea id="json" placeholder="...or paste site map JSON here" spellcheck="false"></textarea>
 <div class="row"><button id="import">Import</button><button id="close">Close</button></div>
@@ -26,7 +26,7 @@
 <script>
   // Plain inline script. Content is only ever written via textContent; no HTML
   // from the JSON or the plugin is interpreted.
-  var MAX_BYTES = 1000000;
+  var MAX_BYTES = 72000000; // v2 hi-fi bound; the sandbox re-checks v1 (1 MB) and v2 limits
   var statusEl = document.getElementById("status");
   var detailsEl = document.getElementById("details");
   var jsonEl = document.getElementById("json");

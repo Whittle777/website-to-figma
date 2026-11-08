@@ -84,7 +84,29 @@ var init_limits = __esm({
       extractWorkerHeapMb: 512,
       maxHtmlNodes: 2e4,
       maxHtmlDepth: 64,
-      maxMapLinks: 500
+      maxMapLinks: 500,
+      // Hi-fi (schemaVersion 2) import bounds. Assets travel as base64 inside the
+      // JSON, so its byte bound is larger than v1's; everything else stays bounded.
+      hifiMaxJsonBytes: 72e6,
+      hifiMaxPages: 20,
+      hifiMaxNodesPerPage: 6e3,
+      hifiMaxNodesTotal: 3e4,
+      hifiMaxAssets: 40,
+      hifiMaxAssetBytes: 12e6,
+      hifiMaxAssetsTotalBytes: 48e6,
+      // figma.createImage: "Images have a maximum size of 4096 pixels (4K) in width and height."
+      hifiMaxImageDim: 4096,
+      // Aggregate decoded-pixel budget across all assets (Figma decodes them).
+      hifiMaxTotalPixels: 1e8,
+      hifiMaxPageWidth: 4096,
+      hifiMaxPageHeight: 3e4,
+      hifiMaxTextChars: 2e3,
+      hifiMaxFontStack: 16,
+      hifiMaxWarnings: 50,
+      // Converter input bounds (untrusted operator capture).
+      captureMaxElements: 2e4,
+      captureMaxTexts: 2e4,
+      captureMaxImages: 500
     };
   }
 });
@@ -241,22 +263,6 @@ function validateSiteMap(input) {
   }
   return c.errors.length === 0 ? { ok: true, doc: input } : { ok: false, errors: c.errors };
 }
-function parseSiteMapJson(text) {
-  if (typeof text !== "string") return { ok: false, errors: ["$: expected JSON text"] };
-  if (text.length > LIMITS.maxJsonBytes || utf8Length(text) > LIMITS.maxJsonBytes) {
-    return { ok: false, errors: [`$: larger than ${LIMITS.maxJsonBytes} bytes`] };
-  }
-  if (exceedsNesting(text, MAX_JSON_NESTING)) {
-    return { ok: false, errors: [`$: nested deeper than ${MAX_JSON_NESTING} levels`] };
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return { ok: false, errors: ["$: not valid JSON"] };
-  }
-  return validateSiteMap(parsed);
-}
 function exceedsNesting(text, max) {
   let depth = 0;
   let inString = false;
@@ -361,7 +367,7 @@ function workerSpec() {
   return self2.endsWith(".ts") ? { url: new URL("./buildWorker.ts", self2), execArgv: ["--import", "tsx"] } : { url: new URL("./buildWorker.js", self2), execArgv: [] };
 }
 function buildSiteMapBounded(input, deadlineMs = LIMITS.extractDeadlineMs) {
-  return new Promise((resolve2, reject) => {
+  return new Promise((resolve4, reject) => {
     const spec = workerSpec();
     const worker = new Worker(spec.url, {
       execArgv: spec.execArgv,
@@ -383,7 +389,7 @@ function buildSiteMapBounded(input, deadlineMs = LIMITS.extractDeadlineMs) {
     worker.once("message", (msg) => {
       if (!msg.ok) return finish(() => reject(new Error(msg.error ?? "Extraction failed")));
       const r = validateSiteMap(msg.doc);
-      finish(() => r.ok ? resolve2(r.doc) : reject(new Error(`Worker output failed validation: ${r.errors[0]}`)));
+      finish(() => r.ok ? resolve4(r.doc) : reject(new Error(`Worker output failed validation: ${r.errors[0]}`)));
     });
     worker.once("error", (err) => finish(() => reject(new Error(`Extraction worker failed: ${err instanceof Error ? err.message : String(err)}`))));
     worker.once("exit", (code) => finish(() => reject(new Error(`Extraction worker exited early (code ${code})`))));
@@ -748,23 +754,23 @@ function isDocument(node) {
 function hasChildren(node) {
   return Object.prototype.hasOwnProperty.call(node, "children");
 }
-function encodeXML(str) {
+function encodeXML(str2) {
   let ret = "";
   let lastIdx = 0;
   let match;
-  while ((match = xmlReplacer.exec(str)) !== null) {
+  while ((match = xmlReplacer.exec(str2)) !== null) {
     const i = match.index;
-    const char = str.charCodeAt(i);
+    const char = str2.charCodeAt(i);
     const next = xmlCodeMap.get(char);
     if (next !== void 0) {
-      ret += str.substring(lastIdx, i) + next;
+      ret += str2.substring(lastIdx, i) + next;
       lastIdx = i + 1;
     } else {
-      ret += `${str.substring(lastIdx, i)}&#x${getCodePoint(str, i).toString(16)};`;
+      ret += `${str2.substring(lastIdx, i)}&#x${getCodePoint(str2, i).toString(16)};`;
       lastIdx = xmlReplacer.lastIndex += Number((char & 64512) === 55296);
     }
   }
-  return ret + str.substr(lastIdx);
+  return ret + str2.substr(lastIdx);
 }
 function getEscaper(regex, map2) {
   return function escape(data) {
@@ -1135,7 +1141,7 @@ function compareDocumentPosition(nodeA, nodeB) {
   return DocumentPosition.PRECEDING;
 }
 function uniqueSort(nodes) {
-  nodes = nodes.filter((node, i, arr) => !arr.includes(node, i + 1));
+  nodes = nodes.filter((node, i, arr2) => !arr2.includes(node, i + 1));
   nodes.sort((a, b) => {
     const relative = compareDocumentPosition(a, b);
     if (relative & DocumentPosition.PRECEDING) return -1;
@@ -1233,15 +1239,15 @@ function isValidFeed(value) {
 function isTraversal(token) {
   return !procedure.has(token.type);
 }
-function sortByProcedure(arr) {
-  const procs = arr.map(getProcedure);
-  for (let i = 1; i < arr.length; i++) {
+function sortByProcedure(arr2) {
+  const procs = arr2.map(getProcedure);
+  for (let i = 1; i < arr2.length; i++) {
     const procNew = procs[i];
     if (procNew < 0) continue;
     for (let j = i - 1; j >= 0 && procNew < procs[j]; j--) {
-      const token = arr[j + 1];
-      arr[j + 1] = arr[j];
-      arr[j] = token;
+      const token = arr2[j + 1];
+      arr2[j + 1] = arr2[j];
+      arr2[j] = token;
       procs[j + 1] = procs[j];
       procs[j] = procNew;
     }
@@ -1568,8 +1574,8 @@ function is(elem, query, options) {
   const opts = convertOptionFormats(options);
   return (typeof query === "function" ? query : compile$1(query, opts))(elem);
 }
-function arr_back(arr) {
-  return arr[arr.length - 1];
+function arr_back(arr2) {
+  return arr2[arr2.length - 1];
 }
 function isTag(node) {
   return node && node.nodeType === 1;
@@ -2406,7 +2412,7 @@ var init_dist = __esm({
       [60, "&lt;"],
       [62, "&gt;"]
     ]);
-    getCodePoint = String.prototype.codePointAt != null ? (str, index) => str.codePointAt(index) : (c, index) => (c.charCodeAt(index) & 64512) === 55296 ? (c.charCodeAt(index) - 55296) * 1024 + c.charCodeAt(index + 1) - 56320 + 65536 : c.charCodeAt(index);
+    getCodePoint = String.prototype.codePointAt != null ? (str2, index) => str2.codePointAt(index) : (c, index) => (c.charCodeAt(index) & 64512) === 55296 ? (c.charCodeAt(index) - 55296) * 1024 + c.charCodeAt(index + 1) - 56320 + 65536 : c.charCodeAt(index);
     escapeAttribute = getEscaper(/["&\u00A0]/g, /* @__PURE__ */ new Map([
       [34, "&quot;"],
       [38, "&amp;"],
@@ -2727,8 +2733,8 @@ var init_dist = __esm({
         var high = parseInt(escaped, 16) - 65536;
         return high !== high || escapedWhitespace ? escaped : high < 0 ? String.fromCharCode(high + 65536) : String.fromCharCode(high >> 10 | 55296, high & 1023 | 56320);
       }
-      function unescapeCSS(str) {
-        return str.replace(reEscape, funescape);
+      function unescapeCSS(str2) {
+        return str2.replace(reEscape, funescape);
       }
       function isQuote(c) {
         return c === 39 || c === 34;
@@ -3021,7 +3027,7 @@ var init_dist = __esm({
         }).join(", ");
       }
       exports2.stringify = stringify;
-      function stringifyToken(token, index, arr) {
+      function stringifyToken(token, index, arr2) {
         switch (token.type) {
           case types_1.SelectorType.Child:
             return index === 0 ? "> " : " > ";
@@ -3036,7 +3042,7 @@ var init_dist = __esm({
           case types_1.SelectorType.ColumnCombinator:
             return index === 0 ? "|| " : " || ";
           case types_1.SelectorType.Universal:
-            return token.namespace === "*" && index + 1 < arr.length && "name" in arr[index + 1] ? "" : "".concat(getNamespace(token.namespace), "*");
+            return token.namespace === "*" && index + 1 < arr2.length && "name" in arr2[index + 1] ? "" : "".concat(getNamespace(token.namespace), "*");
           case types_1.SelectorType.Tag:
             return getNamespacedName(token);
           case types_1.SelectorType.PseudoElement:
@@ -3077,14 +3083,14 @@ var init_dist = __esm({
       function getNamespace(namespace) {
         return namespace !== null ? "".concat(namespace === "*" ? "*" : escapeName(namespace, charsToEscapeInName), "|") : "";
       }
-      function escapeName(str, charsToEscape) {
+      function escapeName(str2, charsToEscape) {
         var lastIdx = 0;
         var ret = "";
-        for (var i = 0; i < str.length; i++) if (charsToEscape.has(str.charCodeAt(i))) {
-          ret += "".concat(str.slice(lastIdx, i), "\\").concat(str.charAt(i));
+        for (var i = 0; i < str2.length; i++) if (charsToEscape.has(str2.charCodeAt(i))) {
+          ret += "".concat(str2.slice(lastIdx, i), "\\").concat(str2.charAt(i));
           lastIdx = i + 1;
         }
-        return ret.length > 0 ? ret + str.slice(lastIdx) : str;
+        return ret.length > 0 ? ret + str2.slice(lastIdx) : str2;
       }
     }));
     require_commonjs = /* @__PURE__ */ __commonJSMin(((exports2) => {
@@ -3950,8 +3956,8 @@ var init_dist = __esm({
       get structure() {
         const res = [];
         let indention = 0;
-        function write(str) {
-          res.push("  ".repeat(indention) + str);
+        function write(str2) {
+          res.push("  ".repeat(indention) + str2);
         }
         function dfs(node) {
           const idStr = node._id ? `#${node._id}` : "";
@@ -5814,19 +5820,19 @@ function parseHttpUrl(raw) {
   }
   return url2;
 }
-async function assertHostedFirecrawlUrl(raw, resolve2 = systemResolver, cache) {
+async function assertHostedFirecrawlUrl(raw, resolve4 = systemResolver, cache) {
   const url2 = parseHttpUrl(raw);
   if (url2.hostname === HOSTED_DNS_CHECK_EXEMPT_HOSTNAME) return url2;
-  return assertPublicHttpUrl(raw, resolve2, cache);
+  return assertPublicHttpUrl(raw, resolve4, cache);
 }
-async function assertPublicHttpUrl(raw, resolve2 = systemResolver, cache) {
+async function assertPublicHttpUrl(raw, resolve4 = systemResolver, cache) {
   const url2 = parseHttpUrl(raw);
   const host = url2.hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "").toLowerCase();
   if (isIP(host) !== 0) return url2;
   const check = async () => {
     let addrs;
     try {
-      addrs = await resolve2(host);
+      addrs = await resolve4(host);
     } catch (err) {
       if (err instanceof UnsafeUrlError) throw err;
       throw new UnsafeUrlError(`Could not resolve ${host}`);
@@ -6177,6 +6183,1075 @@ var init_generate = __esm({
       { path: "/changelog", title: "Changelog", intro: "Synthetic changelog." },
       { path: "/status", title: "Status", intro: "Synthetic status page." }
     ];
+  }
+});
+
+// src/shared/hifiSchema.ts
+function checkRect(c, n, p) {
+  c.num(n.x, `${p}.x`, -COORD, COORD);
+  c.num(n.y, `${p}.y`, -COORD, COORD);
+  c.num(n.w, `${p}.w`, 0, COORD);
+  c.num(n.h, `${p}.h`, 0, COORD);
+}
+function checkNode(c, n, p, nodeCount, assetIds, kinds) {
+  const kind = n?.kind;
+  if (kind === "box") {
+    if (!c.obj(n, p, ["kind", "x", "y", "w", "h", "name", "role", "fill", "border", "radius", "opacity", "prov"])) return;
+    checkRect(c, n, p);
+    c.str(n.name, `${p}.name`, 120, false);
+    c.oneOf(n.role, `${p}.role`, ["block", "button", "control"]);
+    if (n.fill !== null) c.paint(n.fill, `${p}.fill`);
+    if (n.border !== null && c.obj(n.border, `${p}.border`, ["weight", "color"])) {
+      c.num(n.border.weight, `${p}.border.weight`, 0, 1e3);
+      c.paint(n.border.color, `${p}.border.color`);
+    }
+    c.radius(n.radius, `${p}.radius`);
+    c.num(n.opacity, `${p}.opacity`, 0, 1);
+    c.oneOf(n.prov, `${p}.prov`, ["measured", "inferred"]);
+  } else if (kind === "text") {
+    if (!c.obj(n, p, ["kind", "x", "y", "w", "h", "name", "text", "graphemes", "fontStack", "generic", "weight", "italic", "size", "lineHeight", "color", "decoration", "button", "prov"])) return;
+    checkRect(c, n, p);
+    c.str(n.name, `${p}.name`, 120, false);
+    c.str(n.text, `${p}.text`, LIMITS.hifiMaxTextChars, false);
+    c.int(n.graphemes, `${p}.graphemes`, 1, LIMITS.hifiMaxTextChars);
+    if (c.arr(n.fontStack, `${p}.fontStack`, LIMITS.hifiMaxFontStack)) n.fontStack.forEach((f, i) => c.str(f, `${p}.fontStack[${i}]`, 100, false));
+    c.oneOf(n.generic, `${p}.generic`, ["sans", "serif", "mono"]);
+    c.num(n.weight, `${p}.weight`, 1, 1e3);
+    c.bool(n.italic, `${p}.italic`);
+    c.num(n.size, `${p}.size`, 1, 500);
+    c.num(n.lineHeight, `${p}.lineHeight`, 1, 2e3);
+    c.paint(n.color, `${p}.color`);
+    c.oneOf(n.decoration, `${p}.decoration`, ["none", "underline", "strike"]);
+    if (c.int(n.button, `${p}.button`, -1, nodeCount - 1) && n.button >= 0 && kinds[n.button] !== "button") {
+      c.fail(`${p}.button`, "must reference a button box");
+    }
+    c.oneOf(n.prov, `${p}.prov`, ["measured", "inferred"]);
+  } else if (kind === "image") {
+    if (!c.obj(n, p, ["kind", "x", "y", "w", "h", "name", "assetId", "fit", "radius", "prov"])) return;
+    checkRect(c, n, p);
+    c.str(n.name, `${p}.name`, 120, false);
+    if (n.assetId !== null && (typeof n.assetId !== "string" || !assetIds.has(n.assetId))) c.fail(`${p}.assetId`, "unknown asset");
+    c.oneOf(n.fit, `${p}.fit`, ["fill", "fit"]);
+    c.radius(n.radius, `${p}.radius`);
+    c.oneOf(n.prov, `${p}.prov`, ["measured", "inferred"]);
+  } else {
+    c.fail(`${p}.kind`, "expected box | text | image");
+  }
+}
+function validateHifiDoc(input) {
+  const c = new C();
+  if (!c.obj(input, "$", ["schema", "schemaVersion", "generator", "source", "site", "provenance", "assets", "pages", "warnings"])) return { ok: false, errors: c.errors };
+  const d = input;
+  if (d.schema !== SCHEMA_ID) c.fail("$.schema", `expected "${SCHEMA_ID}"`);
+  if (d.schemaVersion !== HIFI_SCHEMA_VERSION) c.fail("$.schemaVersion", "expected 2");
+  if (c.obj(d.generator, "$.generator", ["name", "version"])) {
+    if (d.generator.name !== "website-to-figma") c.fail("$.generator.name", 'expected "website-to-figma"');
+    c.str(d.generator.version, "$.generator.version", 32, false);
+  }
+  if (c.obj(d.source, "$.source", ["mode", "label"])) {
+    c.oneOf(d.source.mode, "$.source.mode", ["capture", "fixture"]);
+    c.str(d.source.label, "$.source.label", 200, false);
+  }
+  if (c.obj(d.site, "$.site", ["origin", "host"])) {
+    c.httpUrl(d.site.origin, "$.site.origin");
+    c.str(d.site.host, "$.site.host", 253, false);
+  }
+  if (c.obj(d.provenance, "$.provenance", ["layout", "notes"])) {
+    c.oneOf(d.provenance.layout, "$.provenance.layout", ["measured-dom"]);
+    c.labels(d.provenance.notes, "$.provenance.notes", LIMITS.maxNotes);
+  }
+  c.labels(d.warnings, "$.warnings", LIMITS.hifiMaxWarnings);
+  const assetIds = /* @__PURE__ */ new Set();
+  let assetBytes = 0;
+  let assetPixels = 0;
+  if (c.arr(d.assets, "$.assets", LIMITS.hifiMaxAssets)) {
+    d.assets.forEach((a, i) => {
+      const p = `$.assets[${i}]`;
+      if (!c.obj(a, p, ["id", "kind", "mime", "width", "height", "bytes", "sha256", "sourceUrl", "dataBase64"])) return;
+      if (typeof a.id !== "string" || !/^a[0-9]{1,3}$/.test(a.id)) c.fail(`${p}.id`, 'expected "a<index>"');
+      else if (assetIds.has(a.id)) c.fail(`${p}.id`, "duplicate id");
+      else assetIds.add(a.id);
+      c.oneOf(a.kind, `${p}.kind`, ["image", "reference"]);
+      c.oneOf(a.mime, `${p}.mime`, ["image/png", "image/jpeg", "image/gif"]);
+      if (c.int(a.width, `${p}.width`, 1, LIMITS.hifiMaxImageDim) && c.int(a.height, `${p}.height`, 1, LIMITS.hifiMaxImageDim)) {
+        assetPixels += a.width * a.height;
+      }
+      if (c.int(a.bytes, `${p}.bytes`, 1, LIMITS.hifiMaxAssetBytes)) assetBytes += a.bytes;
+      if (typeof a.sha256 !== "string" || !SHA.test(a.sha256)) c.fail(`${p}.sha256`, "expected lowercase hex sha256");
+      if (a.sourceUrl !== null) c.httpUrl(a.sourceUrl, `${p}.sourceUrl`);
+      if (typeof a.dataBase64 !== "string" || !B64.test(a.dataBase64)) c.fail(`${p}.dataBase64`, "expected base64");
+      else if (typeof a.bytes === "number" && a.dataBase64.length !== Math.ceil(a.bytes / 3) * 4) c.fail(`${p}.dataBase64`, "length does not match bytes");
+    });
+    if (assetBytes > LIMITS.hifiMaxAssetsTotalBytes) c.fail("$.assets", `more than ${LIMITS.hifiMaxAssetsTotalBytes} bytes in total`);
+    if (assetPixels > LIMITS.hifiMaxTotalPixels) c.fail("$.assets", `more than ${LIMITS.hifiMaxTotalPixels} decoded pixels in total`);
+  }
+  let total = 0;
+  if (c.arr(d.pages, "$.pages", LIMITS.hifiMaxPages)) {
+    if (d.pages.length === 0) c.fail("$.pages", "must contain at least one page");
+    const ids = /* @__PURE__ */ new Set();
+    d.pages.forEach((pg, i) => {
+      const p = `$.pages[${i}]`;
+      if (!c.obj(pg, p, ["id", "url", "path", "title", "width", "height", "truncated", "referenceAssetId", "branding", "nodes", "warnings"])) return;
+      if (typeof pg.id !== "string" || !/^p[0-9]{1,2}$/.test(pg.id) || ids.has(pg.id)) c.fail(`${p}.id`, 'expected unique "p<index>"');
+      else ids.add(pg.id);
+      c.httpUrl(pg.url, `${p}.url`);
+      if (c.str(pg.path, `${p}.path`, LIMITS.maxUrlChars, false) && !pg.path.startsWith("/")) c.fail(`${p}.path`, 'must start with "/"');
+      c.str(pg.title, `${p}.title`, LIMITS.maxTitleChars, false);
+      c.num(pg.width, `${p}.width`, 1, LIMITS.hifiMaxPageWidth);
+      c.num(pg.height, `${p}.height`, 1, LIMITS.hifiMaxPageHeight);
+      c.bool(pg.truncated, `${p}.truncated`);
+      if (pg.referenceAssetId !== null && (typeof pg.referenceAssetId !== "string" || !assetIds.has(pg.referenceAssetId))) c.fail(`${p}.referenceAssetId`, "unknown asset");
+      if (pg.branding !== null && c.obj(pg.branding, `${p}.branding`, ["colors", "fonts"])) {
+        const colors = pg.branding.colors;
+        if (typeof colors !== "object" || colors === null || Array.isArray(colors)) c.fail(`${p}.branding.colors`, "expected object");
+        else {
+          const entries = Object.entries(colors);
+          if (entries.length > 20) c.fail(`${p}.branding.colors`, "more than 20 entries");
+          for (const [k, v] of entries) {
+            if (!/^[A-Za-z][A-Za-z0-9]{0,31}$/.test(k)) c.fail(`${p}.branding.colors`, "invalid key");
+            if (typeof v !== "string" || !HEX.test(v)) c.fail(`${p}.branding.colors.${k}`, "expected #rrggbb");
+          }
+        }
+        c.labels(pg.branding.fonts, `${p}.branding.fonts`, 10);
+      }
+      c.labels(pg.warnings, `${p}.warnings`, LIMITS.hifiMaxWarnings);
+      const nodes = pg.nodes;
+      if (c.arr(nodes, `${p}.nodes`, LIMITS.hifiMaxNodesPerPage)) {
+        total += nodes.length;
+        const kinds = nodes.map((n) => {
+          const o = n;
+          return o?.kind === "box" && o.role === "button" ? "button" : String(o?.kind);
+        });
+        nodes.forEach((n, j) => checkNode(c, n, `${p}.nodes[${j}]`, nodes.length, assetIds, kinds));
+      }
+    });
+    if (total > LIMITS.hifiMaxNodesTotal) c.fail("$.pages", `more than ${LIMITS.hifiMaxNodesTotal} nodes in total`);
+  }
+  return c.errors.length === 0 ? { ok: true, doc: input } : { ok: false, errors: c.errors };
+}
+function parseImportJson(text) {
+  if (typeof text !== "string") return { ok: false, errors: ["$: expected JSON text"] };
+  if (text.length > LIMITS.hifiMaxJsonBytes || utf8Length(text) > LIMITS.hifiMaxJsonBytes) {
+    return { ok: false, errors: [`$: larger than ${LIMITS.hifiMaxJsonBytes} bytes`] };
+  }
+  if (exceedsNesting(text, MAX_JSON_NESTING)) return { ok: false, errors: [`$: nested deeper than ${MAX_JSON_NESTING} levels`] };
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { ok: false, errors: ["$: not valid JSON"] };
+  }
+  const version2 = parsed?.schemaVersion;
+  if (version2 === 1) {
+    if (utf8Length(text) > LIMITS.maxJsonBytes) return { ok: false, errors: [`$: larger than ${LIMITS.maxJsonBytes} bytes`] };
+    const r = validateSiteMap(parsed);
+    return r.ok ? { ok: true, version: 1, doc: r.doc } : r;
+  }
+  if (version2 === HIFI_SCHEMA_VERSION) {
+    const r = validateHifiDoc(parsed);
+    return r.ok ? { ok: true, version: 2, doc: r.doc } : r;
+  }
+  return { ok: false, errors: ["$.schemaVersion: unsupported version (expected 1 or 2)"] };
+}
+var HIFI_SCHEMA_VERSION, HEX, SHA, B64, C, COORD;
+var init_hifiSchema = __esm({
+  "src/shared/hifiSchema.ts"() {
+    "use strict";
+    init_limits();
+    init_schema();
+    HIFI_SCHEMA_VERSION = 2;
+    HEX = /^#[0-9a-f]{6}$/;
+    SHA = /^[0-9a-f]{64}$/;
+    B64 = /^[A-Za-z0-9+/]*={0,2}$/;
+    C = class {
+      errors = [];
+      fail(p, m) {
+        if (this.errors.length < 50) this.errors.push(`${p}: ${m}`);
+      }
+      obj(v, p, keys) {
+        if (typeof v !== "object" || v === null || Array.isArray(v)) {
+          this.fail(p, "expected object");
+          return false;
+        }
+        for (const k of Object.keys(v)) if (!keys.includes(k)) this.fail(p, `unknown key "${k}"`);
+        for (const k of keys) if (!Object.prototype.hasOwnProperty.call(v, k)) this.fail(p, `missing key "${k}"`);
+        return true;
+      }
+      str(v, p, max, allowEmpty = true) {
+        if (typeof v !== "string") return this.fail(p, "expected string"), false;
+        if (v.length > max) this.fail(p, `longer than ${max} chars`);
+        if (!allowEmpty && v.length === 0) this.fail(p, "must not be empty");
+        if (/[\u0000-\u001f\u007f]/.test(v)) this.fail(p, "contains control characters");
+        return true;
+      }
+      num(v, p, min, max) {
+        if (typeof v !== "number" || !Number.isFinite(v) || v < min || v > max) return this.fail(p, `expected number ${min}..${max}`), false;
+        return true;
+      }
+      int(v, p, min, max) {
+        if (!this.num(v, p, min, max)) return false;
+        if (!Number.isInteger(v)) return this.fail(p, "expected integer"), false;
+        return true;
+      }
+      bool(v, p) {
+        if (typeof v !== "boolean") this.fail(p, "expected boolean");
+      }
+      arr(v, p, max) {
+        if (!Array.isArray(v)) return this.fail(p, "expected array"), false;
+        if (v.length > max) this.fail(p, `more than ${max} items`);
+        return true;
+      }
+      oneOf(v, p, values) {
+        if (!values.includes(v)) this.fail(p, `expected one of ${values.join("|")}`);
+      }
+      httpUrl(v, p) {
+        if (!this.str(v, p, LIMITS.maxUrlChars, false)) return;
+        if (!/^https?:\/\/[^\s/@]+(\/[^\s]*)?$/i.test(v)) this.fail(p, "expected http(s) URL without credentials");
+      }
+      paint(v, p) {
+        if (!this.obj(v, p, ["hex", "alpha"])) return;
+        if (typeof v.hex !== "string" || !HEX.test(v.hex)) this.fail(`${p}.hex`, "expected #rrggbb");
+        this.num(v.alpha, `${p}.alpha`, 0, 1);
+      }
+      radius(v, p) {
+        if (this.arr(v, p, 4)) {
+          if (v.length !== 4) this.fail(p, "expected 4 corner radii");
+          v.forEach((r, i) => this.num(r, `${p}[${i}]`, 0, 1e4));
+        }
+      }
+      labels(v, p, max) {
+        if (this.arr(v, p, max)) v.forEach((x, i) => this.str(x, `${p}[${i}]`, LIMITS.maxNoteChars, false));
+      }
+    };
+    COORD = 1e5;
+  }
+});
+
+// src/shared/fonts.ts
+function parseFontStack(css) {
+  return css.split(",").map((s) => s.trim().replace(/^["']|["']$/g, "").trim()).filter((s) => s.length > 0 && s.length <= 100).slice(0, 16);
+}
+function genericOf(stack) {
+  const lower = stack.map((s) => s.toLowerCase());
+  if (lower.some((s) => s === "monospace" || s === "ui-monospace" || /mono|consolas|courier|menlo|monaco/.test(s))) return "mono";
+  if (lower.includes("serif") || lower.includes("ui-serif")) return "serif";
+  return "sans";
+}
+var init_fonts = __esm({
+  "src/shared/fonts.ts"() {
+    "use strict";
+  }
+});
+
+// src/hifi/convert.ts
+function parseColor(v) {
+  const s = str(v, 80).trim().toLowerCase();
+  const m = /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:\s*[,/]\s*([\d.]+%?))?\s*\)$/.exec(s);
+  if (!m) return null;
+  const c = [m[1], m[2], m[3]].map((x) => Math.max(0, Math.min(255, Math.round(Number(x)))));
+  let alpha = 1;
+  if (m[4] !== void 0) alpha = m[4].endsWith("%") ? Number(m[4].slice(0, -1)) / 100 : Number(m[4]);
+  if (!Number.isFinite(alpha) || alpha <= 0) return null;
+  return { hex: "#" + c.map((x) => x.toString(16).padStart(2, "0")).join(""), alpha: Math.min(1, round(alpha)) };
+}
+function parseRadius(v) {
+  const head = str(v, 80).split("/")[0].trim();
+  const parts = head.split(/\s+/).filter(Boolean).map((t) => /^\d+(\.\d+)?px$/.test(t) ? Number(t.slice(0, -2)) : 0);
+  const [a = 0, b = a, c = a, d = b] = parts;
+  return [a, b, c, d].map((x) => Math.min(1e4, round(x)));
+}
+function weightOf(v) {
+  const s = str(v, 20);
+  if (s === "bold") return 700;
+  if (s === "normal" || s === "") return 400;
+  const n = Number(s);
+  return Number.isFinite(n) && n >= 1 && n <= 1e3 ? n : 400;
+}
+function graphemeCount(s) {
+  let n = 0;
+  for (const _ of segmenter.segment(s)) n++;
+  return n;
+}
+function protectEdgeSpaces(s) {
+  return s.replace(/^ +/, (m) => "\xA0".repeat(m.length)).replace(/ +$/, (m) => "\xA0".repeat(m.length));
+}
+function rectOf(o) {
+  const x = fin(o.x);
+  const y = fin(o.y);
+  const w = fin(o.w);
+  const h = fin(o.h);
+  if (x === null || y === null || w === null || h === null || w <= 0 || h <= 0) return null;
+  return { x: round(x), y: round(y), w: round(w), h: round(h) };
+}
+function brandingOf(v) {
+  if (!isObj(v)) return null;
+  const colors = /* @__PURE__ */ Object.create(null);
+  if (isObj(v.colors)) {
+    for (const [k, val] of Object.entries(v.colors).slice(0, 40)) {
+      if (Object.keys(colors).length >= 20 || !/^[A-Za-z][A-Za-z0-9]{0,31}$/.test(k)) continue;
+      const s = str(val, 20).trim().toLowerCase();
+      const m6 = /^#([0-9a-f]{6})$/.exec(s);
+      const m3 = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/.exec(s);
+      if (m6) colors[k] = s;
+      else if (m3) colors[k] = `#${m3[1]}${m3[1]}${m3[2]}${m3[2]}${m3[3]}${m3[3]}`;
+    }
+  }
+  const fonts = [];
+  for (const f of arr(v.fonts, 50, "branding.fonts")) {
+    const fam = cleanText(str(isObj(f) ? f.family : "", 100), 100);
+    if (fam && !fonts.includes(fam) && fonts.length < 10) fonts.push(fam);
+  }
+  return Object.keys(colors).length || fonts.length ? { colors, fonts } : null;
+}
+function convertCapture(input) {
+  const cap = input.capture;
+  if (!isObj(cap) || cap.schema !== "website-to-figma/capture" || cap.schemaVersion !== 1) {
+    throw new CaptureError('capture: expected { schema: "website-to-figma/capture", schemaVersion: 1, ... }');
+  }
+  const label = cleanText(str(cap.label, 200), 200) || "operator capture";
+  const docWarnings = [...input.assetWarnings];
+  const warn = (list, w) => {
+    if (list.length < LIMITS.hifiMaxWarnings) list.push(cleanText(w, LIMITS.maxNoteChars));
+  };
+  const byOperatorId = new Map(input.assets.map((a) => [a.operatorId, a]));
+  const bySource = new Map(input.assets.filter((a) => a.sourceUrl && a.kind === "image").map((a) => [a.sourceUrl, a]));
+  const used = [];
+  const assetIdFor = (a) => {
+    const existing = used.find((u) => u.sha256 === a.sha256 && u.kind === a.kind);
+    if (existing) return existing.id;
+    const id = `a${used.length}`;
+    used.push({ id, kind: a.kind, mime: a.mime, width: a.width, height: a.height, bytes: a.bytes.length, sha256: a.sha256, sourceUrl: a.sourceUrl, dataBase64: Buffer.from(a.bytes).toString("base64") });
+    return id;
+  };
+  const rawPages = arr(cap.pages, 100, "capture.pages");
+  let first = null;
+  const pages = [];
+  let totalNodes = 0;
+  for (const [pi, rp] of rawPages.entries()) {
+    if (!isObj(rp)) throw new CaptureError(`capture.pages[${pi}]: expected object`);
+    const url2 = parseHttpUrl(str(rp.url, LIMITS.maxUrlChars));
+    const canonical = canonicalizeUrl(url2);
+    const path = displayPath(canonical);
+    if (first && !isSameSite(url2, first)) {
+      warn(docWarnings, `Skipped ${canonical}: not on the same site as the first page`);
+      continue;
+    }
+    const ct = str(rp.contentType, 100).toLowerCase();
+    if (ct && !ct.startsWith("text/html") || NON_HTML_EXT.test(new URL(canonical).pathname)) {
+      warn(docWarnings, `Skipped non-HTML page ${path}`);
+      continue;
+    }
+    if (pages.length >= LIMITS.hifiMaxPages) {
+      warn(docWarnings, `Page cap ${LIMITS.hifiMaxPages} reached; ${path} and later pages omitted`);
+      break;
+    }
+    first ??= url2;
+    const m = rp.measured;
+    if (!isObj(m)) throw new CaptureError(`capture.pages[${pi}].measured: expected object`);
+    const warnings = [];
+    const elements = arr(m.elements, LIMITS.captureMaxElements, "measured.elements").filter(isObj);
+    const texts = arr(m.texts, LIMITS.captureMaxTexts, "measured.texts").filter(isObj);
+    const images = arr(m.images, LIMITS.captureMaxImages, "measured.images").filter(isObj);
+    const svgCount = arr(m.svgs, LIMITS.captureMaxElements, "measured.svgs").length;
+    const vw = isObj(m.viewport) ? fin(m.viewport.width) : null;
+    if (vw === null || vw <= 0) throw new CaptureError(`capture.pages[${pi}].measured.viewport.width: required (measured)`);
+    let width = round(vw);
+    let truncated = false;
+    if (width > LIMITS.hifiMaxPageWidth) {
+      warn(warnings, `Measured width ${width}px exceeds ${LIMITS.hifiMaxPageWidth}px; frame clipped`);
+      width = LIMITS.hifiMaxPageWidth;
+      truncated = true;
+    }
+    const body = elements.find((e2) => e2.tag === "body");
+    const bodyRect = body ? rectOf(body) : null;
+    let height = bodyRect ? round(bodyRect.y + bodyRect.h) : 0;
+    if (!height) for (const o of [...elements, ...texts, ...images]) {
+      const r = rectOf(o);
+      if (r) height = Math.max(height, round(r.y + r.h));
+    }
+    if (height <= 0) throw new CaptureError(`capture.pages[${pi}]: no measured geometry`);
+    if (height > LIMITS.hifiMaxPageHeight) {
+      warn(warnings, `Measured height ${height}px exceeds ${LIMITS.hifiMaxPageHeight}px; content below is truncated`);
+      height = LIMITS.hifiMaxPageHeight;
+      truncated = true;
+    }
+    const inPage = (r) => r.y < height;
+    const boxC = [];
+    const imgC = [];
+    const textC = [];
+    const buttonBoxes = [];
+    let unparsedColors = 0;
+    for (const e2 of elements) {
+      const r = rectOf(e2);
+      if (!r || !inPage(r)) continue;
+      const s = isObj(e2.style) ? e2.style : {};
+      if (s.display === "none" || s.visibility === "hidden") continue;
+      const tag = str(e2.tag, 20).toLowerCase();
+      const control = isObj(e2.control) ? e2.control : null;
+      const ctype = str(control?.type, 20).toLowerCase();
+      const role2 = tag === "button" || tag === "input" && ["button", "submit", "reset"].includes(ctype) ? "button" : control ? "control" : "block";
+      const fill = parseColor(s.backgroundColor);
+      if (s.backgroundColor && !fill && !/rgba?\([^)]*,\s*0\)|transparent/.test(str(s.backgroundColor))) unparsedColors++;
+      const sides = ["Top", "Right", "Bottom", "Left"].map((k) => ({ w: px(s[`border${k}Width`]), c: parseColor(s[`border${k}Color`]) }));
+      const uniform = sides.every((x) => x.w === sides[0].w && x.c?.hex === sides[0].c?.hex && x.c?.alpha === sides[0].c?.alpha);
+      const anyBorder = sides.some((x) => x.w > 0 && x.c);
+      if (!fill && !anyBorder && role2 === "block") continue;
+      const opacityRaw = Number(str(s.opacity, 10) || "1");
+      if (fill !== null || anyBorder && uniform || role2 !== "block") {
+        const box2 = {
+          kind: "box",
+          ...r,
+          name: `${tag}${role2 === "button" ? " / button" : ""}`,
+          role: role2,
+          fill,
+          border: anyBorder && uniform ? { weight: sides[0].w, color: sides[0].c } : null,
+          radius: parseRadius(s.borderRadius),
+          opacity: Number.isFinite(opacityRaw) ? Math.max(0, Math.min(1, opacityRaw)) : 1,
+          prov: "measured"
+        };
+        boxC.push({ node: box2, prio: role2 === "block" ? 3 : 1 });
+        if (role2 === "button") buttonBoxes.push(box2);
+      }
+      if (anyBorder && !uniform) {
+        const edges = [
+          { ...r, h: sides[0].w },
+          { x: round(r.x + r.w - sides[1].w), y: r.y, w: sides[1].w, h: r.h },
+          { x: r.x, y: round(r.y + r.h - sides[2].w), w: r.w, h: sides[2].w },
+          { ...r, w: sides[3].w }
+        ];
+        edges.forEach((er, i) => {
+          const side = sides[i];
+          if (side.w > 0 && side.c) {
+            boxC.push({ node: { kind: "box", ...er, name: `${tag} / border-${["top", "right", "bottom", "left"][i]}`, role: "block", fill: side.c, border: null, radius: [0, 0, 0, 0], opacity: 1, prov: "measured" }, prio: 3 });
+          }
+        });
+      }
+      if (role2 === "control" && control && tag !== "button") {
+        const label2 = cleanText(str(control.selected) || str(control.value) || str(control.placeholder), 200);
+        if (label2 && !["checkbox", "radio", "range", "color", "file"].includes(ctype)) {
+          const size = px(s.fontSize) || 16;
+          textC.push({
+            prio: 1,
+            node: {
+              kind: "text",
+              x: round(r.x + px(s.paddingLeft) + px(s.borderLeftWidth)),
+              y: round(r.y + px(s.paddingTop) + px(s.borderTopWidth)),
+              w: Math.max(1, round(r.w - px(s.paddingLeft) - px(s.paddingRight))),
+              h: Math.max(1, round(r.h - px(s.paddingTop) - px(s.paddingBottom))),
+              name: `control label (${ctype || tag})`,
+              text: protectEdgeSpaces(label2),
+              graphemes: graphemeCount(label2),
+              fontStack: parseFontStack(str(s.fontFamily)),
+              generic: genericOf(parseFontStack(str(s.fontFamily))),
+              weight: weightOf(s.fontWeight),
+              italic: false,
+              size,
+              lineHeight: Math.max(1, round(Math.min(r.h, size * 1.5))),
+              color: parseColor(s.color) ?? { hex: "#000000", alpha: 1 },
+              decoration: "none",
+              button: -1,
+              prov: "inferred"
+            }
+          });
+        }
+      }
+    }
+    for (const im of images) {
+      const r = rectOf(im);
+      if (!r || !inPage(r)) continue;
+      const s = isObj(im.style) ? im.style : {};
+      const asset = bySource.get(str(im.src, LIMITS.maxUrlChars)) ?? null;
+      imgC.push({
+        prio: 2,
+        asset,
+        node: { kind: "image", ...r, name: `image / ${cleanText(str(im.alt, 80), 80) || "untitled"}`, assetId: null, fit: str(s.objectFit) === "contain" ? "fit" : "fill", radius: parseRadius(s.borderRadius), prov: "measured" }
+      });
+    }
+    let shortened = 0;
+    for (const t of texts) {
+      const r = rectOf(t);
+      if (!r || !inPage(r)) continue;
+      const raw = str(t.text, LIMITS.hifiMaxTextChars * 2);
+      const text = raw.replace(/[\u0000-\u001f\u007f]/g, " ");
+      if (!text.trim()) continue;
+      const bounded = text.length > LIMITS.hifiMaxTextChars ? text.slice(0, LIMITS.hifiMaxTextChars) : text;
+      if (typeof t.text === "string" && t.text.length > LIMITS.hifiMaxTextChars) shortened++;
+      const s = isObj(t.style) ? t.style : {};
+      const stack = parseFontStack(str(s.fontFamily));
+      const deco = str(s.textDecorationLine);
+      const cx = r.x + r.w / 2;
+      const cy = r.y + r.h / 2;
+      const color = parseColor(s.color);
+      if (!color) unparsedColors++;
+      textC.push({
+        prio: 0,
+        buttonOf: buttonBoxes.find((b) => cx >= b.x && cx <= b.x + b.w && cy >= b.y && cy <= b.y + b.h),
+        node: {
+          kind: "text",
+          ...r,
+          name: `${str(t.tag, 20) || "text"} / ${cleanText(bounded, 40)}`,
+          text: protectEdgeSpaces(bounded),
+          graphemes: Math.max(1, graphemeCount(bounded)),
+          fontStack: stack,
+          generic: Boolean(t.code) ? "mono" : genericOf(stack),
+          weight: weightOf(s.fontWeight),
+          italic: /italic|oblique/.test(str(s.fontStyle)),
+          size: px(s.fontSize) || 16,
+          lineHeight: Math.max(1, r.h),
+          color: color ?? { hex: "#000000", alpha: 1 },
+          decoration: deco.includes("underline") ? "underline" : deco.includes("line-through") ? "strike" : "none",
+          button: -1,
+          prov: "measured"
+        }
+      });
+    }
+    const allC = [...boxC, ...imgC, ...textC];
+    const budget = Math.max(0, Math.min(LIMITS.hifiMaxNodesPerPage, LIMITS.hifiMaxNodesTotal - totalNodes));
+    const keep = new Set(allC.length <= budget ? allC : allC.map((c, i) => ({ c, i })).sort((a, b) => a.c.prio - b.c.prio || a.i - b.i).slice(0, budget).map((x) => x.c));
+    const nodes = [];
+    const indexOf = /* @__PURE__ */ new Map();
+    let missingAssets = 0;
+    for (const c of allC) {
+      if (!keep.has(c)) continue;
+      if (c.node.kind === "image") {
+        c.node.assetId = c.asset ? assetIdFor(c.asset) : null;
+        if (!c.asset) missingAssets++;
+      }
+      if (c.node.kind === "text") c.node.button = c.buttonOf && indexOf.has(c.buttonOf) ? indexOf.get(c.buttonOf) : -1;
+      indexOf.set(c.node, nodes.length);
+      nodes.push(c.node);
+    }
+    const dropped = allC.length - keep.size;
+    const droppedTexts = textC.filter((c) => !keep.has(c)).length;
+    if (missingAssets) warn(warnings, `${missingAssets} image(s) have no supplied asset bytes; shown as labelled placeholders`);
+    if (shortened) warn(warnings, `${shortened} text run(s) longer than ${LIMITS.hifiMaxTextChars} characters were shortened`);
+    if (svgCount) warn(warnings, `${svgCount} inline SVG element(s) omitted: SVG markup is not imported`);
+    if (unparsedColors) warn(warnings, `${unparsedColors} color value(s) were not rgb()/rgba() and were not applied`);
+    if (dropped) {
+      truncated = true;
+      warn(warnings, `${dropped} node(s) omitted by the node cap (${droppedTexts} of them text runs); lowest-priority boxes dropped first`);
+    }
+    totalNodes += nodes.length;
+    let referenceAssetId = null;
+    const refId = str(rp.referenceAssetId, 64);
+    if (refId) {
+      const ref = byOperatorId.get(refId);
+      if (ref && ref.kind === "reference") referenceAssetId = assetIdFor(ref);
+      else warn(warnings, `Reference screenshot "${refId}" not available (missing or rejected asset; see document warnings)`);
+    } else {
+      const ref = input.assets.find((a) => a.kind === "reference" && a.pageUrl && canonicalizeUrl(a.pageUrl) === canonical);
+      if (ref) referenceAssetId = assetIdFor(ref);
+    }
+    if (!referenceAssetId && !refId) warn(warnings, "No reference screenshot supplied for this page");
+    pages.push({
+      id: `p${pages.length}`,
+      url: canonical,
+      path,
+      title: cleanText(str(m.title, 300), LIMITS.maxTitleChars) || path,
+      width,
+      height,
+      truncated,
+      referenceAssetId,
+      branding: brandingOf(rp.branding),
+      nodes,
+      warnings
+    });
+  }
+  if (pages.length === 0 || !first) throw new CaptureError("capture: no usable HTML pages");
+  const doc = {
+    schema: SCHEMA_ID,
+    schemaVersion: HIFI_SCHEMA_VERSION,
+    generator: { name: "website-to-figma", version: GENERATOR_VERSION },
+    source: { mode: "capture", label },
+    site: { origin: first.origin, host: first.hostname },
+    provenance: {
+      layout: "measured-dom",
+      notes: [
+        "Positions, sizes, colors, borders, radii and text runs are measured by the capture (absolute desktop snapshot, not responsive layout).",
+        "Fonts are mapped to fonts available in Figma at import; substitutions are reported.",
+        "Control label text is inferred from control values; it is marked inferred."
+      ]
+    },
+    assets: used,
+    pages,
+    warnings: docWarnings
+  };
+  const v = validateHifiDoc(doc);
+  if (!v.ok) throw new CaptureError(`Internal error: converted document failed validation:
+${v.errors.join("\n")}`);
+  return v.doc;
+}
+var CaptureError, isObj, arr, fin, str, px, round, segmenter, NON_HTML_EXT;
+var init_convert = __esm({
+  "src/hifi/convert.ts"() {
+    "use strict";
+    init_limits();
+    init_text();
+    init_fonts();
+    init_hifiSchema();
+    init_schema();
+    init_urlGuard();
+    init_canonicalize();
+    init_build();
+    CaptureError = class extends Error {
+    };
+    isObj = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+    arr = (v, max, what) => {
+      if (v === void 0) return [];
+      if (!Array.isArray(v)) throw new CaptureError(`${what}: expected array`);
+      if (v.length > max) throw new CaptureError(`${what}: more than ${max} items`);
+      return v;
+    };
+    fin = (v) => typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= 1e5 ? v : null;
+    str = (v, max = 500) => typeof v === "string" ? v.slice(0, max) : "";
+    px = (v) => {
+      const m = /^(-?\d+(?:\.\d+)?)px$/.exec(str(v, 40).trim());
+      return m ? Number(m[1]) : 0;
+    };
+    round = (n) => Math.round(n * 1e3) / 1e3;
+    segmenter = new Intl.Segmenter(void 0, { granularity: "grapheme" });
+    NON_HTML_EXT = /\.(xml|rss|atom|json|pdf|txt|csv|zip|png|jpe?g|gif|svg|webp)$/i;
+  }
+});
+
+// src/shared/imageInfo.ts
+function u32be(b, i) {
+  return (b[i] << 24 >>> 0) + (b[i + 1] << 16) + (b[i + 2] << 8) + b[i + 3];
+}
+function inspectImage(b) {
+  if (b.length >= 24 && b[0] === 137 && b[1] === 80 && b[2] === 78 && b[3] === 71 && b[4] === 13 && b[5] === 10 && b[6] === 26 && b[7] === 10) {
+    if (u32be(b, 8) !== 13 || b[12] !== 73 || b[13] !== 72 || b[14] !== 68 || b[15] !== 82) return null;
+    return { mime: "image/png", width: u32be(b, 16), height: u32be(b, 20) };
+  }
+  if (b.length >= 10 && b[0] === 71 && b[1] === 73 && b[2] === 70 && b[3] === 56 && (b[4] === 55 || b[4] === 57) && b[5] === 97) {
+    return { mime: "image/gif", width: b[6] | b[7] << 8, height: b[8] | b[9] << 8 };
+  }
+  if (b.length >= 4 && b[0] === 255 && b[1] === 216) {
+    let i = 2;
+    while (i + 9 < b.length) {
+      if (b[i] !== 255) return null;
+      const m = b[i + 1];
+      if (m === 216 || m === 1 || m >= 208 && m <= 215) {
+        i += 2;
+        continue;
+      }
+      const len = b[i + 2] << 8 | b[i + 3];
+      if (len < 2) return null;
+      if (m >= 192 && m <= 207 && m !== 196 && m !== 200 && m !== 204) {
+        if (len < 8) return null;
+        return { mime: "image/jpeg", height: b[i + 5] << 8 | b[i + 6], width: b[i + 7] << 8 | b[i + 8] };
+      }
+      i += 2 + len;
+    }
+    return null;
+  }
+  return null;
+}
+var K;
+var init_imageInfo = __esm({
+  "src/shared/imageInfo.ts"() {
+    "use strict";
+    K = new Uint32Array([
+      1116352408,
+      1899447441,
+      3049323471,
+      3921009573,
+      961987163,
+      1508970993,
+      2453635748,
+      2870763221,
+      3624381080,
+      310598401,
+      607225278,
+      1426881987,
+      1925078388,
+      2162078206,
+      2614888103,
+      3248222580,
+      3835390401,
+      4022224774,
+      264347078,
+      604807628,
+      770255983,
+      1249150122,
+      1555081692,
+      1996064986,
+      2554220882,
+      2821834349,
+      2952996808,
+      3210313671,
+      3336571891,
+      3584528711,
+      113926993,
+      338241895,
+      666307205,
+      773529912,
+      1294757372,
+      1396182291,
+      1695183700,
+      1986661051,
+      2177026350,
+      2456956037,
+      2730485921,
+      2820302411,
+      3259730800,
+      3345764771,
+      3516065817,
+      3600352804,
+      4094571909,
+      275423344,
+      430227734,
+      506948616,
+      659060556,
+      883997877,
+      958139571,
+      1322822218,
+      1537002063,
+      1747873779,
+      1955562222,
+      2024104815,
+      2227730452,
+      2361852424,
+      2428436474,
+      2756734187,
+      3204031479,
+      3329325298
+    ]);
+  }
+});
+
+// src/fixtures/hifiSynthetic.ts
+import { deflateSync } from "node:zlib";
+import { createHash } from "node:crypto";
+function crc32(b) {
+  let c = 4294967295;
+  for (const x of b) c = CRC[(c ^ x) & 255] ^ c >>> 8;
+  return (c ^ 4294967295) >>> 0;
+}
+function chunk(type2, data) {
+  const out = new Uint8Array(12 + data.length);
+  const dv = new DataView(out.buffer);
+  dv.setUint32(0, data.length);
+  for (let i = 0; i < 4; i++) out[4 + i] = type2.charCodeAt(i);
+  out.set(data, 8);
+  dv.setUint32(8 + data.length, crc32(out.subarray(4, 8 + data.length)));
+  return out;
+}
+function syntheticPng(width, height, a, b) {
+  const raw = new Uint8Array((width * 3 + 1) * height);
+  for (let y = 0; y < height; y++) {
+    raw[y * (width * 3 + 1)] = 0;
+    for (let x = 0; x < width; x++) {
+      const c = (x + y) % 20 < 10 ? a : b;
+      raw.set(c, y * (width * 3 + 1) + 1 + x * 3);
+    }
+  }
+  const ihdr = new Uint8Array(13);
+  const dv = new DataView(ihdr.buffer);
+  dv.setUint32(0, width);
+  dv.setUint32(4, height);
+  ihdr.set([8, 2, 0, 0, 0], 8);
+  const parts = [new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", new Uint8Array(deflateSync(raw, { level: 9 }))), chunk("IEND", new Uint8Array())];
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let o = 0;
+  for (const p of parts) {
+    out.set(p, o);
+    o += p.length;
+  }
+  return out;
+}
+function loadedFromBytes(operatorId, kind, bytes, sourceUrl) {
+  const info = inspectImage(bytes);
+  return { operatorId, kind, mime: info.mime, width: info.width, height: info.height, sha256: createHash("sha256").update(bytes).digest("hex"), sourceUrl, bytes };
+}
+function syntheticCapture() {
+  return {
+    schema: "website-to-figma/capture",
+    schemaVersion: 1,
+    label: HIFI_FIXTURE_LABEL,
+    pages: [
+      {
+        url: "https://example.com/",
+        contentType: "text/html; charset=utf-8",
+        referenceAssetId: "ref-home",
+        branding: { colors: { primary: "#0d47a1", background: "#fff", bogus: "red" }, fonts: [{ family: "Avenir Next" }] },
+        measured: {
+          viewport: { width: 800, height: 600 },
+          title: "Synthetic Home",
+          elements: [
+            { tag: "body", x: 0, y: 0, w: 800, h: 600, style: box({ backgroundColor: "rgb(255, 255, 255)" }) },
+            { tag: "header", x: 0, y: 0, w: 800, h: 120, style: box({ backgroundColor: "rgb(245, 247, 255)", borderBottomWidth: "1px", borderBottomColor: "rgb(137, 142, 164)" }) },
+            { tag: "a", x: 40, y: 20, w: 80, h: 36, style: box({ ...border("1px", "rgb(13, 71, 161)"), borderRadius: "5px" }) },
+            { tag: "button", x: 40, y: 160, w: 140, h: 44, style: box({ backgroundColor: "rgb(13, 71, 161)", ...border("2px", "rgb(10, 50, 120)"), borderRadius: "5px 5px 8px 8px" }), control: { type: "submit" } },
+            { tag: "input", x: 200, y: 160, w: 220, h: 44, style: box({ backgroundColor: "rgb(255, 255, 255)", ...border("1px", "rgb(137, 142, 164)"), borderRadius: "5px", paddingLeft: "10px", paddingTop: "10px", paddingRight: "10px", paddingBottom: "10px", fontSize: "16px", fontFamily: sans, color: "rgb(88, 88, 88)" }), control: { type: "text", value: "", placeholder: "Your email" } },
+            { tag: "blockquote", x: 40, y: 230, w: 500, h: 60, style: box({ borderLeftWidth: "4px", borderLeftColor: "rgb(13, 71, 161)" }) }
+          ],
+          texts: [
+            { text: "Home", x: 58, y: 28, w: 44, h: 20, tag: "a", style: st({ color: "rgb(13, 71, 161)" }) },
+            { text: "Synthetic Fixture", x: 40, y: 64, w: 360, h: 48, tag: "h1", style: st({ fontSize: "40px", fontWeight: "700" }) },
+            { text: "Send", x: 88, y: 172, w: 44, h: 20, tag: "button", style: st({ color: "rgb(255, 255, 255)", fontWeight: "700" }) },
+            { text: "A sentence with an ", x: 40, y: 320, w: 160, h: 26, tag: "p", style: st({}) },
+            { text: "inline link", x: 200, y: 320, w: 80, h: 26, tag: "a", style: st({ color: "rgb(13, 71, 161)", textDecorationLine: "underline" }) },
+            { text: " and code ", x: 280, y: 320, w: 76, h: 26, tag: "p", style: st({ fontStyle: "italic" }) },
+            { text: "x = 1", x: 356, y: 320, w: 50, h: 26, tag: "code", code: true, style: st({ fontFamily: "Consolas, Menlo, monospace", color: "rgb(216, 27, 96)" }) },
+            { text: "Hi \u{1F44B}\u{1F3FD} family \u{1F468}\u200D\u{1F469}\u200D\u{1F467}", x: 40, y: 250, w: 200, h: 26, tag: "blockquote", style: st({}) }
+          ],
+          images: [
+            { src: "https://example.com/img/photo.png", alt: "Synthetic photo", x: 560, y: 160, w: 200, h: 120, style: { borderRadius: "5px", objectFit: "cover" } },
+            { src: "https://example.com/img/missing.png", alt: "Missing image", x: 560, y: 300, w: 200, h: 100, style: { borderRadius: "0px" } }
+          ],
+          svgs: [{ x: 700, y: 20, w: 24, h: 24, html: "<svg></svg>" }]
+        }
+      },
+      {
+        url: "https://example.com/feed.xml",
+        contentType: "application/rss+xml",
+        measured: { viewport: { width: 800, height: 600 }, elements: [], texts: [], images: [] }
+      },
+      {
+        url: "https://example.com/about",
+        measured: {
+          viewport: { width: 800, height: 400 },
+          title: "Synthetic About",
+          elements: [{ tag: "body", x: 0, y: 0, w: 800, h: 400, style: box({ backgroundColor: "rgb(255, 255, 255)" }) }],
+          texts: [{ text: "About this synthetic fixture", x: 40, y: 40, w: 300, h: 30, tag: "h2", style: st({ fontSize: "26px", fontWeight: "700" }) }],
+          images: []
+        }
+      }
+    ]
+  };
+}
+function syntheticAssets() {
+  return [
+    loadedFromBytes("photo", "image", syntheticPng(120, 72, [13, 71, 161], [245, 247, 255]), "https://example.com/img/photo.png"),
+    loadedFromBytes("ref-home", "reference", syntheticPng(160, 120, [255, 255, 255], [230, 230, 230]), null)
+  ];
+}
+function buildHifiFixture() {
+  const doc = convertCapture({ capture: syntheticCapture(), assets: syntheticAssets(), assetWarnings: [] });
+  return { ...doc, source: { mode: "fixture", label: HIFI_FIXTURE_LABEL } };
+}
+var HIFI_FIXTURE_LABEL, CRC, sans, st, box, border;
+var init_hifiSynthetic = __esm({
+  "src/fixtures/hifiSynthetic.ts"() {
+    "use strict";
+    init_convert();
+    init_imageInfo();
+    HIFI_FIXTURE_LABEL = "SYNTHETIC HI-FI FIXTURE - not a real website";
+    CRC = (() => {
+      const t = new Uint32Array(256);
+      for (let n = 0; n < 256; n++) {
+        let c = n;
+        for (let k = 0; k < 8; k++) c = c & 1 ? 3988292384 ^ c >>> 1 : c >>> 1;
+        t[n] = c >>> 0;
+      }
+      return t;
+    })();
+    sans = '-apple-system, "Avenir Next", Roboto, sans-serif';
+    st = (o) => ({ fontFamily: sans, fontSize: "16px", fontWeight: "400", fontStyle: "normal", color: "rgb(33, 33, 33)", textDecorationLine: "none", ...o });
+    box = (o) => ({ backgroundColor: "rgba(0, 0, 0, 0)", borderTopWidth: "0px", borderRightWidth: "0px", borderBottomWidth: "0px", borderLeftWidth: "0px", borderTopColor: "rgb(0, 0, 0)", borderRightColor: "rgb(0, 0, 0)", borderBottomColor: "rgb(0, 0, 0)", borderLeftColor: "rgb(0, 0, 0)", borderRadius: "0px", opacity: "1", display: "block", visibility: "visible", ...o });
+    border = (w, c) => ({ borderTopWidth: w, borderRightWidth: w, borderBottomWidth: w, borderLeftWidth: w, borderTopColor: c, borderRightColor: c, borderBottomColor: c, borderLeftColor: c });
+  }
+});
+
+// src/hifi/files.ts
+import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } from "node:fs";
+import { dirname, resolve, sep } from "node:path";
+function readBoundedFile(path, max, root) {
+  const full = resolve(path);
+  if (root) {
+    let parent;
+    try {
+      parent = realpathSync(dirname(full));
+    } catch {
+      throw new CaptureError("file not found");
+    }
+    if (parent !== root && !parent.startsWith(root + sep)) throw new CaptureError("file escapes the manifest directory");
+  }
+  let fd;
+  try {
+    fd = openSync(full, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  } catch (err) {
+    const code = err.code;
+    throw new CaptureError(code === "ELOOP" ? "not a regular file (symlinks are refused)" : "file not found or unreadable");
+  }
+  try {
+    const st2 = fstatSync(fd);
+    if (!st2.isFile()) throw new CaptureError("not a regular file");
+    if (st2.size > max) throw new CaptureError(`larger than ${max} bytes`);
+    const buf = new Uint8Array(Math.min(st2.size, max) + 1);
+    let n = 0;
+    while (n < buf.length) {
+      const r = readSync(fd, buf, n, buf.length - n, null);
+      if (r === 0) break;
+      n += r;
+    }
+    if (n > max) throw new CaptureError(`larger than ${max} bytes`);
+    return buf.subarray(0, n);
+  } finally {
+    closeSync(fd);
+  }
+}
+function readBoundedJson(path, max, what) {
+  const bytes = readBoundedFile(path, max);
+  try {
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch {
+    throw new CaptureError(`${what}: not valid UTF-8 JSON`);
+  }
+}
+var init_files = __esm({
+  "src/hifi/files.ts"() {
+    "use strict";
+    init_convert();
+  }
+});
+
+// src/hifi/assets.ts
+import { createHash as createHash2 } from "node:crypto";
+import { realpathSync as realpathSync2 } from "node:fs";
+import { dirname as dirname2, isAbsolute, resolve as resolve2, sep as sep2 } from "node:path";
+function loadAssetManifest(manifestPath) {
+  const m = readBoundedJson(manifestPath, MAX_MANIFEST_BYTES, "asset manifest");
+  const o = m;
+  if (o?.schema !== "website-to-figma/asset-manifest" || o.schemaVersion !== 1 || !Array.isArray(o.assets)) {
+    throw new CaptureError('asset manifest: expected { schema: "website-to-figma/asset-manifest", schemaVersion: 1, assets: [...] }');
+  }
+  if (o.assets.length > LIMITS.hifiMaxAssets * 5) throw new CaptureError("asset manifest: too many entries");
+  const root = realpathSync2(dirname2(resolve2(manifestPath)));
+  const assets = [];
+  const warnings = [];
+  let total = 0;
+  let pixels = 0;
+  const ids = /* @__PURE__ */ new Set();
+  for (const [i, raw] of o.assets.entries()) {
+    const a = raw;
+    const id = typeof a?.id === "string" ? a.id : "";
+    const reject = (why) => {
+      if (warnings.length < LIMITS.hifiMaxWarnings) warnings.push(cleanText(`Asset ${id || `#${i}`} omitted: ${why}`, LIMITS.maxNoteChars));
+    };
+    if (!/^[A-Za-z0-9._-]{1,64}$/.test(id) || ids.has(id)) throw new CaptureError(`asset manifest: assets[${i}].id must be unique [A-Za-z0-9._-]{1,64}`);
+    ids.add(id);
+    if (a.kind !== "image" && a.kind !== "reference") throw new CaptureError(`asset manifest: assets[${i}].kind must be image | reference`);
+    const file = typeof a.file === "string" ? a.file : "";
+    const declared = typeof a.sha256 === "string" ? a.sha256.toLowerCase() : "";
+    if (!/^[0-9a-f]{64}$/.test(declared)) throw new CaptureError(`asset manifest: assets[${i}].sha256 must be hex SHA-256`);
+    let pageUrl = null;
+    if (a.pageUrl !== void 0 && a.pageUrl !== null) {
+      if (a.kind !== "reference") throw new CaptureError(`asset manifest: assets[${i}].pageUrl is only valid for kind "reference"`);
+      try {
+        pageUrl = parseHttpUrl(String(a.pageUrl)).toString();
+      } catch (err) {
+        reject(`page URL rejected (${err instanceof Error ? err.message : "invalid"})`);
+        continue;
+      }
+    }
+    let sourceUrl = null;
+    if (a.sourceUrl !== void 0 && a.sourceUrl !== null) {
+      try {
+        sourceUrl = parseHttpUrl(String(a.sourceUrl)).toString();
+      } catch (err) {
+        reject(`source URL rejected (${err instanceof Error ? err.message : "invalid"})`);
+        continue;
+      }
+    }
+    if (!file || isAbsolute(file) || file.includes("\\") || file.split("/").some((s) => s === ".." || s === "")) {
+      reject("file must be a relative path inside the manifest directory");
+      continue;
+    }
+    const full = resolve2(root, file);
+    if (!full.startsWith(root + sep2)) {
+      reject("file escapes the manifest directory");
+      continue;
+    }
+    let bytes;
+    try {
+      bytes = readBoundedFile(full, LIMITS.hifiMaxAssetBytes, root);
+    } catch (err) {
+      reject(err instanceof Error ? err.message : "unreadable");
+      continue;
+    }
+    if (total + bytes.length > LIMITS.hifiMaxAssetsTotalBytes) {
+      reject("total asset byte budget exceeded");
+      continue;
+    }
+    const actual = createHash2("sha256").update(bytes).digest("hex");
+    if (actual !== declared) {
+      reject("SHA-256 mismatch");
+      continue;
+    }
+    const info = inspectImage(bytes);
+    if (!info) {
+      reject("not a PNG, JPEG or GIF");
+      continue;
+    }
+    if (info.width < 1 || info.height < 1 || info.width > LIMITS.hifiMaxImageDim || info.height > LIMITS.hifiMaxImageDim) {
+      reject(`${info.width}x${info.height}px exceeds Figma's ${LIMITS.hifiMaxImageDim}px image limit`);
+      continue;
+    }
+    total += bytes.length;
+    if (pixels + info.width * info.height > LIMITS.hifiMaxTotalPixels) {
+      reject("total decoded-pixel budget exceeded");
+      continue;
+    }
+    pixels += info.width * info.height;
+    assets.push({ operatorId: id, kind: a.kind, mime: info.mime, width: info.width, height: info.height, sha256: actual, sourceUrl, pageUrl, bytes });
+  }
+  return { assets, warnings };
+}
+var MAX_MANIFEST_BYTES;
+var init_assets = __esm({
+  "src/hifi/assets.ts"() {
+    "use strict";
+    init_limits();
+    init_imageInfo();
+    init_text();
+    init_urlGuard();
+    init_convert();
+    init_files();
+    MAX_MANIFEST_BYTES = 1e6;
+  }
+});
+
+// src/hifi/adapter.ts
+function measuredOf(data) {
+  const actions = isObj2(data.actions) ? data.actions : null;
+  const returns = actions && Array.isArray(actions.javascriptReturns) ? actions.javascriptReturns : [];
+  for (const r of returns.slice(0, 20)) {
+    const v = isObj2(r) ? r.value : void 0;
+    if (isObj2(v) && Array.isArray(v.elements) && Array.isArray(v.texts) && isObj2(v.viewport)) return v;
+  }
+  return null;
+}
+function captureFromScrapeResponses(responses, label) {
+  if (responses.length === 0) throw new CaptureError("hifi-capture: at least one --scrape file is required");
+  if (responses.length > LIMITS.hifiMaxPages * 5) throw new CaptureError("hifi-capture: too many --scrape files");
+  const pages = [];
+  const screenshotHints = [];
+  for (const { name: name2, json } of responses) {
+    const root = isObj2(json) ? json : null;
+    const data = root && isObj2(root.data) ? root.data : root;
+    if (!data) throw new CaptureError(`${name2}: expected a JSON object`);
+    const measured = measuredOf(data);
+    if (!measured) throw new CaptureError(`${name2}: no measured DOM value (data.actions.javascriptReturns[].value with viewport/elements/texts)`);
+    const meta = isObj2(data.metadata) ? data.metadata : {};
+    const url2 = [measured.url, meta.url, meta.sourceURL].find((u) => typeof u === "string" && u.length > 0);
+    if (!url2) throw new CaptureError(`${name2}: no page URL (measured.url or metadata.url)`);
+    const page = { url: url2, measured };
+    if (typeof meta.contentType === "string") page.contentType = meta.contentType;
+    if (isObj2(data.branding)) page.branding = data.branding;
+    pages.push(page);
+    if (typeof data.screenshot === "string") screenshotHints.push({ pageUrl: url2, screenshotUrl: data.screenshot.slice(0, LIMITS.maxUrlChars) });
+  }
+  return { capture: { schema: "website-to-figma/capture", schemaVersion: 1, label: label.slice(0, 200) || "operator capture", pages }, screenshotHints };
+}
+var isObj2;
+var init_adapter = __esm({
+  "src/hifi/adapter.ts"() {
+    "use strict";
+    init_limits();
+    init_convert();
+    isObj2 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
   }
 });
 
@@ -6586,8 +7661,8 @@ var init_utils = __esm({
       return result;
     };
     kindOf = /* @__PURE__ */ ((cache) => (thing) => {
-      const str = toString.call(thing);
-      return cache[str] || (cache[str] = str.slice(8, -1).toLowerCase());
+      const str2 = toString.call(thing);
+      return cache[str2] || (cache[str2] = str2.slice(8, -1).toLowerCase());
     })(/* @__PURE__ */ Object.create(null));
     kindOfTest = (type2) => {
       type2 = type2.toLowerCase();
@@ -6651,8 +7726,8 @@ var init_utils = __esm({
       "Response",
       "Headers"
     ].map(kindOfTest);
-    trim = (str) => {
-      return str.trim ? str.trim() : str.replace(/^[\s\uFEFF\xA0]+|[\s\uFEFF\xA0]+$/g, "");
+    trim = (str2) => {
+      return str2.trim ? str2.trim() : str2.replace(/^[\s\uFEFF\xA0]+|[\s\uFEFF\xA0]+$/g, "");
     };
     _global = (() => {
       if (typeof globalThis !== "undefined") return globalThis;
@@ -6729,13 +7804,13 @@ var init_utils = __esm({
       } while (sourceObj && (!filter3 || filter3(sourceObj, destObj)) && sourceObj !== Object.prototype);
       return destObj;
     };
-    endsWith = (str, searchString, position) => {
-      str = String(str);
-      if (position === void 0 || position > str.length) {
-        position = str.length;
+    endsWith = (str2, searchString, position) => {
+      str2 = String(str2);
+      if (position === void 0 || position > str2.length) {
+        position = str2.length;
       }
       position -= searchString.length;
-      const lastIndex = str.indexOf(searchString, position);
+      const lastIndex = str2.indexOf(searchString, position);
       return lastIndex !== -1 && lastIndex === position;
     };
     toArray = (thing) => {
@@ -6743,11 +7818,11 @@ var init_utils = __esm({
       if (isArray(thing)) return thing;
       let i = thing.length;
       if (!isNumber2(i)) return null;
-      const arr = new Array(i);
+      const arr2 = new Array(i);
       while (i-- > 0) {
-        arr[i] = thing[i];
+        arr2[i] = thing[i];
       }
-      return arr;
+      return arr2;
     };
     isTypedArray = /* @__PURE__ */ ((TypedArray) => {
       return (thing) => {
@@ -6763,17 +7838,17 @@ var init_utils = __esm({
         fn.call(obj, pair[0], pair[1]);
       }
     };
-    matchAll = (regExp, str) => {
+    matchAll = (regExp, str2) => {
       let matches;
-      const arr = [];
-      while ((matches = regExp.exec(str)) !== null) {
-        arr.push(matches);
+      const arr2 = [];
+      while ((matches = regExp.exec(str2)) !== null) {
+        arr2.push(matches);
       }
-      return arr;
+      return arr2;
     };
     isHTMLForm = kindOfTest("HTMLFormElement");
-    toCamelCase = (str) => {
-      return str.toLowerCase().replace(/[-_\s]([a-z\d])(\w*)/g, function replacer(m, p1, p2) {
+    toCamelCase = (str2) => {
+      return str2.toLowerCase().replace(/[-_\s]([a-z\d])(\w*)/g, function replacer(m, p1, p2) {
         return p1.toUpperCase() + p2;
       });
     };
@@ -6811,8 +7886,8 @@ var init_utils = __esm({
     };
     toObjectSet = (arrayOrString, delimiter) => {
       const obj = {};
-      const define = (arr) => {
-        arr.forEach((value) => {
+      const define = (arr2) => {
+        arr2.forEach((value) => {
           obj[value] = true;
         });
       };
@@ -7006,24 +8081,24 @@ var init_parseHeaders = __esm({
 });
 
 // node_modules/axios/lib/helpers/sanitizeHeaderValue.js
-function trimSPorHTAB(str) {
+function trimSPorHTAB(str2) {
   let start = 0;
-  let end = str.length;
+  let end = str2.length;
   while (start < end) {
-    const code = str.charCodeAt(start);
+    const code = str2.charCodeAt(start);
     if (code !== 9 && code !== 32) {
       break;
     }
     start += 1;
   }
   while (end > start) {
-    const code = str.charCodeAt(end - 1);
+    const code = str2.charCodeAt(end - 1);
     if (code !== 9 && code !== 32) {
       break;
     }
     end -= 1;
   }
-  return start === 0 && end === str.length ? str : str.slice(start, end);
+  return start === 0 && end === str2.length ? str2 : str2.slice(start, end);
 }
 function sanitizeValue(value, invalidChars) {
   if (utils_default.isArray(value)) {
@@ -7060,11 +8135,11 @@ function normalizeValue(value) {
   }
   return utils_default.isArray(value) ? value.map(normalizeValue) : sanitizeHeaderValue(String(value));
 }
-function parseTokens(str) {
+function parseTokens(str2) {
   const tokens = /* @__PURE__ */ Object.create(null);
   const tokensRE = /([^\s,;=]+)\s*(?:=\s*([^,;]+))?/g;
   let match;
-  while (match = tokensRE.exec(str)) {
+  while (match = tokensRE.exec(str2)) {
     tokens[match[1]] = match[2];
   }
   return tokens;
@@ -7111,12 +8186,12 @@ function decodeQuotedString(value) {
 }
 function parseParameters(value) {
   const parameters = /* @__PURE__ */ Object.create(null);
-  const str = String(value);
+  const str2 = String(value);
   let start = 0;
   let quoted = false;
   let escaped = false;
   function parseParameter(end) {
-    const part = trimOWS(str.slice(start, end));
+    const part = trimOWS(str2.slice(start, end));
     const equals = part.indexOf("=");
     if (equals < 1) {
       return;
@@ -7132,8 +8207,8 @@ function parseParameters(value) {
     const parameterValue = trimOWS(part.slice(equals + 1));
     parameters[normalizedName] = decodeQuotedString(parameterValue);
   }
-  for (let i = 0; i < str.length; i++) {
-    const code = str.charCodeAt(i);
+  for (let i = 0; i < str2.length; i++) {
+    const code = str2.charCodeAt(i);
     if (quoted) {
       if (escaped) {
         escaped = false;
@@ -7149,7 +8224,7 @@ function parseParameters(value) {
       start = i + 1;
     }
   }
-  parseParameter(str.length);
+  parseParameter(str2.length);
   return parameters;
 }
 function matchHeaderValue(context, value, header, filter3, isHeaderNameFilter) {
@@ -7168,8 +8243,8 @@ function matchHeaderValue(context, value, header, filter3, isHeaderNameFilter) {
   }
 }
 function formatHeader(header) {
-  return header.trim().toLowerCase().replace(/([a-z\d])(\w*)/g, (w, char, str) => {
-    return char.toUpperCase() + str;
+  return header.trim().toLowerCase().replace(/([a-z\d])(\w*)/g, (w, char, str2) => {
+    return char.toUpperCase() + str2;
   });
 }
 function buildAccessors(obj, header) {
@@ -7195,7 +8270,7 @@ var init_AxiosHeaders = __esm({
     init_sanitizeHeaderValue();
     $internals = /* @__PURE__ */ Symbol("internals");
     parameterNameRE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
-    isValidHeaderName = (str) => /^[-_a-zA-Z0-9^`|~,!#$%&'*+.]+$/.test(str.trim());
+    isValidHeaderName = (str2) => /^[-_a-zA-Z0-9^`|~,!#$%&'*+.]+$/.test(str2.trim());
     AxiosHeaders = class {
       constructor(headers) {
         headers && this.set(headers);
@@ -16384,11 +17459,11 @@ var require_mime_types = __commonJS({
       }
       return false;
     }
-    function contentType(str) {
-      if (!str || typeof str !== "string") {
+    function contentType(str2) {
+      if (!str2 || typeof str2 !== "string") {
         return false;
       }
-      var mime = str.indexOf("/") === -1 ? exports2.lookup(str) : str;
+      var mime = str2.indexOf("/") === -1 ? exports2.lookup(str2) : str2;
       if (!mime) {
         return false;
       }
@@ -16934,31 +18009,31 @@ var require_implementation = __commonJS({
     var max = Math.max;
     var funcType = "[object Function]";
     var concatty = function concatty2(a, b) {
-      var arr = [];
+      var arr2 = [];
       for (var i = 0; i < a.length; i += 1) {
-        arr[i] = a[i];
+        arr2[i] = a[i];
       }
       for (var j = 0; j < b.length; j += 1) {
-        arr[j + a.length] = b[j];
+        arr2[j + a.length] = b[j];
       }
-      return arr;
+      return arr2;
     };
     var slicy = function slicy2(arrLike, offset) {
-      var arr = [];
+      var arr2 = [];
       for (var i = offset || 0, j = 0; i < arrLike.length; i += 1, j += 1) {
-        arr[j] = arrLike[i];
+        arr2[j] = arrLike[i];
       }
-      return arr;
+      return arr2;
     };
-    var joiny = function(arr, joiner) {
-      var str = "";
-      for (var i = 0; i < arr.length; i += 1) {
-        str += arr[i];
-        if (i + 1 < arr.length) {
-          str += joiner;
+    var joiny = function(arr2, joiner) {
+      var str2 = "";
+      for (var i = 0; i < arr2.length; i += 1) {
+        str2 += arr2[i];
+        if (i + 1 < arr2.length) {
+          str2 += joiner;
         }
       }
-      return str;
+      return str2;
     };
     module.exports = function bind2(that) {
       var target = this;
@@ -17143,7 +18218,7 @@ var require_get_intrinsic = __commonJS({
     var max = require_max();
     var min = require_min();
     var pow = require_pow();
-    var round = require_round();
+    var round2 = require_round();
     var sign = require_sign();
     var $Function = Function;
     var getEvalledConstructor = function(expressionSyntax) {
@@ -17257,7 +18332,7 @@ var require_get_intrinsic = __commonJS({
       "%Math.max%": max,
       "%Math.min%": min,
       "%Math.pow%": pow,
-      "%Math.round%": round,
+      "%Math.round%": round2,
       "%Math.sign%": sign,
       "%Reflect.getPrototypeOf%": $ReflectGPO
     };
@@ -17530,8 +18605,8 @@ var require_form_data = __commonJS({
     var setToStringTag = require_es_set_tostringtag();
     var hasOwn = require_hasown();
     var populate = require_populate();
-    function escapeHeaderParam(str) {
-      return String(str).replace(/\r/g, "%0D").replace(/\n/g, "%0A").replace(/"/g, "%22");
+    function escapeHeaderParam(str2) {
+      return String(str2).replace(/\r/g, "%0D").replace(/\n/g, "%0A").replace(/"/g, "%22");
     }
     function FormData3(options) {
       if (!(this instanceof FormData3)) {
@@ -17873,8 +18948,8 @@ function renderKey(path, key, dots) {
     return !dots && i ? "[" + token + "]" : token;
   }).join(dots ? "." : "");
 }
-function isFlatArray(arr) {
-  return utils_default.isArray(arr) && !arr.some(isVisitable);
+function isFlatArray(arr2) {
+  return utils_default.isArray(arr2) && !arr2.some(isVisitable);
 }
 function toFormData(obj, formData, options) {
   if (!utils_default.isObject(obj)) {
@@ -17947,7 +19022,7 @@ function toFormData(obj, formData, options) {
     });
   }
   function defaultVisitor(value, key, path) {
-    let arr = value;
+    let arr2 = value;
     if (utils_default.isReactNative(formData) && utils_default.isReactNativeBlob(value)) {
       formData.append(renderKey(path, key, dots), convertValue(value));
       return false;
@@ -17956,9 +19031,9 @@ function toFormData(obj, formData, options) {
       if (utils_default.endsWith(key, "{}")) {
         key = metaTokens ? key : key.slice(0, -2);
         value = stringifyWithDepthLimit(value, 1);
-      } else if (utils_default.isArray(value) && isFlatArray(value) || (utils_default.isFileList(value) || utils_default.endsWith(key, "[]")) && (arr = utils_default.toArray(value))) {
+      } else if (utils_default.isArray(value) && isFlatArray(value) || (utils_default.isFileList(value) || utils_default.endsWith(key, "[]")) && (arr2 = utils_default.toArray(value))) {
         key = removeBrackets(key);
-        arr.forEach(function each(el, index) {
+        arr2.forEach(function each(el, index) {
           !(utils_default.isUndefined(el) || el === null) && formData.append(
             // eslint-disable-next-line no-nested-ternary
             indexes === true ? renderKey([key], index, dots) : indexes === null ? key : key + "[]",
@@ -18017,7 +19092,7 @@ var init_toFormData = __esm({
 });
 
 // node_modules/axios/lib/helpers/AxiosURLSearchParams.js
-function encode2(str) {
+function encode2(str2) {
   const charMap = {
     "!": "%21",
     "'": "%27",
@@ -18026,7 +19101,7 @@ function encode2(str) {
     "~": "%7E",
     "%20": "+"
   };
-  return encodeURIComponent(str).replace(/[!'()~]|%20/g, function replacer(match) {
+  return encodeURIComponent(str2).replace(/[!'()~]|%20/g, function replacer(match) {
     return charMap[match];
   });
 }
@@ -18276,14 +19351,14 @@ var init_node = __esm({
       ALPHA_DIGIT: ALPHA + ALPHA.toUpperCase() + DIGIT
     };
     generateString = (size = 16, alphabet = ALPHABET.ALPHA_DIGIT) => {
-      let str = "";
+      let str2 = "";
       const { length } = alphabet;
       const randomValues = new Uint32Array(size);
       crypto2.randomFillSync(randomValues);
       for (let i = 0; i < size; i++) {
-        str += alphabet[randomValues[i] % length];
+        str2 += alphabet[randomValues[i] % length];
       }
-      return str;
+      return str2;
     };
     node_default = {
       isNode: true,
@@ -18376,15 +19451,15 @@ function parsePropPath(name2) {
   }
   return path;
 }
-function arrayToObject(arr) {
+function arrayToObject(arr2) {
   const obj = {};
-  const keys = Object.keys(arr);
+  const keys = Object.keys(arr2);
   let i;
   const len = keys.length;
   let key;
   for (i = 0; i < len; i++) {
     key = keys[i];
-    obj[key] = arr[key];
+    obj[key] = arr2[key];
   }
   return obj;
 }
@@ -18645,10 +19720,10 @@ var init_CanceledError = __esm({
 });
 
 // node_modules/axios/lib/core/settle.js
-function settle(resolve2, reject, response) {
+function settle(resolve4, reject, response) {
   const validateStatus2 = response.config.validateStatus;
   if (!response.status || !validateStatus2 || validateStatus2(response.status)) {
-    resolve2(response);
+    resolve4(response);
   } else {
     reject(new AxiosError_default(
       "Request failed with status code " + response.status,
@@ -18864,13 +19939,13 @@ var require_ms = __commonJS({
         "val is not a non-empty string or a valid number. val=" + JSON.stringify(val)
       );
     };
-    function parse3(str) {
-      str = String(str);
-      if (str.length > 100) {
+    function parse3(str2) {
+      str2 = String(str2);
+      if (str2.length > 100) {
         return;
       }
       var match = /^(-?(?:\d+)?\.?\d+) *(milliseconds?|msecs?|ms|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|years?|yrs?|y)?$/i.exec(
-        str
+        str2
       );
       if (!match) {
         return;
@@ -19471,7 +20546,7 @@ var require_node = __commonJS({
     var { formatters } = module.exports;
     formatters.o = function(v) {
       this.inspectOpts.colors = this.useColors;
-      return util5.inspect(v, this.inspectOpts).split("\n").map((str) => str.trim()).join(" ");
+      return util5.inspect(v, this.inspectOpts).split("\n").map((str2) => str2.trim()).join(" ");
     };
     formatters.O = function(v) {
       this.inspectOpts.colors = this.useColors;
@@ -19498,12 +20573,12 @@ var require_promisify = __commonJS({
     Object.defineProperty(exports2, "__esModule", { value: true });
     function promisify(fn) {
       return function(req, opts) {
-        return new Promise((resolve2, reject) => {
+        return new Promise((resolve4, reject) => {
           fn.call(this, req, opts, (err, rtn) => {
             if (err) {
               reject(err);
             } else {
-              resolve2(rtn);
+              resolve4(rtn);
             }
           });
         });
@@ -19707,7 +20782,7 @@ var require_parse_proxy_response = __commonJS({
     var debug_1 = __importDefault(require_src());
     var debug = debug_1.default("https-proxy-agent:parse-proxy-response");
     function parseProxyResponse(socket) {
-      return new Promise((resolve2, reject) => {
+      return new Promise((resolve4, reject) => {
         let buffersLength = 0;
         const buffers = [];
         function read() {
@@ -19747,7 +20822,7 @@ var require_parse_proxy_response = __commonJS({
           const firstLine = buffered.toString("ascii", 0, buffered.indexOf("\r\n"));
           const statusCode = +firstLine.split(" ")[1];
           debug("got proxy server response: %o", firstLine);
-          resolve2({
+          resolve4({
             statusCode,
             buffered
           });
@@ -19768,11 +20843,11 @@ var require_agent = __commonJS({
     "use strict";
     var __awaiter = exports2 && exports2.__awaiter || function(thisArg, _arguments, P, generator) {
       function adopt(value) {
-        return value instanceof P ? value : new P(function(resolve2) {
-          resolve2(value);
+        return value instanceof P ? value : new P(function(resolve4) {
+          resolve4(value);
         });
       }
-      return new (P || (P = Promise))(function(resolve2, reject) {
+      return new (P || (P = Promise))(function(resolve4, reject) {
         function fulfilled(value) {
           try {
             step(generator.next(value));
@@ -19788,7 +20863,7 @@ var require_agent = __commonJS({
           }
         }
         function step(result) {
-          result.done ? resolve2(result.value) : adopt(result.value).then(fulfilled, rejected);
+          result.done ? resolve4(result.value) : adopt(result.value).then(fulfilled, rejected);
         }
         step((generator = generator.apply(thisArg, _arguments || [])).next());
       });
@@ -20614,7 +21689,7 @@ var init_AxiosTransformStream = __esm({
         }
         return super._read(size);
       }
-      _transform(chunk, encoding, callback) {
+      _transform(chunk2, encoding, callback) {
         const internals = this[kInternals];
         const maxRate = internals.maxRate;
         const readableHighWaterMark = this.readableHighWaterMark;
@@ -20673,7 +21748,7 @@ var init_AxiosTransformStream = __esm({
             } : _callback
           );
         };
-        transformChunk(chunk, function transformNextChunk(err, _chunk) {
+        transformChunk(chunk2, function transformNextChunk(err, _chunk) {
           if (err) {
             return callback(err);
           }
@@ -20811,21 +21886,21 @@ var init_ZlibHeaderTransformStream = __esm({
   "node_modules/axios/lib/helpers/ZlibHeaderTransformStream.js"() {
     "use strict";
     ZlibHeaderTransformStream = class extends stream2.Transform {
-      __transform(chunk, encoding, callback) {
-        this.push(chunk);
+      __transform(chunk2, encoding, callback) {
+        this.push(chunk2);
         callback();
       }
-      _transform(chunk, encoding, callback) {
-        if (chunk.length !== 0) {
+      _transform(chunk2, encoding, callback) {
+        if (chunk2.length !== 0) {
           this._transform = this.__transform;
-          if (chunk[0] !== 120) {
+          if (chunk2[0] !== 120) {
             const header = Buffer.alloc(2);
             header[0] = 120;
             header[1] = 156;
             this.push(header, encoding);
           }
         }
-        this.__transform(chunk, encoding, callback);
+        this.__transform(chunk2, encoding, callback);
       }
     };
     ZlibHeaderTransformStream_default = ZlibHeaderTransformStream;
@@ -21418,7 +22493,7 @@ var isHexDigit, isPercentEncodedByte, hexValue, isBase64Char, isBase64Whitespace
 var init_estimateDataURLDecodedBytes = __esm({
   "node_modules/axios/lib/helpers/estimateDataURLDecodedBytes.js"() {
     isHexDigit = (charCode) => charCode >= 48 && charCode <= 57 || charCode >= 65 && charCode <= 70 || charCode >= 97 && charCode <= 102;
-    isPercentEncodedByte = (str, i, len) => i + 2 < len && isHexDigit(str.charCodeAt(i + 1)) && isHexDigit(str.charCodeAt(i + 2));
+    isPercentEncodedByte = (str2, i, len) => i + 2 < len && isHexDigit(str2.charCodeAt(i + 1)) && isHexDigit(str2.charCodeAt(i + 2));
     hexValue = (charCode) => charCode <= 57 ? charCode - 48 : (charCode & 223) - 55;
     isBase64Char = (charCode) => charCode >= 65 && charCode <= 90 || // A-Z
     charCode >= 97 && charCode <= 122 || // a-z
@@ -21787,7 +22862,7 @@ var init_http = __esm({
     http2Sessions = new Http2Sessions_default();
     isHttpAdapterSupported = typeof process !== "undefined" && utils_default.kindOf(process) === "process";
     wrapAsync = (asyncExecutor) => {
-      return new Promise((resolve2, reject) => {
+      return new Promise((resolve4, reject) => {
         let onDone;
         let isDone;
         const done = (value, isRejected) => {
@@ -21797,7 +22872,7 @@ var init_http = __esm({
         };
         const _resolve = (value) => {
           done(value);
-          resolve2(value);
+          resolve4(value);
         };
         const _reject = (reason) => {
           done(reason, true);
@@ -21868,7 +22943,7 @@ var init_http = __esm({
       }
     };
     http_default = isHttpAdapterSupported && function httpAdapter(config) {
-      return wrapAsync(async function dispatchHttpRequest(resolve2, reject, onDone) {
+      return wrapAsync(async function dispatchHttpRequest(resolve4, reject, onDone) {
         const own3 = (key) => utils_default.getSafeProp(config, key);
         const transitional2 = own3("transitional") || transitional_default;
         let data = own3("data");
@@ -22005,7 +23080,7 @@ var init_http = __esm({
           }
           let convertedData;
           if (method !== "GET") {
-            return settle(resolve2, reject, {
+            return settle(resolve4, reject, {
               status: 405,
               statusText: "method not allowed",
               headers: {},
@@ -22027,7 +23102,7 @@ var init_http = __esm({
           } else if (responseType === "stream") {
             convertedData = stream3.Readable.from(convertedData);
           }
-          return settle(resolve2, reject, {
+          return settle(resolve4, reject, {
             data: convertedData,
             status: 200,
             statusText: "OK",
@@ -22381,8 +23456,8 @@ var init_http = __esm({
               const source = responseStream;
               async function* enforceMaxContentLength() {
                 let totalResponseBytes = 0;
-                for await (const chunk of source) {
-                  totalResponseBytes += chunk.length;
+                for await (const chunk2 of source) {
+                  totalResponseBytes += chunk2.length;
                   if (totalResponseBytes > limit) {
                     throw new AxiosError_default(
                       "maxContentLength size of " + limit + " exceeded",
@@ -22391,7 +23466,7 @@ var init_http = __esm({
                       lastRequest
                     );
                   }
-                  yield chunk;
+                  yield chunk2;
                 }
               }
               responseStream = stream3.Readable.from(enforceMaxContentLength(), {
@@ -22399,13 +23474,13 @@ var init_http = __esm({
               });
             }
             response.data = responseStream;
-            settle(resolve2, reject, response);
+            settle(resolve4, reject, response);
           } else {
             const responseBuffer = [];
             let totalResponseBytes = 0;
-            responseStream.on("data", function handleStreamData(chunk) {
-              responseBuffer.push(chunk);
-              totalResponseBytes += chunk.length;
+            responseStream.on("data", function handleStreamData(chunk2) {
+              responseBuffer.push(chunk2);
+              totalResponseBytes += chunk2.length;
               if (maxContentLength > -1 && totalResponseBytes > maxContentLength) {
                 rejected = true;
                 responseStream.destroy();
@@ -22450,7 +23525,7 @@ var init_http = __esm({
               } catch (err) {
                 return reject(AxiosError_default.from(err, null, config, response.request, response));
               }
-              settle(resolve2, reject, response);
+              settle(resolve4, reject, response);
             });
           }
           abortEmitter.once("abort", (err) => {
@@ -22538,8 +23613,8 @@ var init_http = __esm({
               [
                 data,
                 new stream3.Transform({
-                  transform(chunk, _enc, cb) {
-                    bytesSent += chunk.length;
+                  transform(chunk2, _enc, cb) {
+                    bytesSent += chunk2.length;
                     if (bytesSent > limit) {
                       return cb(
                         new AxiosError_default(
@@ -22550,7 +23625,7 @@ var init_http = __esm({
                         )
                       );
                     }
-                    cb(null, chunk);
+                    cb(null, chunk2);
                   }
                 })
               ],
@@ -22851,7 +23926,7 @@ var init_resolveConfig = __esm({
     init_AxiosHeaders();
     init_setFormDataHeaders();
     init_buildURL();
-    encodeUTF8 = (str) => encodeURIComponent(str).replace(
+    encodeUTF8 = (str2) => encodeURIComponent(str2).replace(
       /%([0-9A-F]{2})/gi,
       (_, hex) => String.fromCharCode(parseInt(hex, 16))
     );
@@ -22877,7 +23952,7 @@ var init_xhr = __esm({
     init_sanitizeHeaderValue();
     isXHRAdapterSupported = typeof XMLHttpRequest !== "undefined";
     xhr_default = isXHRAdapterSupported && function(config) {
-      return new Promise(function dispatchXhrRequest(resolve2, reject) {
+      return new Promise(function dispatchXhrRequest(resolve4, reject) {
         const _config = resolveConfig_default(config);
         let requestData = _config.data;
         const requestHeaders = AxiosHeaders_default.from(_config.headers).normalize();
@@ -22932,7 +24007,7 @@ var init_xhr = __esm({
           };
           settle(
             function _resolve(value) {
-              resolve2(value);
+              resolve4(value);
               done();
             },
             function _reject(err) {
@@ -23107,23 +24182,23 @@ var init_composeSignals = __esm({
 var streamChunk, readBytes, readStream, trackStream;
 var init_trackStream = __esm({
   "node_modules/axios/lib/helpers/trackStream.js"() {
-    streamChunk = function* (chunk, chunkSize) {
-      let len = chunk.byteLength;
+    streamChunk = function* (chunk2, chunkSize) {
+      let len = chunk2.byteLength;
       if (!chunkSize || len < chunkSize) {
-        yield chunk;
+        yield chunk2;
         return;
       }
       let pos = 0;
       let end;
       while (pos < len) {
         end = pos + chunkSize;
-        yield chunk.slice(pos, end);
+        yield chunk2.slice(pos, end);
         pos = end;
       }
     };
     readBytes = async function* (iterable, chunkSize) {
-      for await (const chunk of readStream(iterable)) {
-        yield* streamChunk(chunk, chunkSize);
+      for await (const chunk2 of readStream(iterable)) {
+        yield* streamChunk(chunk2, chunkSize);
       }
     };
     readStream = async function* (stream4) {
@@ -23217,7 +24292,7 @@ var init_fetch = __esm({
       window: null
     };
     ({ isFunction: isFunction2 } = utils_default);
-    encodeUTF82 = (str) => encodeURIComponent(str).replace(
+    encodeUTF82 = (str2) => encodeURIComponent(str2).replace(
       /%([0-9A-F]{2})/gi,
       (_, hex) => String.fromCharCode(parseInt(hex, 16))
     );
@@ -23267,7 +24342,7 @@ var init_fetch = __esm({
         return false;
       }
       const isReadableStreamSupported = isFetchSupported && isFunction2(ReadableStream2);
-      const encodeText = isFetchSupported && (typeof TextEncoder2 === "function" ? /* @__PURE__ */ ((encoder) => (str) => encoder.encode(str))(new TextEncoder2()) : async (str) => new Uint8Array(await new Request2(str).arrayBuffer()));
+      const encodeText = isFetchSupported && (typeof TextEncoder2 === "function" ? /* @__PURE__ */ ((encoder) => (str2) => encoder.encode(str2))(new TextEncoder2()) : async (str2) => new Uint8Array(await new Request2(str2).arrayBuffer()));
       const supportsRequestStream = isRequestSupported && isReadableStreamSupported && test(() => {
         let duplexAccessed = false;
         const request = new Request2(platform_default.origin, {
@@ -23587,8 +24662,8 @@ var init_fetch = __esm({
             }
           }
           !isStreamResponse && unsubscribe && unsubscribe();
-          return await new Promise((resolve2, reject) => {
-            settle(resolve2, reject, {
+          return await new Promise((resolve4, reject) => {
+            settle(resolve4, reject, {
               data: responseData,
               headers: AxiosHeaders_default.from(response.headers),
               status: response.status,
@@ -24121,8 +25196,8 @@ var init_CancelToken = __esm({
           throw new TypeError("executor must be a function.");
         }
         let resolvePromise;
-        this.promise = new Promise(function promiseExecutor(resolve2) {
-          resolvePromise = resolve2;
+        this.promise = new Promise(function promiseExecutor(resolve4) {
+          resolvePromise = resolve4;
         });
         const token = this;
         this.promise.then((cancel) => {
@@ -24135,9 +25210,9 @@ var init_CancelToken = __esm({
         });
         this.promise.then = (onfulfilled) => {
           let _resolve;
-          const promise = new Promise((resolve2) => {
-            token.subscribe(resolve2);
-            _resolve = resolve2;
+          const promise = new Promise((resolve4) => {
+            token.subscribe(resolve4);
+            _resolve = resolve4;
           }).then(onfulfilled);
           promise.cancel = function reject() {
             token.unsubscribe(_resolve);
@@ -24216,8 +25291,8 @@ var init_CancelToken = __esm({
 
 // node_modules/axios/lib/helpers/spread.js
 function spread(callback) {
-  return function wrap(arr) {
-    return callback.apply(null, arr);
+  return function wrap(arr2) {
+    return callback.apply(null, arr2);
   };
 }
 var init_spread = __esm({
@@ -26284,8 +27359,8 @@ var init_util2 = __esm({
         }
         return keys;
       };
-      util5.find = (arr, checker) => {
-        for (const item of arr) {
+      util5.find = (arr2, checker) => {
+        for (const item of arr2) {
           if (checker(item))
             return item;
         }
@@ -32054,7 +33129,7 @@ function processingContinuesDelayMs(err) {
   return Math.min(RESUME_MAX_DELAY_MS, Math.max(RESUME_MIN_DELAY_MS, seconds * 1e3));
 }
 async function scrape(http3, url2, options, deps = {}) {
-  const sleep2 = deps.sleepImpl ?? ((ms) => new Promise((resolve2) => setTimeout(resolve2, ms)));
+  const sleep2 = deps.sleepImpl ?? ((ms) => new Promise((resolve4) => setTimeout(resolve4, ms)));
   if (!url2 || !url2.trim()) {
     throw new Error("URL cannot be empty");
   }
@@ -32251,9 +33326,9 @@ function prepareSearchPayload(req) {
   }
   return payload;
 }
-function transformArray(arr) {
+function transformArray(arr2) {
   const results = [];
-  for (const item of arr) {
+  for (const item of arr2) {
     if (item && typeof item === "object") {
       if ("markdown" in item || "html" in item || "rawHtml" in item || "links" in item || "screenshot" in item || "changeTracking" in item || "summary" in item || "json" in item) {
         results.push(item);
@@ -32680,7 +33755,7 @@ function raceAbort(promise, signal) {
     });
     return Promise.reject(abortReason(signal));
   }
-  return new Promise((resolve2, reject) => {
+  return new Promise((resolve4, reject) => {
     const onAbort = () => {
       promise.catch(() => {
       });
@@ -32690,7 +33765,7 @@ function raceAbort(promise, signal) {
     promise.then(
       (value) => {
         signal.removeEventListener("abort", onAbort);
-        resolve2(value);
+        resolve4(value);
       },
       (err) => {
         signal.removeEventListener("abort", onAbort);
@@ -32700,7 +33775,7 @@ function raceAbort(promise, signal) {
   });
 }
 function sleep(ms, signal) {
-  return new Promise((resolve2, reject) => {
+  return new Promise((resolve4, reject) => {
     if (signal?.aborted) return reject(abortReason(signal));
     const onAbort = () => {
       clearTimeout(timer);
@@ -32708,7 +33783,7 @@ function sleep(ms, signal) {
     };
     const timer = setTimeout(() => {
       signal?.removeEventListener("abort", onAbort);
-      resolve2();
+      resolve4();
     }, ms);
     signal?.addEventListener("abort", onAbort, { once: true });
   });
@@ -33296,8 +34371,8 @@ function queryString(params) {
   for (const [key, value] of Object.entries(params)) {
     if (value !== void 0 && value !== null) query.set(key, String(value));
   }
-  const str = query.toString();
-  return str ? `?${str}` : "";
+  const str2 = query.toString();
+  return str2 ? `?${str2}` : "";
 }
 function dataOrThrow(res, action) {
   if (res.status !== 200 || !res.data?.success || res.data.data == null) {
@@ -33943,14 +35018,14 @@ var init_dist2 = __esm({
         return `${wsBase}${path}`;
       }
       async start() {
-        return new Promise((resolve2, reject) => {
+        return new Promise((resolve4, reject) => {
           const onDone = () => {
             cleanup();
-            resolve2();
+            resolve4();
           };
           const onError = (err) => {
             cleanup();
-            resolve2();
+            resolve4();
           };
           const cleanup = () => {
             this.removeListener("done", onDone);
@@ -35244,7 +36319,7 @@ var init_dist2 = __esm({
               } else if (extractStatus.status === "failed" || extractStatus.status === "cancelled") {
                 throw new FirecrawlError(`Extract job ${extractStatus.status}. Error: ${extractStatus.error}`, statusResponse.status);
               }
-              await new Promise((resolve2) => setTimeout(resolve2, 1e3));
+              await new Promise((resolve4) => setTimeout(resolve4, 1e3));
             } while (extractStatus.status !== "completed");
           } else {
             this.handleError(response, "extract");
@@ -35404,7 +36479,7 @@ var init_dist2 = __esm({
               } else if (["active", "paused", "pending", "queued", "waiting", "scraping"].includes(statusData.status)) {
                 checkInterval = Math.max(checkInterval, 2);
                 await new Promise(
-                  (resolve2) => setTimeout(resolve2, checkInterval * 1e3)
+                  (resolve4) => setTimeout(resolve4, checkInterval * 1e3)
                 );
               } else {
                 throw new FirecrawlError(
@@ -35422,7 +36497,7 @@ var init_dist2 = __esm({
             if (this.isRetryableError(error) && networkRetries < maxNetworkRetries) {
               networkRetries++;
               const backoffDelay = Math.min(1e3 * Math.pow(2, networkRetries - 1), 1e4);
-              await new Promise((resolve2) => setTimeout(resolve2, backoffDelay));
+              await new Promise((resolve4) => setTimeout(resolve4, backoffDelay));
               continue;
             }
             throw new FirecrawlError(error, 500);
@@ -35537,7 +36612,7 @@ var init_dist2 = __esm({
             if (researchStatus.status !== "processing") {
               break;
             }
-            await new Promise((resolve2) => setTimeout(resolve2, 2e3));
+            await new Promise((resolve4) => setTimeout(resolve4, 2e3));
           }
           return { success: false, error: "Research job terminated unexpectedly" };
         } catch (error) {
@@ -35655,7 +36730,7 @@ var init_dist2 = __esm({
             if (researchStatus.status !== "processing") {
               break;
             }
-            await new Promise((resolve2) => setTimeout(resolve2, 2e3));
+            await new Promise((resolve4) => setTimeout(resolve4, 2e3));
           }
           return { success: false, error: "Research job terminated unexpectedly" };
         } catch (error) {
@@ -35755,7 +36830,7 @@ var init_dist2 = __esm({
             if (generationStatus.status !== "processing") {
               break;
             }
-            await new Promise((resolve2) => setTimeout(resolve2, 2e3));
+            await new Promise((resolve4) => setTimeout(resolve4, 2e3));
           }
           return { success: false, error: "LLMs.txt generation job terminated unexpectedly" };
         } catch (error) {
@@ -36143,11 +37218,11 @@ function abortError() {
   return new Error("Aborted by user; remote crawl cancel requested. Nothing written.");
 }
 function abortableSleep(ms, signal) {
-  return new Promise((resolve2, reject) => {
+  return new Promise((resolve4, reject) => {
     if (signal?.aborted) return reject(abortError());
     const t = setTimeout(() => {
       signal?.removeEventListener("abort", onAbort);
-      resolve2();
+      resolve4();
     }, ms);
     const onAbort = () => {
       clearTimeout(t);
@@ -36311,36 +37386,55 @@ var init_firecrawl = __esm({
 
 // src/cli.ts
 var cli_exports = {};
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname as dirname3, resolve as resolve3 } from "node:path";
 function parseFlags(args) {
   const positional = [];
   const flags = /* @__PURE__ */ new Map();
   const excludes = [];
+  const scrapes = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--yes" || a === "--help" || a === "-h" || a === "--no-map" || a === "--confirm-existing-credits" || a === "--confirm-no-topup") {
       flags.set(a.replace(/^-+/, ""), true);
-    } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance") {
+    } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label") {
       const v = args[++i];
       if (v === void 0) throw new UsageError(`${a} needs a value`);
       if (a === "--exclude") excludes.push(v);
+      else if (a === "--scrape") scrapes.push(v);
       else flags.set(a.slice(2), v);
     } else if (a.startsWith("-")) throw new UsageError(`Unknown option ${a}`);
     else positional.push(a);
   }
-  return { positional, flags, excludes };
+  return { positional, flags, excludes, scrapes };
 }
 function intFlag(v, name2, fallback) {
   if (v === void 0) return fallback;
   if (v === true || !/^\d+$/.test(v)) throw new UsageError(`--${name2} must be a whole number`);
   return Number(v);
 }
+function writeHifi(doc, out) {
+  const text = JSON.stringify(doc) + "\n";
+  if (utf8Length(text) > LIMITS.hifiMaxJsonBytes) throw new Error(`Output exceeds ${LIMITS.hifiMaxJsonBytes} bytes; not written`);
+  const path = resolve3(out);
+  mkdirSync(dirname3(path), { recursive: true });
+  writeFileSync(path, text);
+  return path;
+}
+function hifiSummary(doc, path) {
+  const lines = [`Wrote ${path} (schemaVersion 2, ${doc.source.mode}: ${doc.source.label})`, `  assets: ${doc.assets.length} (${doc.assets.map((a) => `${a.id} ${a.kind} ${a.width}x${a.height} sha256 ${a.sha256.slice(0, 12)}`).join("; ") || "none"})`];
+  for (const p of doc.pages) {
+    lines.push(`  ${p.path}: ${p.nodes.length} nodes, ${p.width}x${p.height}, reference ${p.referenceAssetId ?? "none"}${p.truncated ? ", TRUNCATED" : ""}`);
+    for (const w of p.warnings) lines.push(`    warning: ${w}`);
+  }
+  for (const w of doc.warnings) lines.push(`  warning: ${w}`);
+  return lines.join("\n");
+}
 function writeDoc(doc, out) {
   const text = JSON.stringify(doc, null, 2) + "\n";
   if (utf8Length(text) > LIMITS.maxJsonBytes) throw new Error(`Output exceeds ${LIMITS.maxJsonBytes} bytes; not written`);
-  const path = resolve(out);
-  mkdirSync(dirname(path), { recursive: true });
+  const path = resolve3(out);
+  mkdirSync(dirname3(path), { recursive: true });
   writeFileSync(path, text);
   return path;
 }
@@ -36357,9 +37451,41 @@ function summary(doc, path) {
 }
 async function main2(argv) {
   const [cmd, ...rest] = argv;
-  const { positional, flags, excludes: rawExcludes } = parseFlags(rest);
+  const { positional, flags, excludes: rawExcludes, scrapes } = parseFlags(rest);
   if (!cmd || cmd === "--help" || cmd === "-h" || flags.has("help")) {
     console.log(USAGE);
+    return 0;
+  }
+  if (cmd === "fixture" && positional[0] === "hifi") {
+    const doc = buildHifiFixture();
+    const out = typeof flags.get("out") === "string" ? flags.get("out") : "out/hifi-synthetic.json";
+    console.log(hifiSummary(doc, writeHifi(doc, out)));
+    return 0;
+  }
+  if (cmd === "hifi-capture") {
+    const out = flags.get("out");
+    if (scrapes.length === 0 || typeof out !== "string") throw new UsageError("hifi-capture needs --scrape FILE (repeatable) and --out FILE");
+    const label = typeof flags.get("label") === "string" ? flags.get("label") : "operator capture";
+    const responses = scrapes.map((f) => ({ name: f, json: readBoundedJson(f, LIMITS.hifiMaxJsonBytes, f) }));
+    const { capture, screenshotHints } = captureFromScrapeResponses(responses, label);
+    const text = JSON.stringify(capture) + "\n";
+    if (utf8Length(text) > LIMITS.hifiMaxJsonBytes) throw new CaptureError("capture output too large; not written");
+    const path = resolve3(out);
+    mkdirSync(dirname3(path), { recursive: true });
+    writeFileSync(path, text);
+    console.log(`Wrote ${path} (${capture.pages.length} page(s); nothing fetched)`);
+    for (const h of screenshotHints) console.log(`  screenshot URL present for ${h.pageUrl} (NOT downloaded; add local bytes to the asset manifest with kind "reference" and pageUrl)`);
+    return 0;
+  }
+  if (cmd === "hifi") {
+    const capturePath = flags.get("capture");
+    const manifestPath = flags.get("assets");
+    const out = flags.get("out");
+    if (typeof capturePath !== "string" || typeof out !== "string") throw new UsageError("hifi needs --capture FILE and --out FILE");
+    const capture = readBoundedJson(capturePath, LIMITS.hifiMaxJsonBytes, "capture");
+    const loaded = typeof manifestPath === "string" ? loadAssetManifest(manifestPath) : { assets: [], warnings: [] };
+    const doc = convertCapture({ capture, assets: loaded.assets, assetWarnings: loaded.warnings });
+    console.log(hifiSummary(doc, writeHifi(doc, out)));
     return 0;
   }
   if (cmd === "fixture") {
@@ -36373,13 +37499,13 @@ async function main2(argv) {
   if (cmd === "validate") {
     const file = positional[0];
     if (!file) throw new UsageError("validate needs a file path");
-    const result = parseSiteMapJson(readFileSync(file, "utf8"));
+    const result = parseImportJson(new TextDecoder().decode(readBoundedFile(file, LIMITS.hifiMaxJsonBytes)));
     if (!result.ok) {
       console.error(`INVALID ${file}
   ${result.errors.join("\n  ")}`);
       return 1;
     }
-    console.log(`VALID ${file} (${result.doc.pages.length} pages, schemaVersion ${result.doc.schemaVersion})`);
+    console.log(`VALID ${file} (${result.doc.pages.length} pages, schemaVersion ${result.version})`);
     return 0;
   }
   if (cmd === "crawl") {
@@ -36458,6 +37584,12 @@ var init_cli = __esm({
     init_generate();
     init_limits();
     init_schema();
+    init_hifiSchema();
+    init_hifiSynthetic();
+    init_convert();
+    init_assets();
+    init_files();
+    init_adapter();
     init_urlGuard();
     init_build();
     init_firecrawl();
@@ -36475,8 +37607,17 @@ var init_cli = __esm({
       --max-credits is an accepted-risk budget compared with creditsUsed
       telemetry (best-effort cancel), not a provider-enforced ceiling. The
       printed standard estimate (limit x 1) is not a worst case.
+  website-to-figma fixture hifi [--out FILE]
+      Write a SYNTHETIC hi-fi (schemaVersion 2) sample with generated images.
+  website-to-figma hifi --capture FILE [--assets MANIFEST] --out FILE
+      Offline: convert an operator-supplied measured DOM capture plus local,
+      SHA-256-pinned PNG/JPEG/GIF assets into a schemaVersion 2 import file.
+      Never fetches anything.
+  website-to-figma hifi-capture --scrape FILE [--scrape FILE]... [--label TEXT] --out FILE
+      Offline adapter: locally saved scrape responses whose measured DOM is in
+      data.actions.javascriptReturns[].value -> capture format. Never fetches.
   website-to-figma validate <FILE>
-      Validate a site map JSON file against the current schema.`;
+      Validate a site map JSON file (schemaVersion 1 or 2).`;
     UsageError = class extends Error {
     };
     main2(process.argv.slice(2)).then(
