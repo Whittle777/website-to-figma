@@ -175,6 +175,18 @@ URL checks (`src/security/urlGuard.ts`) run on the start URL and on every page's
   [`ipaddr.js`](https://github.com/whitequark/ipaddr.js), which covers private, loopback,
   link-local (including `169.254.169.254`), CGNAT, ULA, multicast, reserved, and IPv4-mapped,
   NAT64, 6to4 and Teredo forms.
+- **One owner-approved exception (2026-11-07):** for URLs sent to or returned by *hosted Firecrawl*
+  whose hostname is exactly `simplecss.org`, the local DNS-answer lookup is skipped. That means
+  only the crawl start URL and Firecrawl's reported final URLs. It does not cover `www.`,
+  subdomains, a trailing dot or any other host. The operator's local resolver is a FakeIP proxy
+  (`198.18.0.0/15`), so its answers say nothing about the hosted fetch.
+  - All structural checks still apply: scheme, credentials, ports, IP literals (`198.18.0.0/15`
+    literals are always rejected), local/reserved names, exact same-site matching, exclusions and
+    query handling.
+  - **Risk:** for this one hostname, whether it resolves to a private address, DNS rebinding and
+    redirect hops all depend only on Firecrawl's own documented "Network protections"
+    (https://docs.firecrawl.dev/security). This project has not independently verified those
+    controls. Every other host, and any local fetch, keeps the full local DNS check.
 - same-site means the same hostname, with one leading `www.` treated as equivalent. There is no
   suffix matching, so `evil.example.com` and `example.com.evil.net` are both different sites.
 

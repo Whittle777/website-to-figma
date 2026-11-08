@@ -52,6 +52,19 @@ FIRECRAWL_API_KEY=... node website-to-figma.mjs crawl https://SITE.example/ --no
   --confirm-existing-credits --confirm-no-topup --yes
 ```
 
+## URL safety exception (exactly `simplecss.org`, hosted Firecrawl only)
+
+The start URL and every final URL Firecrawl reports must pass the full structural URL checks. For
+every host except exactly `simplecss.org`, they must also pass a local DNS check: every answer must
+be public unicast. For `simplecss.org`, the owner approved skipping only the local DNS-answer
+lookup (2026-11-07), because the operator's resolver returns FakeIP addresses (`198.18.0.0/15`).
+
+- **Scope:** no `www.`, subdomain, trailing-dot or look-alike variants, and no flag to extend it.
+- **Still rejected:** `198.18.0.0/15` IP literals.
+- **Risk:** for this host, private-address resolution, DNS rebinding and redirect hops rely
+  solely on Firecrawl's documented Network protections (https://docs.firecrawl.dev/security).
+  This tool has not verified those controls.
+
 ## Request settings (standard options only)
 
 - **Crawl:**

@@ -113,6 +113,25 @@ export function parseHttpUrl(raw: string): URL {
   return url;
 }
 
+// Owner-approved (2026-11-07) narrow exception: for URLs handed to or returned
+// by HOSTED Firecrawl only, the local DNS-answer lookup is omitted for this
+// exact hostname (no www, subdomain, trailing-dot or suffix variants). The
+// local resolver there is a FakeIP proxy (198.18.0.0/15), so its answers say
+// nothing about the hosted fetch. All structural checks still apply. Local
+// fetches and every other host keep the full DNS check.
+const HOSTED_DNS_CHECK_EXEMPT_HOSTNAME = "simplecss.org";
+
+// For hosted Firecrawl requests (start URL and returned final URLs) only.
+export async function assertHostedFirecrawlUrl(
+  raw: string,
+  resolve: Resolver = systemResolver,
+  cache?: Map<string, Promise<void>>,
+): Promise<URL> {
+  const url = parseHttpUrl(raw);
+  if (url.hostname === HOSTED_DNS_CHECK_EXEMPT_HOSTNAME) return url;
+  return assertPublicHttpUrl(raw, resolve, cache);
+}
+
 // Full check: syntax plus local DNS. Every answer must be public; a single
 // private answer rejects the host (mixed answers are a rebinding red flag).
 export async function assertPublicHttpUrl(

@@ -5814,6 +5814,11 @@ function parseHttpUrl(raw) {
   }
   return url2;
 }
+async function assertHostedFirecrawlUrl(raw, resolve2 = systemResolver, cache) {
+  const url2 = parseHttpUrl(raw);
+  if (url2.hostname === HOSTED_DNS_CHECK_EXEMPT_HOSTNAME) return url2;
+  return assertPublicHttpUrl(raw, resolve2, cache);
+}
 async function assertPublicHttpUrl(raw, resolve2 = systemResolver, cache) {
   const url2 = parseHttpUrl(raw);
   const host = url2.hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "").toLowerCase();
@@ -5842,7 +5847,7 @@ async function assertPublicHttpUrl(raw, resolve2 = systemResolver, cache) {
   }
   return url2;
 }
-var import_ipaddr, UnsafeUrlError, BLOCKED_SUFFIXES, DNS_TIMEOUT_MS, systemResolver;
+var import_ipaddr, UnsafeUrlError, BLOCKED_SUFFIXES, DNS_TIMEOUT_MS, systemResolver, HOSTED_DNS_CHECK_EXEMPT_HOSTNAME;
 var init_urlGuard = __esm({
   "src/security/urlGuard.ts"() {
     "use strict";
@@ -5878,6 +5883,7 @@ var init_urlGuard = __esm({
         clearTimeout(timer);
       }
     };
+    HOSTED_DNS_CHECK_EXEMPT_HOSTNAME = "simplecss.org";
   }
 });
 
@@ -36108,7 +36114,7 @@ async function processCrawlDocuments(docs, start, resolver, excludes = []) {
     }
     let u;
     try {
-      u = await assertPublicHttpUrl(finalUrl, resolver, dnsCache);
+      u = await assertHostedFirecrawlUrl(finalUrl, resolver, dnsCache);
     } catch (err) {
       drop(err instanceof UnsafeUrlError ? "final URL failed safety check" : "final URL unusable");
       continue;
@@ -36177,7 +36183,7 @@ async function executeCrawl(opts, plan) {
   const notes = new Notes();
   let incomplete = false;
   const ct = { ...CALL_TIMEOUT_MS, ...opts.callTimeouts };
-  const start = await assertPublicHttpUrl(opts.url, resolver);
+  const start = await assertHostedFirecrawlUrl(opts.url, resolver);
   const startUrl = canonicalizeUrl(start);
   if (isExcludedPath(new URL(startUrl).pathname, excludes)) {
     throw new CrawlPolicyError("Refusing: the start URL itself matches an --exclude prefix");

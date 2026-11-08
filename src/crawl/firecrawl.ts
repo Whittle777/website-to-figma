@@ -12,7 +12,7 @@
 // cannot observe the IPs Firecrawl actually connected to or its redirect
 // chain; that is outside this tool's control.
 import type { CrawlErrorsResponse, CrawlJob, CrawlOptions, Document, MapData, MapOptions, PaginationConfig } from "@mendable/firecrawl-js";
-import { assertPublicHttpUrl, isSameSite, parseHttpUrl, siteKey, systemResolver, UnsafeUrlError, type Resolver } from "../security/urlGuard";
+import { assertHostedFirecrawlUrl, isSameSite, parseHttpUrl, siteKey, systemResolver, UnsafeUrlError, type Resolver } from "../security/urlGuard";
 import { assertLimit, Notes, type RawPage } from "../normalize/build";
 import { buildSiteMapBounded } from "../normalize/boundedBuild";
 import { canonicalizeUrl } from "../normalize/canonicalize";
@@ -141,7 +141,7 @@ export async function processCrawlDocuments(
     }
     let u: URL;
     try {
-      u = await assertPublicHttpUrl(finalUrl, resolver, dnsCache);
+      u = await assertHostedFirecrawlUrl(finalUrl, resolver, dnsCache);
     } catch (err) {
       drop(err instanceof UnsafeUrlError ? "final URL failed safety check" : "final URL unusable");
       continue;
@@ -233,7 +233,7 @@ export async function executeCrawl(opts: CrawlRunOptions, plan: CrawlPlan): Prom
   let incomplete = false;
   const ct: CallTimeouts = { ...CALL_TIMEOUT_MS, ...opts.callTimeouts };
 
-  const start = await assertPublicHttpUrl(opts.url, resolver);
+  const start = await assertHostedFirecrawlUrl(opts.url, resolver);
   const startUrl = canonicalizeUrl(start);
   if (isExcludedPath(new URL(startUrl).pathname, excludes)) {
     throw new CrawlPolicyError("Refusing: the start URL itself matches an --exclude prefix");
