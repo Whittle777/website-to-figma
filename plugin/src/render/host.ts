@@ -75,7 +75,8 @@ export interface Host<N> {
   // True when a verified embedded image can be filled by this host.
   hasImage(assetId: string): boolean;
   hide(n: N): void;
-  component(parent: N, p: FrameSpec & { description?: string }): N;
+  // parent null = UNPARENTED (state variant children: only the combined set is appended)
+  component(parent: N | null, p: FrameSpec & { description?: string }): N;
   instance(parent: N, comp: N, p: { x: number; y: number }): Promise<N>;
   // Paint override on an instance child found by its exact name and type.
   override(inst: N, child: { name: string; type: string }, patch: { fills?: Paint | null; strokes?: Paint }): Promise<boolean>;

@@ -10,7 +10,8 @@
     ]
   },
   "include": [
-    "test/statesPlan.test.ts"
+    "test/statesPlan.test.ts",
+    "test/diagnostic.test.ts"
   ],
   "exclude": []
 }

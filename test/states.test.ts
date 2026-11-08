@@ -28,7 +28,7 @@ describe("tagged-return adapter", () => {
     expect(r.screenshotHints.map((h) => [h.state, h.screenshotUrl, h.scrollY])).toEqual([
       ["Default", "https://example.com/shot-0.png", 60],
       ["FAQ open", "https://example.com/shot-1.png", 60],
-      ["Tab two", "https://example.com/shot-2.png", 0],
+      ["Tab two", "https://example.com/shot-2.png", 60],
     ]);
     expect(r.warnings).toEqual([]);
   });
@@ -69,9 +69,10 @@ describe("state variants in schema v2", () => {
     expect(s.reactions).toBe("click-cycle");
     expect(s.variants.map((v) => [v.name, v.provenance])).toEqual([["Default", "baseline"], ["FAQ open", "synthetic"], ["Tab two", "synthetic"]]);
     const [base, faq, tab] = s.variants;
-    expect(base!.frame).toEqual({ x: 40, y: 100, w: 400, h: 80 }); // baseline uses the first state's scope
-    expect(faq!.frame).toEqual({ x: 40, y: 100, w: 400, h: 140 });
-    expect(tab!.frame).toEqual({ x: 0, y: 0, w: 800, h: 600 }); // no scope: viewport at screenshot scrollY
+    // valid group: all three measure the same target region (#widget)
+    expect(base!.frame).toEqual({ x: 40, y: 100, w: 560, h: 80 });
+    expect(faq!.frame).toEqual({ x: 40, y: 100, w: 560, h: 140 });
+    expect(tab!.frame).toEqual({ x: 40, y: 100, w: 560, h: 80 });
     expect(faq!.nodes.some((n) => n.kind === "text" && n.text === "Synthetic answer text.")).toBe(true);
     expect(base!.nodes.some((n) => n.kind === "text" && n.text === "Synthetic answer text.")).toBe(false);
     expect(faq!.notes.join(" ")).toMatch(/SYNTHETIC state: DOM modification .*not an observed original state/);
@@ -80,6 +81,7 @@ describe("state variants in schema v2", () => {
     expect(base!.notes.join(" ")).toMatch(/Baseline/);
     expect(faq!.referenceAssetId).not.toBeNull();
     expect(faq!.screenshot).toEqual({ association: "action-order", scrollY: 60, viewportW: 800, viewportH: 600, verified: "target-in-viewport" });
+    expect(doc.pages[0]!.warnings.join()).not.toMatch(/suppressed/);
     // nodes are frame-relative
     const q = faq!.nodes.find((n) => n.kind === "text" && n.text === "Synthetic question?")!;
     expect([q.x, q.y]).toEqual([16, 26]);
@@ -109,6 +111,29 @@ describe("state variants in schema v2", () => {
     const full = buildStatesFixture({ manual: true }).pages[0]!;
     expect(full.states!.variants).toHaveLength(3);
     expect(full.warnings.join()).toMatch(/Manual state "Menu open" omitted: 3-state limit reached/);
+  });
+
+  it("suppresses variants of a different target, identical variants, and groups left with < 2", () => {
+    const json = clone(syntheticStateResponse()) as any;
+    const R = json.data.actions.javascriptReturns as any[];
+    const m = (seq: number) => R.find((r) => r.value.w2f === "state" && r.value.seq === seq).value;
+    m(2).verify.target.selector = "#elsewhere"; // Tab two now measures another target
+    const one = convert(json).pages[0]!;
+    expect(one.states!.variants.map((v) => v.name)).toEqual(["Default", "FAQ open"]);
+    expect(one.warnings.join()).toMatch(/State "Tab two" suppressed from the variant set: targets #elsewhere, not the baseline's #widget/);
+    m(1).measured = clone(m(0).measured); // FAQ open now identical to the baseline
+    m(1).scope = clone(m(0).scope);
+    const none = convert(json).pages[0]!;
+    expect(none.states).toBeUndefined();
+    expect(none.warnings.join()).toMatch(/State "FAQ open" suppressed from the variant set: measured identical to the baseline/);
+    expect(none.warnings.join()).toMatch(/State group suppressed: fewer than 2 valid, distinct variants/);
+    // geometry: a frame in another region is suppressed even when no selector was recorded
+    const g = clone(syntheticStateResponse()) as any;
+    const G = g.data.actions.javascriptReturns as any[];
+    const gm = (seq: number) => G.find((r) => r.value.w2f === "state" && r.value.seq === seq).value;
+    gm(2).verify.target = null;
+    gm(2).scope = { x: 40, y: 900, w: 560, h: 80 };
+    expect(convert(g).pages[0]!.warnings.join()).toMatch(/State "Tab two" suppressed from the variant set: frame \(40,900 560x80\) is not the baseline's region/);
   });
 
   it("validator enforces the bounded state schema", () => {

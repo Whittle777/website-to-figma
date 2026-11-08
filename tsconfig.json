@@ -22,6 +22,7 @@
     "test/**/*.ts"
   ],
   "exclude": [
-    "test/statesPlan.test.ts"
+    "test/statesPlan.test.ts",
+    "test/diagnostic.test.ts"
   ]
 }

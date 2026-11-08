@@ -60,11 +60,13 @@ export function syntheticStateResponse(opts: { dropScreenshot?: boolean; failRev
     media,
     truncated: false,
   });
-  const faqScope = { x: 40, y: 100, w: 400, h: 80 };
+  // VALID GROUP: every state measures the same target (#widget: the FAQ and
+  // the tab, x 40 w 560) and each synthetic state changes something inside it.
+  const faqScope = { x: 40, y: 100, w: 560, h: 80 };
   const states = [
     state(0, "Default", "none", faqScope, []),
     opts.errorState ? { w2f: "state", seq: 1, name: "FAQ open", provenance: "synthetic", applied: [], missing: [], refused: [], error: "boom", reverted: 1 } : state(1, "FAQ open", "faq", { ...faqScope, h: 140 }, [{ selector: "#faq details", mechanism: "details-open" }]),
-    state(2, "Tab two", "tab", null, [{ selector: "#tab2", mechanism: "attribute-set" }]),
+    state(2, "Tab two", "tab", faqScope, [{ selector: "#tab2", mechanism: "attribute-set" }]),
   ];
   // Current tagged format: each state = apply (mutations/trigger + scroll into
   // view) followed (after a provider wait) by measure+verify.
@@ -73,7 +75,7 @@ export function syntheticStateResponse(opts: { dropScreenshot?: boolean; failRev
     const apply = { w2f: "apply", seq: v.seq, name: v.name, provenance: v.provenance, applied: applied ?? [], refused: refused ?? [], missing: missing ?? [], trigger: trigger ?? null, error: error ?? null, scrollY: v.screenshotScrollY ?? 0 };
     const scope = v.scope as { y: number; h: number } | null | undefined;
     const sy = typeof v.screenshotScrollY === "number" ? v.screenshotScrollY : 0;
-    const measure = error ? { w2f: "state", seq: v.seq, name: v.name, provenance: v.provenance, missing: [], ...synthMeasure(v.seq as number) } : { ...rest, w2f: "state", missing: [], verify: { scrollY: sy, viewport: { width: 800, height: 600 }, documentHeight: 700, expandedViewport: false, target: scope ? { selector: "#scope", viewTop: scope.y - sy, viewBottom: scope.y + scope.h - sy, inViewport: true, partiallyVisible: true } : null }, documentHeight: 700 };
+    const measure = error ? { w2f: "state", seq: v.seq, name: v.name, provenance: v.provenance, missing: [], ...synthMeasure(v.seq as number) } : { ...rest, w2f: "state", missing: [], verify: { scrollY: sy, viewport: { width: 800, height: 600 }, documentHeight: 700, expandedViewport: false, target: scope ? { selector: "#widget", viewTop: scope.y - sy, viewBottom: scope.y + scope.h - sy, inViewport: true, partiallyVisible: true } : null }, documentHeight: 700 };
     return [{ type: "object", value: apply }, { type: "object", value: measure }];
   };
   const synthMeasure = (seq: number) => {

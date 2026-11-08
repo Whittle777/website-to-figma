@@ -9453,6 +9453,7 @@ function attachStates(ctx) {
     if (rawStates.length || stateRefs.length) {
       const variants = [];
       const refSha = /* @__PURE__ */ new Map();
+      const targetOf = /* @__PURE__ */ new Map();
       const base2 = rawStates.find((s) => s.seq === 0) ?? null;
       const KINDS = ["synthetic", "scroll-triggered", "page-api"];
       const ordered = base2 ? [base2, ...rawStates.filter((s) => s !== base2 && KINDS.includes(String(s.provenance)))] : [];
@@ -9533,6 +9534,7 @@ function attachStates(ctx) {
           notes: notes.slice(0, 10).map(note)
         });
         if (ref) refSha.set(variants[variants.length - 1], ref.sha256);
+        targetOf.set(variants[variants.length - 1], isObj(st3.verify) && isObj(st3.verify.target) && typeof st3.verify.target.selector === "string" ? st3.verify.target.selector : null);
         if (ref && assoc !== "action-order") pw(`State "${name3}": screenshot was not tied to this state by action order; check the operator's manifest label`);
       }
       const plannedNames = new Set(rawStates.map((s) => typeof s.name === "string" ? s.name.toLowerCase() : ""));
@@ -9566,6 +9568,29 @@ function attachStates(ctx) {
         });
         refSha.set(variants[variants.length - 1], ref.sha256);
         budget -= 1;
+      }
+      const baseV = variants.find((v) => v.provenance === "baseline");
+      const sig = (v) => JSON.stringify(v.nodes.map((n) => [n.kind, Math.round(n.x), Math.round(n.y), Math.round(n.w), Math.round(n.h), n.kind === "text" ? n.text : null, n.kind === "box" ? [n.fill, n.opacity] : null, n.kind === "text" ? n.color : null]));
+      if (baseV) {
+        const bt = targetOf.get(baseV) ?? null;
+        for (const v of [...variants]) {
+          if (v === baseV || v.provenance === "manual") continue;
+          const t = targetOf.get(v) ?? null;
+          const f = v.frame;
+          const b = baseV.frame;
+          let why = null;
+          if (bt !== null && t !== null && bt !== t) why = `targets ${t}, not the baseline's ${bt}`;
+          else if (Math.abs(f.x - b.x) > 2 || Math.abs(f.w - b.w) > 2 || Math.abs(f.y - b.y) > 100) why = `frame (${Math.round(f.x)},${Math.round(f.y)} ${Math.round(f.w)}x${Math.round(f.h)}) is not the baseline's region (${Math.round(b.x)},${Math.round(b.y)} ${Math.round(b.w)}x${Math.round(b.h)})`;
+          else if (sig(v) === sig(baseV)) why = "measured identical to the baseline (not a distinct state)";
+          if (why) {
+            pw(`State "${v.name}" suppressed from the variant set: ${why}`);
+            variants.splice(variants.indexOf(v), 1);
+          }
+        }
+      }
+      if (variants.length < 2) {
+        if (variants.length || rawStates.length > 1) pw(`State group suppressed: fewer than 2 valid, distinct variants of the same target remain (no variant set or reactions created)`);
+        variants.length = 0;
       }
       const bySha = /* @__PURE__ */ new Map();
       for (const v of variants) {
@@ -11214,18 +11239,18 @@ function syntheticStateResponse(opts = {}) {
     media,
     truncated: false
   });
-  const faqScope = { x: 40, y: 100, w: 400, h: 80 };
+  const faqScope = { x: 40, y: 100, w: 560, h: 80 };
   const states = [
     state(0, "Default", "none", faqScope, []),
     opts.errorState ? { w2f: "state", seq: 1, name: "FAQ open", provenance: "synthetic", applied: [], missing: [], refused: [], error: "boom", reverted: 1 } : state(1, "FAQ open", "faq", { ...faqScope, h: 140 }, [{ selector: "#faq details", mechanism: "details-open" }]),
-    state(2, "Tab two", "tab", null, [{ selector: "#tab2", mechanism: "attribute-set" }])
+    state(2, "Tab two", "tab", faqScope, [{ selector: "#tab2", mechanism: "attribute-set" }])
   ];
   const split = (v) => {
     const { applied, refused, missing, error, reverted: _r, trigger, ...rest } = v;
     const apply = { w2f: "apply", seq: v.seq, name: v.name, provenance: v.provenance, applied: applied ?? [], refused: refused ?? [], missing: missing ?? [], trigger: trigger ?? null, error: error ?? null, scrollY: v.screenshotScrollY ?? 0 };
     const scope = v.scope;
     const sy = typeof v.screenshotScrollY === "number" ? v.screenshotScrollY : 0;
-    const measure = error ? { w2f: "state", seq: v.seq, name: v.name, provenance: v.provenance, missing: [], ...synthMeasure(v.seq) } : { ...rest, w2f: "state", missing: [], verify: { scrollY: sy, viewport: { width: 800, height: 600 }, documentHeight: 700, expandedViewport: false, target: scope ? { selector: "#scope", viewTop: scope.y - sy, viewBottom: scope.y + scope.h - sy, inViewport: true, partiallyVisible: true } : null }, documentHeight: 700 };
+    const measure = error ? { w2f: "state", seq: v.seq, name: v.name, provenance: v.provenance, missing: [], ...synthMeasure(v.seq) } : { ...rest, w2f: "state", missing: [], verify: { scrollY: sy, viewport: { width: 800, height: 600 }, documentHeight: 700, expandedViewport: false, target: scope ? { selector: "#widget", viewTop: scope.y - sy, viewBottom: scope.y + scope.h - sy, inViewport: true, partiallyVisible: true } : null }, documentHeight: 700 };
     return [{ type: "object", value: apply }, { type: "object", value: measure }];
   };
   const synthMeasure = (seq) => {
@@ -41899,6 +41924,314 @@ var init_acquire = __esm({
   }
 });
 
+// src/states/diagnostic.ts
+var diagnostic_exports = {};
+__export(diagnostic_exports, {
+  DIAG_SCREENSHOT: () => DIAG_SCREENSHOT,
+  DIAG_TAGS: () => DIAG_TAGS,
+  DIAG_TIMEOUT_MS: () => DIAG_TIMEOUT_MS,
+  DIAG_URL: () => DIAG_URL,
+  DIAG_WALL_MS: () => DIAG_WALL_MS,
+  SCROLL_REPORT_SCRIPT: () => SCROLL_REPORT_SCRIPT,
+  assertDiagnosticGates: () => assertDiagnosticGates,
+  buildDiagnosticPreview: () => buildDiagnosticPreview,
+  diagnosticPreviewSha256: () => diagnosticPreviewSha256,
+  executeDiagnostic: () => executeDiagnostic,
+  interpretDiagnostic: () => interpretDiagnostic,
+  probeScript: () => probeScript,
+  validateDiagnosticPreview: () => validateDiagnosticPreview,
+  validateDiagnosticResponse: () => validateDiagnosticResponse
+});
+function probeScript(tag) {
+  return `(function w2fDiagProbe() { const d = document.documentElement, b = document.body, vv = window.visualViewport, rect = ${rect}; return { w2f: "diag-probe", tag: ${JSON.stringify(tag)}, innerWidth: window.innerWidth, innerHeight: window.innerHeight, rootClientWidth: d.clientWidth, rootClientHeight: d.clientHeight, visualViewport: vv ? { width: vv.width, height: vv.height, scale: vv.scale, offsetTop: vv.offsetTop, pageTop: vv.pageTop } : null, scrollY: window.scrollY, documentHeight: Math.max(d.scrollHeight, b ? b.scrollHeight : 0), devicePixelRatio: window.devicePixelRatio, readyState: document.readyState, features: rect("#features"), hero: rect("#hero") }; })();`;
+}
+function buildDiagnosticPreview() {
+  const actions = [
+    { type: "wait", milliseconds: 2e3 },
+    { type: "executeJavascript", script: probeScript("P0") },
+    { ...DIAG_SCREENSHOT, viewport: { ...DIAG_SCREENSHOT.viewport } },
+    { type: "executeJavascript", script: probeScript("P1") },
+    { type: "executeJavascript", script: SCROLL_REPORT_SCRIPT },
+    { type: "wait", milliseconds: 1e3 },
+    { type: "executeJavascript", script: probeScript("P2") },
+    { ...DIAG_SCREENSHOT, viewport: { ...DIAG_SCREENSHOT.viewport } },
+    { type: "executeJavascript", script: probeScript("P3") }
+  ];
+  const roles = [
+    { index: 0, role: "wait" },
+    { index: 1, role: "probe", tag: "P0" },
+    { index: 2, role: "screenshot", tag: "S1" },
+    { index: 3, role: "probe", tag: "P1" },
+    { index: 4, role: "scroll", tag: "scroll" },
+    { index: 5, role: "wait" },
+    { index: 6, role: "probe", tag: "P2" },
+    { index: 7, role: "screenshot", tag: "S2" },
+    { index: 8, role: "probe", tag: "P3" }
+  ];
+  return {
+    schema: "website-to-figma/diagnostic-preview",
+    schemaVersion: 1,
+    sent: false,
+    purpose: "Viewport diagnostic: does a screenshot action viewport (1920x1080) resize the layout viewport persistently, and can the page then scroll? One page, one request.",
+    notice: [
+      "NOT SENT. Paid execution (diag-run) is a separate operator-gated command that HOLDS without --yes.",
+      "Provider cost is UNKNOWN beyond the documented 1 credit per scrape: screenshot/action/scan pricing is not published. The local ledger is a reservation allowance, not a provider cap.",
+      "Probes are read-only. The only page effect is window.scrollTo(0, 3000).",
+      "PNG size is the screenshot crop; compare it to innerHeight, root clientHeight, visualViewport and document height without assuming they are equal. Image differences alone do not prove scrolling."
+    ],
+    body: { url: DIAG_URL, formats: ["rawHtml"], onlyMainContent: false, proxy: "basic", timeout: DIAG_TIMEOUT_MS, actions },
+    roles,
+    actionCount: 9,
+    combinedWaitMs: 3e3,
+    screenshots: 2,
+    timing: { requestTimeoutMs: DIAG_TIMEOUT_MS, sdkHttpTimeoutMs: DIAG_TIMEOUT_MS + 5e3, wallClockMs: DIAG_WALL_MS }
+  };
+}
+function diagnosticPreviewSha256(p = buildDiagnosticPreview()) {
+  return sha256(canonicalJson(p));
+}
+function validateDiagnosticPreview(json) {
+  const preview = buildDiagnosticPreview();
+  if (canonicalJson(json) !== canonicalJson(preview)) throw new StateRunPolicyError("diagnostic preview does not match the fixed reviewed diagnostic; regenerate it with diag-plan and review that exact file");
+  return { preview, previewSha256: diagnosticPreviewSha256(preview), requestSha256: sha256(canonicalJson(preview.body)) };
+}
+function assertDiagnosticGates(g) {
+  const missing = [];
+  if (!Number.isInteger(g.operatorCreditsPerRequest) || g.operatorCreditsPerRequest < 1 || g.operatorCreditsPerRequest > 100) missing.push("--operator-credits-per-request N (1..100; YOUR asserted reservation, not a price)");
+  if (!Number.isInteger(g.operatorReportedBalance) || g.operatorReportedBalance < 0) missing.push("--operator-reported-balance N");
+  if (!g.confirmExistingCredits) missing.push("--confirm-existing-credits");
+  if (!g.confirmNoTopup) missing.push("--confirm-no-topup");
+  if (!g.ledgerPath) missing.push("--ledger FILE (local project ledger; reservation allowance, not a provider cap)");
+  if (missing.length) throw new StateRunPolicyError(`Refusing before any request: missing operator inputs:
+  ${missing.join("\n  ")}`);
+  const perRequest = g.operatorCreditsPerRequest;
+  if (perRequest > g.operatorReportedBalance) throw new StateRunPolicyError(`operator-asserted reservation ${perRequest} exceeds the operator-reported balance ${g.operatorReportedBalance}`);
+  let l;
+  try {
+    l = readLedger(g.ledgerPath);
+  } catch (err) {
+    throw new StateRunPolicyError(err instanceof Error ? err.message : String(err));
+  }
+  const open = unresolved(l);
+  if (open.length) throw new StateRunPolicyError(`ledger has unresolved paid attempt(s): ${open.map((e2) => e2.id).join(", ")}; resolve them first ("ledger resolve")`);
+  const committed = committedCredits(l);
+  if (committed + perRequest > l.capCredits) throw new StateRunPolicyError(`ledger: ${committed} committed + ${perRequest} reservation exceeds the ${l.capCredits}-credit local project budget ceiling (not a provider cap)`);
+  return { perRequest, committed, remaining: l.capCredits - committed };
+}
+function parseProbe(v) {
+  const vv = isObj7(v.visualViewport) ? v.visualViewport : null;
+  return {
+    tag: String(v.tag),
+    innerWidth: num(v.innerWidth),
+    innerHeight: num(v.innerHeight),
+    rootClientWidth: num(v.rootClientWidth),
+    rootClientHeight: num(v.rootClientHeight),
+    visualViewport: vv ? { width: num(vv.width) ?? 0, height: num(vv.height) ?? 0, scale: num(vv.scale) ?? 0, offsetTop: num(vv.offsetTop) ?? 0, pageTop: num(vv.pageTop) ?? 0 } : null,
+    scrollY: num(v.scrollY),
+    documentHeight: num(v.documentHeight),
+    devicePixelRatio: num(v.devicePixelRatio),
+    readyState: typeof v.readyState === "string" ? v.readyState.slice(0, 20) : null,
+    features: isObj7(v.features) ? v.features : null,
+    hero: isObj7(v.hero) ? v.hero : null
+  };
+}
+async function validateDiagnosticResponse(doc, resolver) {
+  const empty = { probes: [], scroll: null, screenshots: [] };
+  const reject = (status, reason) => ({ status, reason, ...empty });
+  if (!isObj7(doc)) return reject("ambiguous", "response is not an object");
+  if (JSON.stringify(doc).length > LIMITS.hifiMaxJsonBytes) return reject("rejected", "response exceeds the byte bound");
+  const meta = isObj7(doc.metadata) ? doc.metadata : {};
+  const finalUrl = typeof meta.url === "string" ? meta.url : null;
+  if (!finalUrl) return reject("rejected", "no final URL reported (metadata.url)");
+  try {
+    await assertHostedFirecrawlUrl(finalUrl, resolver);
+  } catch (err) {
+    return reject("rejected", `final URL failed the URL guard: ${err instanceof Error ? err.message : "invalid"}`);
+  }
+  const want = parseHttpUrl(DIAG_URL);
+  const got = parseHttpUrl(finalUrl);
+  if (!isSameSite(got, want) || canonicalizeUrl(got) !== canonicalizeUrl(want)) return reject("rejected", `final URL ${canonicalizeUrl(got)} is not the diagnostic page (redirects are not accepted)`);
+  if (typeof meta.statusCode === "number" && (meta.statusCode < 200 || meta.statusCode > 299)) return reject("rejected", `HTTP status ${meta.statusCode}`);
+  if (typeof meta.contentType === "string" && !meta.contentType.toLowerCase().startsWith("text/html")) return reject("rejected", `content type ${meta.contentType.slice(0, 60)}`);
+  const actions = isObj7(doc.actions) ? doc.actions : null;
+  const returns = actions && Array.isArray(actions.javascriptReturns) ? actions.javascriptReturns : null;
+  const shots = actions && Array.isArray(actions.screenshots) ? actions.screenshots : null;
+  if (!returns || returns.length !== DIAG_TAGS.length) return reject("ambiguous", `expected ${DIAG_TAGS.length} javascriptReturns, got ${returns ? returns.length : "none"} (partial probes)`);
+  const probes = [];
+  let scroll = null;
+  for (const [i, tag] of DIAG_TAGS.entries()) {
+    const v = isObj7(returns[i]) ? returns[i].value : void 0;
+    if (tag === "scroll") {
+      if (!isObj7(v) || v.w2f !== "diag-scroll") return reject("ambiguous", `javascriptReturns[${i}] is not the scroll report`);
+      scroll = { requested: 3e3, scrollY: num(v.scrollY), innerHeight: num(v.innerHeight), documentHeight: num(v.documentHeight) };
+    } else {
+      if (!isObj7(v) || v.w2f !== "diag-probe" || v.tag !== tag) return reject("ambiguous", `javascriptReturns[${i}] is not probe ${tag}`);
+      probes.push(parseProbe(v));
+    }
+  }
+  if (!shots || shots.length !== 2 || !shots.every((s) => typeof s === "string" && s.length <= LIMITS.maxUrlChars)) return reject("ambiguous", `expected 2 screenshot URLs, got ${shots ? shots.length : "none"}`);
+  return { status: "accepted", reason: null, probes, scroll, screenshots: shots };
+}
+async function executeDiagnostic(o) {
+  const now = o.now ?? (() => /* @__PURE__ */ new Date());
+  const resolver = o.resolver ?? systemResolver;
+  const gate = assertDiagnosticGates(o.gates);
+  const secrets = [];
+  const rec = {
+    schema: "website-to-figma/diagnostic-run",
+    schemaVersion: 1,
+    runId: o.runId ?? sha256(`${o.validated.previewSha256}:${now().toISOString()}:${Math.random()}`).slice(0, 16),
+    pageUrl: DIAG_URL,
+    previewSha256: o.validated.previewSha256,
+    requestSha256: o.validated.requestSha256,
+    ledgerEntryId: null,
+    attempts: 0,
+    retries: 0,
+    status: "not-attempted",
+    reason: null,
+    operatorCreditsPerRequest: gate.perRequest,
+    reportedCreditsUsed: null,
+    checkpoints: [],
+    probes: [],
+    scroll: null,
+    screenshots: [],
+    warnings: []
+  };
+  const cp = (step, detail = "") => {
+    rec.checkpoints.push({ at: now().toISOString(), step, detail: redact(detail, secrets) });
+    o.log?.(`[diagnostic] ${step}${detail ? `: ${redact(detail, secrets)}` : ""}`);
+  };
+  cp("validated", `request sha256 ${o.validated.requestSha256}; 9 actions; 2 screenshots; combined waits 3000 ms`);
+  try {
+    await assertHostedFirecrawlUrl(DIAG_URL, resolver);
+  } catch (err) {
+    rec.status = "rejected";
+    rec.reason = `start URL failed the URL guard: ${err instanceof Error ? err.message : "invalid"}`;
+    cp("guard-failed", rec.reason);
+    return rec;
+  }
+  cp("url-guard-passed");
+  const key = o.getApiKey()?.trim();
+  if (!key) {
+    rec.reason = "FIRECRAWL_API_KEY is not set; nothing was sent and no ledger attempt was recorded";
+    cp("no-key", rec.reason);
+    return rec;
+  }
+  secrets.push(key);
+  let client;
+  try {
+    client = await (o.createClient ?? createStateScrapeClient)(key);
+  } catch (err) {
+    rec.reason = redact(`client could not be created: ${err instanceof Error ? err.message : String(err)}`, secrets);
+    cp("client-failed", rec.reason);
+    return rec;
+  }
+  let entryId;
+  try {
+    entryId = reserveAttempt(o.gates.ledgerPath, { url: DIAG_URL, requestSha256: o.validated.requestSha256, reserved: gate.perRequest, command: "diag-run", continuationOf: o.gates.reviewedContinuation }, now).id;
+  } catch (err) {
+    rec.reason = err instanceof LedgerError ? err.message : String(err);
+    cp("ledger-refused", rec.reason);
+    return rec;
+  }
+  rec.ledgerEntryId = entryId;
+  cp("ledger-attempt-recorded", `entry ${entryId}; reserved ${gate.perRequest} (operator-asserted)`);
+  const { url: url2, ...opts } = o.validated.preview.body;
+  let doc;
+  let outcome = "ok";
+  rec.attempts = 1;
+  try {
+    cp("request-sent", "attempt 1 of 1 (no retries, autoResume false)");
+    doc = await withTimeout(client.scrape(url2, { ...opts, autoResume: false }), DIAG_WALL_MS);
+    cp("response-received");
+  } catch (err) {
+    outcome = classify(err);
+    rec.reason = redact(`request ${outcome}: ${err instanceof Error ? err.message : String(err)}`, secrets);
+    cp(outcome === "failed" ? "request-failed" : "request-ambiguous", rec.reason);
+  }
+  const reported = isObj7(doc) && isObj7(doc.metadata) && typeof doc.metadata.creditsUsed === "number" && Number.isInteger(doc.metadata.creditsUsed) && doc.metadata.creditsUsed >= 0 ? doc.metadata.creditsUsed : null;
+  rec.reportedCreditsUsed = reported;
+  if (outcome === "ok") {
+    const v = await validateDiagnosticResponse(doc, resolver);
+    rec.status = v.status;
+    rec.reason = v.reason;
+    rec.probes = v.probes;
+    rec.scroll = v.scroll;
+    rec.screenshots = v.screenshots;
+    cp(`response-${v.status}`, v.reason ?? "5 probes/report, 2 screenshot URLs");
+    if (reported === null) rec.warnings.push("response reported no request-specific creditsUsed; credits are UNKNOWN (ledger entry left ambiguous)");
+  } else rec.status = outcome;
+  try {
+    const e2 = settleAttempt(o.gates.ledgerPath, entryId, rec.status === "accepted" || rec.status === "rejected" ? "succeeded" : rec.status === "failed" ? "failed" : "ambiguous", reported, `${rec.status}${rec.reason ? `: ${rec.reason}` : ""}; request-specific creditsUsed ${reported ?? "not reported"}`);
+    cp("ledger-result-recorded", `ledger status ${e2.status}${e2.overrun ? " OVERRUN" : ""}; reported creditsUsed ${reported ?? "not reported"}`);
+    if (e2.overrun) rec.warnings.push(`OVERRUN: provider reported ${reported} credits, above the reservation ${gate.perRequest}; later paid runs blocked until resolved`);
+  } catch (err) {
+    rec.warnings.push(`ledger result not recorded: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (doc !== void 0 && o.save) {
+    o.save({ success: true, data: doc, w2fDiagnostic: rec });
+    cp("saved");
+  }
+  return rec;
+}
+function interpretDiagnostic(rec, images = []) {
+  const p = (t) => rec.probes.find((x) => x.tag === t);
+  const [P0, P1, P2, P3] = [p("P0"), p("P1"), p("P2"), p("P3")];
+  const notes = [];
+  const near = (a, b) => a !== null && a !== void 0 && Math.abs(a - b) <= 2;
+  const resized = (q) => !q || q.innerHeight === null ? "unknown" : near(q.innerHeight, 1080) && near(q.innerWidth, 1920) ? "persisted" : "not-persisted";
+  const expanded = P0 && P0.innerHeight !== null ? P0.innerHeight > MAX_SCREENSHOT_VIEWPORT_H : null;
+  const r1 = resized(P1);
+  const r2 = resized(P3);
+  const sy = rec.scroll?.scrollY ?? P2?.scrollY ?? null;
+  const scrollMoved = sy === null ? "unknown" : sy >= 2990 ? "yes" : sy <= 1 ? "no" : "yes";
+  if (sy !== null && sy > 1 && sy < 2990) notes.push(`scrollY ${sy} moved but short of 3000 (document height ${rec.scroll?.documentHeight ?? "?"} may cap it)`);
+  if (P0 && P0.innerHeight !== null && P0.rootClientHeight !== null && Math.abs(P0.innerHeight - P0.rootClientHeight) > 2) notes.push(`P0 innerHeight ${P0.innerHeight} != root clientHeight ${P0.rootClientHeight} (layout box excludes scrollbars; keep distinct)`);
+  if (P0?.visualViewport && P0.innerHeight !== null && Math.abs(P0.visualViewport.height - P0.innerHeight) > 2) notes.push(`P0 visualViewport.height ${P0.visualViewport.height} != innerHeight ${P0.innerHeight}`);
+  const crops = [];
+  ["S1", "S2"].forEach((shot, i) => {
+    const img = images[i];
+    if (!img) return;
+    const before = i === 0 ? P0 : P2;
+    const after = i === 0 ? P1 : P3;
+    const matches = [];
+    for (const [label, q] of [["before", before], ["after", after]]) {
+      if (!q) continue;
+      if (near(q.innerHeight, img.height)) matches.push(`${label}.innerHeight`);
+      if (near(q.rootClientHeight, img.height)) matches.push(`${label}.rootClientHeight`);
+      if (q.visualViewport && near(q.visualViewport.height, img.height)) matches.push(`${label}.visualViewport.height`);
+      if (near(q.documentHeight, img.height)) matches.push(`${label}.documentHeight`);
+    }
+    crops.push({ shot, width: img.width, height: img.height, matches });
+  });
+  if (crops.length) notes.push("PNG size is the crop; matching a probe height is evidence of which box was captured, not of position. Image differences alone do not prove scrolling (animated page).");
+  let conclusion = "inconclusive";
+  if (r1 === "persisted" && scrollMoved === "yes") conclusion = "screenshot-viewport-resizes-and-persists";
+  else if (r1 === "not-persisted" && expanded === true && scrollMoved === "no") conclusion = "screenshot-viewport-does-not-persist";
+  return { viewportExpandedAtP0: expanded, resizeAfterS1: r1, scrollMoved, resizeAfterS2: r2, crops, conclusion, notes };
+}
+var isObj7, DIAG_URL, DIAG_SCREENSHOT, DIAG_TIMEOUT_MS, DIAG_WALL_MS, DIAG_TAGS, rect, SCROLL_REPORT_SCRIPT, num, MAX_SCREENSHOT_VIEWPORT_H;
+var init_diagnostic = __esm({
+  "src/states/diagnostic.ts"() {
+    "use strict";
+    init_urlGuard();
+    init_canonicalize();
+    init_limits();
+    init_execute();
+    init_ledger();
+    isObj7 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+    DIAG_URL = "https://bootstrapmade.com/content/demo/Bootslander/";
+    DIAG_SCREENSHOT = { type: "screenshot", fullPage: false, viewport: { width: 1920, height: 1080 } };
+    DIAG_TIMEOUT_MS = 6e4;
+    DIAG_WALL_MS = DIAG_TIMEOUT_MS + 3e4;
+    DIAG_TAGS = ["P0", "P1", "scroll", "P2", "P3"];
+    rect = `(s) => { const e = document.querySelector(s); if (!e) return null; const r = e.getBoundingClientRect(); return { top: r.top, left: r.left, width: r.width, height: r.height, bottom: r.bottom, documentY: r.top + (window.scrollY || 0) }; }`;
+    SCROLL_REPORT_SCRIPT = `(function w2fDiagScroll() { window.scrollTo(0, 3000); return { w2f: "diag-scroll", requested: 3000, scrollY: window.scrollY, innerHeight: window.innerHeight, documentHeight: Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0) }; })();`;
+    num = (v) => typeof v === "number" && Number.isFinite(v) ? v : null;
+    MAX_SCREENSHOT_VIEWPORT_H = 4320;
+  }
+});
+
 // plugin/src/render/renderer.ts
 function nodeName(nodes, n, i, prefix, imageFilled, label) {
   if (n.kind === "box") {
@@ -42533,7 +42866,7 @@ function parseFlags(args) {
     const a = args[i];
     if (a === "--yes" || a === "--help" || a === "-h" || a === "--no-map" || a === "--confirm-existing-credits" || a === "--confirm-no-topup" || a === "--acknowledge-synthetic-modifications") {
       flags.set(a.replace(/^-+/, ""), true);
-    } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label" || a === "--font-map" || a === "--normalize-reference" || a === "--plan" || a === "--state-reactions" || a === "--preview" || a === "--ledger" || a === "--operator-credits-per-request" || a === "--reviewed-continuation" || a === "--run" || a === "--prior-credits" || a === "--note" || a === "--id" || a === "--credits" || a === "--doc" || a === "--renderer" || a === "--renderer-sha256" || a === "--max-job-chars" || a === "--image-hashes") {
+    } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label" || a === "--font-map" || a === "--normalize-reference" || a === "--plan" || a === "--state-reactions" || a === "--preview" || a === "--ledger" || a === "--operator-credits-per-request" || a === "--reviewed-continuation" || a === "--run" || a === "--prior-credits" || a === "--note" || a === "--id" || a === "--credits" || a === "--doc" || a === "--renderer" || a === "--renderer-sha256" || a === "--max-job-chars" || a === "--image-hashes" || a === "--images") {
       const v = args[++i];
       if (v === void 0) throw new UsageError(`${a} needs a value`);
       if (a === "--exclude") excludes.push(v);
@@ -42748,6 +43081,101 @@ async function main2(argv) {
     console.log(`Wrote ${dir} (PRIVATE; ${assets.length} saved, ${failed} need manual download)`);
     return failed ? 4 : 0;
   }
+  if (cmd === "diag-plan") {
+    const out = flags.get("out");
+    if (typeof out !== "string") throw new UsageError("diag-plan needs --out FILE");
+    const preview = buildDiagnosticPreview();
+    const path = resolve4(out);
+    mkdirSync2(dirname3(path), { recursive: true });
+    writeExclusive(path, JSON.stringify(preview, null, 2) + "\n");
+    console.log(`Wrote ${path} (diagnostic PREVIEW; NOTHING sent). Canonical preview sha256 ${diagnosticPreviewSha256(preview)}`);
+    return 0;
+  }
+  if (cmd === "diag-run") {
+    const previewPath = flags.get("preview");
+    const out = flags.get("out");
+    if (typeof previewPath !== "string" || typeof out !== "string") throw new UsageError("diag-run needs --preview FILE --out DIR");
+    const validated = validateDiagnosticPreview(readBoundedJson(previewPath, 1e6, "diagnostic preview"));
+    const optInt = (k) => flags.get(k) === void 0 ? void 0 : intFlag(flags.get(k), k, 0);
+    const gates = {
+      operatorCreditsPerRequest: optInt("operator-credits-per-request"),
+      operatorReportedBalance: optInt("operator-reported-balance"),
+      confirmExistingCredits: flags.has("confirm-existing-credits"),
+      confirmNoTopup: flags.has("confirm-no-topup"),
+      ledgerPath: typeof flags.get("ledger") === "string" ? flags.get("ledger") : void 0,
+      reviewedContinuation: typeof flags.get("reviewed-continuation") === "string" ? flags.get("reviewed-continuation") : void 0
+    };
+    const { assertDiagnosticGates: assertDiagnosticGates2 } = await Promise.resolve().then(() => (init_diagnostic(), diagnostic_exports));
+    const g = assertDiagnosticGates2(gates);
+    console.log(`Exact diagnostic request (preview sha256 ${validated.previewSha256}; request sha256 ${validated.requestSha256}): ONE POST /v2/scrape ${DIAG_URL}, one attempt, no retries`);
+    console.log(`  actions: ${validated.preview.roles.map((r) => r.tag ? `${r.role}:${r.tag}` : r.role).join(", ")}; combined waits 3000 ms; screenshots fullPage false, viewport 1920x1080`);
+    console.log(`Operator-asserted reservation ${g.perRequest} (NOT a price; cost unknown). Ledger committed ${g.committed}, remaining local allowance ${g.remaining} (not a provider cap).`);
+    console.log("Stops: preview mismatch; missing gate; unresolved/duplicate/over-ceiling ledger; URL guard/redirect/non-2xx/non-HTML; SDK error (4xx failed, else ambiguous; never retried); partial probes or != 2 screenshots (ambiguous); missing request credits (ambiguous); overrun recorded.");
+    if (!flags.has("yes")) {
+      console.log("HOLD: nothing was sent and no key was read. Re-run with --yes only after origin review.");
+      return 3;
+    }
+    const runDir = createExclusiveDir(out, `diag-run-${sha256(`${validated.previewSha256}:${Date.now()}`).slice(0, 12)}`);
+    const rec = await executeDiagnostic({
+      validated,
+      gates,
+      getApiKey: () => {
+        if (existsSync(".env")) process.loadEnvFile(".env");
+        return process.env.FIRECRAWL_API_KEY;
+      },
+      save: (w) => writeExclusive(join2(runDir, "diagnostic.response.json"), JSON.stringify(w) + "\n"),
+      log: (m) => console.error(m)
+    });
+    writeExclusive(join2(runDir, "diagnostic.json"), JSON.stringify(rec, null, 2) + "\n");
+    console.log(`Wrote ${runDir} (PRIVATE). status ${rec.status}${rec.reason ? ` (${rec.reason})` : ""}; credits reported ${rec.reportedCreditsUsed ?? "NOT reported"}`);
+    return rec.status === "accepted" ? 0 : 4;
+  }
+  if (cmd === "diag-screenshots" || cmd === "diag-interpret") {
+    const runDir = flags.get("run");
+    if (typeof runDir !== "string") throw new UsageError(`${cmd} needs --run RUN_DIR`);
+    const rec = readBoundedJson(join2(runDir, "diagnostic.json"), 2e6, "diagnostic record");
+    if (rec?.schema !== "website-to-figma/diagnostic-run" || rec.schemaVersion !== 1) throw new UsageError("not a diagnostic run record");
+    if (rec.status !== "accepted" || !Array.isArray(rec.screenshots) || rec.screenshots.length !== 2) throw new UsageError(`diagnostic status ${rec.status}; screenshots are linked only for accepted runs with exactly 2 screenshots`);
+    if (cmd === "diag-interpret") {
+      const imgs = flags.get("images");
+      let images = [];
+      if (typeof imgs === "string") {
+        const m = readBoundedJson(imgs, 1e6, "screenshot manifest");
+        images = ["diag-S1", "diag-S2"].map((id) => {
+          const a = m.assets?.find((x) => x.id === id);
+          return a && typeof a.width === "number" && typeof a.height === "number" ? { width: a.width, height: a.height } : null;
+        });
+      }
+      console.log(JSON.stringify(interpretDiagnostic(rec, images), null, 2));
+      return 0;
+    }
+    const out = flags.get("out");
+    if (typeof out !== "string") throw new UsageError("diag-screenshots needs --out DIR");
+    for (const [i, u] of rec.screenshots.entries()) console.log(`  S${i + 1}: ${String(u).slice(0, 120)}`);
+    if (!flags.has("yes")) {
+      console.log("HOLD: nothing downloaded. Re-run with --yes (local fetch; full local DNS guard, no hosted exception).");
+      return 3;
+    }
+    const dir = createExclusiveDir(out, `diag-screenshots-${rec.runId}`);
+    const assets = [];
+    let failed = 0;
+    for (const [i, u] of rec.screenshots.entries()) {
+      try {
+        const a = await acquireImage(u, httpsTransport);
+        const info = inspectImage(a.bytes);
+        const file = `diag-S${i + 1}.${a.mime === "image/png" ? "png" : "jpg"}`;
+        writeExclusive(join2(dir, file), a.bytes);
+        assets.push({ id: `diag-S${i + 1}`, file, sha256: a.sha256, width: info?.width ?? a.width, height: info?.height ?? a.height, runId: rec.runId, requestSha256: rec.requestSha256 });
+        console.log(`  saved ${file} ${a.width}x${a.height} sha256 ${a.sha256}`);
+      } catch (err) {
+        failed++;
+        console.log(`  S${i + 1} NOT downloaded (${err instanceof Error ? err.message : String(err)}): download it manually and add { id: "diag-S${i + 1}", width, height, sha256 } to the manifest.`);
+      }
+    }
+    writeExclusive(join2(dir, "manifest.json"), JSON.stringify({ schema: "website-to-figma/diagnostic-screenshots", schemaVersion: 1, runId: rec.runId, assets }, null, 2) + "\n");
+    console.log(`Wrote ${dir} (PRIVATE; ${assets.length} saved, ${failed} need manual download)`);
+    return failed ? 4 : 0;
+  }
   if (cmd === "fig-plan") {
     const docPath = flags.get("doc");
     const renderer = flags.get("renderer");
@@ -42936,6 +43364,8 @@ var init_cli = __esm({
     init_ledger();
     init_runFiles();
     init_acquire();
+    init_diagnostic();
+    init_imageInfo();
     init_jobs();
     init_adapt();
     init_build();
@@ -42992,6 +43422,15 @@ var init_cli = __esm({
         [--renderer-sha256 HEX] [--max-job-chars N (default 40000)] [--image-hashes MAP.json] --out DIR
       Offline: write ordered Figma-connector job scripts ($fig plan constructors only) that embed the
       SAME shared renderer as the native plugin. Makes NO Figma calls; run the jobs yourself, in order.
+  website-to-figma diag-plan --out FILE
+      Offline: write the fixed viewport-diagnostic preview (1 page, 9 actions, 2 screenshots, 4 probes).
+  website-to-figma diag-run --preview FILE --out DIR --ledger FILE --operator-credits-per-request N
+        --operator-reported-balance N --confirm-existing-credits --confirm-no-topup [--yes]
+      PAID: the exact diagnostic request, one POST, one attempt; HOLDS without --yes.
+  website-to-figma diag-screenshots --run RUN_DIR --out DIR [--yes]
+      Guarded local download of an accepted diagnostic's 2 screenshot URLs only; HOLDS without --yes.
+  website-to-figma diag-interpret --run RUN_DIR [--images MANIFEST]
+      Offline interpretation of probes (and PNG crop sizes if downloaded).
   website-to-figma validate <FILE>
       Validate a site map JSON file (schemaVersion 1 or 2).`;
     UsageError = class extends Error {

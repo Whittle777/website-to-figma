@@ -419,7 +419,8 @@ export async function renderStates<N>(c: Ctx<N>, root: N, page: HifiPage, y: num
   const comps: N[] = [];
   let x = 0;
   for (const v of st.variants) {
-    const comp = host.component(root, { name: `State=${v.name}`, x: X0 + x, y: top, w: Math.max(1, v.frame.w), h: Math.max(1, v.frame.h), fill: null, clipsContent: true, ...(opts.nodes === false ? {} : { description: v.notes.join("\n") }) });
+    // UNPARENTED: $fig.variants / combineAsVariants parents the children; only the set is appended.
+    const comp = host.component(null, { name: `State=${v.name}`, x: X0 + x, y: top, w: Math.max(1, v.frame.w), h: Math.max(1, v.frame.h), fill: null, clipsContent: true, ...(opts.nodes === false ? {} : { description: v.notes.join("\n") }) });
     host.meta(comp, { state: v.name, provenance: v.provenance, frame: v.frame, screenshot: v.screenshot });
     const ref = v.referenceAssetId ? doc.assets.find((a) => a.id === v.referenceAssetId) : undefined;
     if (ref && v.screenshot && v.screenshot.scrollY !== null) {
@@ -428,13 +429,14 @@ export async function renderStates<N>(c: Ctx<N>, root: N, page: HifiPage, y: num
       const r = host.rect(comp, { name: ok ? name : `${name} (IMAGE PLACEHOLDER)`, x: -v.frame.x, y: v.screenshot.scrollY - v.frame.y, w: ref.width, h: ref.height, fill: null, ...(ok ? { image: { assetId: ref.id, mode: "FILL" as const } } : { placeholder: "missing" as const }) });
       host.hide(r);
     }
-    if (opts.nodes !== false) await renderNodes(c, comp, v.nodes, [], () => "");
     comps.push(comp);
     x += v.frame.w + 40;
     c.stats.variants++;
   }
+  // Combine the FRESH (unflushed, unparented) components first, then fill them.
   await host.variants(root, comps, { name: statesSetName(page), x: X0, y: top, gap: 40 });
   c.stats.variantSets++;
+  if (opts.nodes !== false) for (const [i, v] of st.variants.entries()) await renderNodes(c, comps[i]!, v.nodes, [], () => "");
   if (st.reactions === "click-cycle" && comps.length > 1) {
     await host.flush();
     for (const [i, comp] of comps.entries()) {

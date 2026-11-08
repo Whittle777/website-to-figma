@@ -73,6 +73,7 @@ function fakeConnector(fonts = ["Inter|Regular", "Inter|Bold", "Roboto|Regular",
   let next = 0;
   const page: FNode = { id: "0:1", type: "PAGE", name: "Page", x: 0, y: 0, width: 0, height: 0, props: {}, children: [], parent: null };
   const pending: W[] = [];
+  const w0: Record<string, unknown> = {};
   const log: string[] = [];
   let doneCalls = 0;
   const all = new Map<string, FNode>();
@@ -154,8 +155,12 @@ function fakeConnector(fonts = ["Inter|Regular", "Inter|Bold", "Roboto|Regular",
       const [opts, comps] = args as [any, W[]];
       if (args.length !== 2 || typeof opts !== "object" || opts === null || Array.isArray(opts) || typeof opts.name !== "string") throw new Error("fake $fig.variants: expected (options, children) with options.name");
       if (!Array.isArray(comps) || comps.length === 0 || comps.some((c) => !(c instanceof W) || c.type !== "COMPONENT")) throw new Error("fake $fig.variants: children must be $fig.component wrappers");
+      // documented constructor pattern: children are UNPARENTED plan nodes; a pre-parented child fails at materialization
+      if (comps.some((c) => c.parentW !== null || c.n !== null)) (w0 as any).preParented = true;
       const w = new W("COMPONENT_SET", { ...opts });
       (w as any).members = comps;
+      if ((w0 as any).preParented) (w as any).preParented = true;
+      (w0 as any).preParented = false;
       log.push(`variants:${opts.name}:${comps.length}`);
       return w;
     },
@@ -166,6 +171,7 @@ function fakeConnector(fonts = ["Inter|Regular", "Inter|Bold", "Roboto|Regular",
     },
     done: async () => {
       doneCalls++;
+      for (const w of pending) if ((w as any).preParented) { pending.length = 0; throw new TypeError("Cannot read properties of null (reading 'appendChild') [fake: variant child was already parented]"); }
       const batch = pending.splice(0);
       for (const w of batch) materialize(w);
       for (const w of batch) {
@@ -350,6 +356,8 @@ describe("connector adapter: same renderer, planned $fig host (fake connector)",
     await expect(env.run(`const c = $fig.component({ name: "A", width: 1, height: 1 }); $fig.variants([c], { name: "X" });`)).rejects.toThrow(/expected \(options, children\)/);
     await env.run(`const c = $fig.component({ name: "A", width: 1, height: 1 }); $fig.variants({ name: "X" }, [c]); await $fig.done();`);
     expect(env.log).toContain("variants:X:1");
+    // a child already appended to a frame (pre-parented) fails at materialization, like the real connector
+    await expect(env.run(`const f = $fig.frame({ name: "F", width: 9, height: 9 }); const c = $fig.component({ name: "B", width: 1, height: 1 }); f.append(c); $fig.variants({ name: "Y" }, [c]); await $fig.done();`)).rejects.toThrow(/appendChild/);
   });
 
   it("a large synthetic document: every job fits 40000 (and 50000), structure equals native, variants and descriptions intact", async () => {

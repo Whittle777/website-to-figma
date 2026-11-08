@@ -307,7 +307,7 @@ describe("state variants, reactions and media (fake figma)", () => {
     expect(JSON.parse(base!.data.w2f!).provenance).toBe("baseline");
     expect(faq!.description).toMatch(/not an observed original state/);
     expect(faq!.description).toMatch(/No handler side-effect guarantee/);
-    expect(faq!).toMatchObject({ width: 400, height: 140, clipsContent: true });
+    expect(faq!).toMatchObject({ width: 560, height: 140, clipsContent: true });
     // hidden 1:1 provider screenshot placed where it was taken
     const shot = faq!.children.find((c) => c.name.startsWith("Reference screenshot / FAQ open"))!;
     expect(shot).toMatchObject({ visible: false, locked: true, x: -40, y: -40, width: 800, height: 600 });

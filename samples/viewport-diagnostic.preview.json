@@ -1,0 +1,120 @@
+{
+  "schema": "website-to-figma/diagnostic-preview",
+  "schemaVersion": 1,
+  "sent": false,
+  "purpose": "Viewport diagnostic: does a screenshot action viewport (1920x1080) resize the layout viewport persistently, and can the page then scroll? One page, one request.",
+  "notice": [
+    "NOT SENT. Paid execution (diag-run) is a separate operator-gated command that HOLDS without --yes.",
+    "Provider cost is UNKNOWN beyond the documented 1 credit per scrape: screenshot/action/scan pricing is not published. The local ledger is a reservation allowance, not a provider cap.",
+    "Probes are read-only. The only page effect is window.scrollTo(0, 3000).",
+    "PNG size is the screenshot crop; compare it to innerHeight, root clientHeight, visualViewport and document height without assuming they are equal. Image differences alone do not prove scrolling."
+  ],
+  "body": {
+    "url": "https://bootstrapmade.com/content/demo/Bootslander/",
+    "formats": [
+      "rawHtml"
+    ],
+    "onlyMainContent": false,
+    "proxy": "basic",
+    "timeout": 60000,
+    "actions": [
+      {
+        "type": "wait",
+        "milliseconds": 2000
+      },
+      {
+        "type": "executeJavascript",
+        "script": "(function w2fDiagProbe() { const d = document.documentElement, b = document.body, vv = window.visualViewport, rect = (s) => { const e = document.querySelector(s); if (!e) return null; const r = e.getBoundingClientRect(); return { top: r.top, left: r.left, width: r.width, height: r.height, bottom: r.bottom, documentY: r.top + (window.scrollY || 0) }; }; return { w2f: \"diag-probe\", tag: \"P0\", innerWidth: window.innerWidth, innerHeight: window.innerHeight, rootClientWidth: d.clientWidth, rootClientHeight: d.clientHeight, visualViewport: vv ? { width: vv.width, height: vv.height, scale: vv.scale, offsetTop: vv.offsetTop, pageTop: vv.pageTop } : null, scrollY: window.scrollY, documentHeight: Math.max(d.scrollHeight, b ? b.scrollHeight : 0), devicePixelRatio: window.devicePixelRatio, readyState: document.readyState, features: rect(\"#features\"), hero: rect(\"#hero\") }; })();"
+      },
+      {
+        "type": "screenshot",
+        "fullPage": false,
+        "viewport": {
+          "width": 1920,
+          "height": 1080
+        }
+      },
+      {
+        "type": "executeJavascript",
+        "script": "(function w2fDiagProbe() { const d = document.documentElement, b = document.body, vv = window.visualViewport, rect = (s) => { const e = document.querySelector(s); if (!e) return null; const r = e.getBoundingClientRect(); return { top: r.top, left: r.left, width: r.width, height: r.height, bottom: r.bottom, documentY: r.top + (window.scrollY || 0) }; }; return { w2f: \"diag-probe\", tag: \"P1\", innerWidth: window.innerWidth, innerHeight: window.innerHeight, rootClientWidth: d.clientWidth, rootClientHeight: d.clientHeight, visualViewport: vv ? { width: vv.width, height: vv.height, scale: vv.scale, offsetTop: vv.offsetTop, pageTop: vv.pageTop } : null, scrollY: window.scrollY, documentHeight: Math.max(d.scrollHeight, b ? b.scrollHeight : 0), devicePixelRatio: window.devicePixelRatio, readyState: document.readyState, features: rect(\"#features\"), hero: rect(\"#hero\") }; })();"
+      },
+      {
+        "type": "executeJavascript",
+        "script": "(function w2fDiagScroll() { window.scrollTo(0, 3000); return { w2f: \"diag-scroll\", requested: 3000, scrollY: window.scrollY, innerHeight: window.innerHeight, documentHeight: Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0) }; })();"
+      },
+      {
+        "type": "wait",
+        "milliseconds": 1000
+      },
+      {
+        "type": "executeJavascript",
+        "script": "(function w2fDiagProbe() { const d = document.documentElement, b = document.body, vv = window.visualViewport, rect = (s) => { const e = document.querySelector(s); if (!e) return null; const r = e.getBoundingClientRect(); return { top: r.top, left: r.left, width: r.width, height: r.height, bottom: r.bottom, documentY: r.top + (window.scrollY || 0) }; }; return { w2f: \"diag-probe\", tag: \"P2\", innerWidth: window.innerWidth, innerHeight: window.innerHeight, rootClientWidth: d.clientWidth, rootClientHeight: d.clientHeight, visualViewport: vv ? { width: vv.width, height: vv.height, scale: vv.scale, offsetTop: vv.offsetTop, pageTop: vv.pageTop } : null, scrollY: window.scrollY, documentHeight: Math.max(d.scrollHeight, b ? b.scrollHeight : 0), devicePixelRatio: window.devicePixelRatio, readyState: document.readyState, features: rect(\"#features\"), hero: rect(\"#hero\") }; })();"
+      },
+      {
+        "type": "screenshot",
+        "fullPage": false,
+        "viewport": {
+          "width": 1920,
+          "height": 1080
+        }
+      },
+      {
+        "type": "executeJavascript",
+        "script": "(function w2fDiagProbe() { const d = document.documentElement, b = document.body, vv = window.visualViewport, rect = (s) => { const e = document.querySelector(s); if (!e) return null; const r = e.getBoundingClientRect(); return { top: r.top, left: r.left, width: r.width, height: r.height, bottom: r.bottom, documentY: r.top + (window.scrollY || 0) }; }; return { w2f: \"diag-probe\", tag: \"P3\", innerWidth: window.innerWidth, innerHeight: window.innerHeight, rootClientWidth: d.clientWidth, rootClientHeight: d.clientHeight, visualViewport: vv ? { width: vv.width, height: vv.height, scale: vv.scale, offsetTop: vv.offsetTop, pageTop: vv.pageTop } : null, scrollY: window.scrollY, documentHeight: Math.max(d.scrollHeight, b ? b.scrollHeight : 0), devicePixelRatio: window.devicePixelRatio, readyState: document.readyState, features: rect(\"#features\"), hero: rect(\"#hero\") }; })();"
+      }
+    ]
+  },
+  "roles": [
+    {
+      "index": 0,
+      "role": "wait"
+    },
+    {
+      "index": 1,
+      "role": "probe",
+      "tag": "P0"
+    },
+    {
+      "index": 2,
+      "role": "screenshot",
+      "tag": "S1"
+    },
+    {
+      "index": 3,
+      "role": "probe",
+      "tag": "P1"
+    },
+    {
+      "index": 4,
+      "role": "scroll",
+      "tag": "scroll"
+    },
+    {
+      "index": 5,
+      "role": "wait"
+    },
+    {
+      "index": 6,
+      "role": "probe",
+      "tag": "P2"
+    },
+    {
+      "index": 7,
+      "role": "screenshot",
+      "tag": "S2"
+    },
+    {
+      "index": 8,
+      "role": "probe",
+      "tag": "P3"
+    }
+  ],
+  "actionCount": 9,
+  "combinedWaitMs": 3000,
+  "screenshots": 2,
+  "timing": {
+    "requestTimeoutMs": 60000,
+    "sdkHttpTimeoutMs": 65000,
+    "wallClockMs": 90000
+  }
+}

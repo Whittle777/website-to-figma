@@ -525,6 +525,68 @@ Samples:
   throttled scroll listener), header `scrolled`, `.scroll-top.active` and navmenu scrollspy.
 - **Not live.** None of this has been executed live.
 
+### Viewport diagnostic (one request, fixed; HOLD until origin review)
+
+This is a minimal, fixed request that tests whether a documented screenshot action `viewport`
+(1920×1080, `fullPage: false`) resizes the page's layout viewport *persistently*, and whether the
+page can then scroll. It is not a general script runner. The 9 actions are exactly:
+1. `wait` 2000
+2. P0
+3. screenshot
+4. P1
+5. `scrollTo(0,3000)` with an immediate report
+6. `wait` 1000
+7. P2
+8. screenshot
+9. P3
+
+The body is `url` (`https://bootstrapmade.com/content/demo/Bootslander/`), `formats: ["rawHtml"]`,
+`onlyMainContent: false`, `proxy: "basic"`, `timeout: 60000` and `actions`. There are no internal
+flags, no device or top-level viewport, and no Swiper, AOS or freeze steps.
+
+**Probes.** Each probe is synchronous and read-only. It reports these values, which are kept
+distinct:
+- `innerWidth` / `innerHeight`: the layout viewport
+- root `clientWidth` / `clientHeight`: the `documentElement` client box
+- `visualViewport` `{width, height, scale, offsetTop, pageTop}`
+- `scrollY`
+- the document height (max of document and body)
+- `devicePixelRatio` and `readyState`
+- the `#features` and `#hero` rects
+
+A screenshot PNG's size is the *crop*: it is compared with those heights and never assumed equal.
+Image differences alone do not prove scrolling.
+
+**Execution.** `diag-run` keeps every state-run safeguard:
+- an exact preview only, with the gates checked before the key is read
+- the exact hosted DNS exceptions only
+- the ledger attempt written before the single POST and the result after
+- `maxRetries: 1` and `autoResume: false`, with no replay
+- partial probes or screenshots, or missing request credits, stop the run as ambiguous
+
+```sh
+website-to-figma diag-plan --out preview.json                     # offline
+website-to-figma diag-run --preview preview.json --out private-runs --ledger ledger.json \
+  --operator-credits-per-request N --operator-reported-balance N --confirm-existing-credits --confirm-no-topup   # HOLDS
+website-to-figma diag-screenshots --run private-runs/diag-run-<id> --out private-assets   # guarded, HOLDS
+website-to-figma diag-interpret --run private-runs/diag-run-<id> [--images private-assets/.../manifest.json]
+```
+
+### State variant groups are validated
+
+A variant set is created only when every measured variant shows the **same target** as the
+baseline: the same measured scope selector when recorded, and a compatible frame (same x and
+width, top within 100 px). Each variant must also **differ** from the baseline.
+- **Suppressed variants.** Variants of another region, or measured identical to the baseline, are
+  suppressed with a warning.
+- **Suppressed groups.** A group left with fewer than 2 valid, distinct variants is suppressed
+  entirely, so neither variants nor reactions are created.
+- **Bootslander plan.** In the reviewed Bootslander plan, the Swiper state targets
+  `#testimonials`, a different region from the baseline's `#features`, so it is suppressed by
+  design. A valid Swiper group would need its own baseline of that region.
+- **Reactions.** These remain opt-in (`--state-reactions click-cycle`) and are created only for a
+  valid group.
+
 ## Figma connector adapter ($fig): same renderer, planned host
 
 The native plugin and the connector adapter share **one renderer** (`plugin/src/render/`). The two
@@ -538,8 +600,10 @@ hosts differ only in how nodes are made:
 - **Post-flush only.** Raw reads (width, height, child lookup, available fonts), raw font loads and
   `ON_CLICK` → `CHANGE_TO` reactions happen only after `await $fig.done()`. Reading while plan
   nodes are pending throws.
-- **Variants.** `$fig.variants` does not position variants, so they are laid out on an explicit
-  grid and the set is resized after a flush.
+- **Variants.** State components are created **unparented** and still unflushed, then passed to
+  `$fig.variants({ name }, children)`. Only the resulting set is appended. The components are
+  filled with nodes afterwards. `$fig.variants` does not position variants, so they are laid out
+  on an explicit grid and the set is resized after a flush.
 
 ```sh
 website-to-figma fig-plan --doc site-v2.json --renderer connector-dist/w2f-connector-renderer.js \

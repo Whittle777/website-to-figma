@@ -23,6 +23,8 @@ import { initLedger, ledgerSummary, LedgerError, readLedger, recordManual, resol
 import { createExclusiveDir, OutputError, writeExclusive } from "./states/runFiles";
 import { acquireImage, httpsTransport } from "./states/acquire";
 import { createHash } from "node:crypto";
+import { buildDiagnosticPreview, diagnosticPreviewSha256, executeDiagnostic, interpretDiagnostic, validateDiagnosticPreview, DIAG_URL, type DiagnosticRecord } from "./states/diagnostic";
+import { inspectImage } from "./shared/imageInfo";
 import { planConnectorJobs, parseImageHashMap, DEFAULT_MAX_JOB_CHARS, JobPlanError } from "./connector/jobs";
 import { adaptTaggedReturns } from "./states/adapt";
 import { assertLimit } from "./normalize/build";
@@ -80,6 +82,15 @@ const USAGE = `Usage:
         [--renderer-sha256 HEX] [--max-job-chars N (default 40000)] [--image-hashes MAP.json] --out DIR
       Offline: write ordered Figma-connector job scripts ($fig plan constructors only) that embed the
       SAME shared renderer as the native plugin. Makes NO Figma calls; run the jobs yourself, in order.
+  website-to-figma diag-plan --out FILE
+      Offline: write the fixed viewport-diagnostic preview (1 page, 9 actions, 2 screenshots, 4 probes).
+  website-to-figma diag-run --preview FILE --out DIR --ledger FILE --operator-credits-per-request N
+        --operator-reported-balance N --confirm-existing-credits --confirm-no-topup [--yes]
+      PAID: the exact diagnostic request, one POST, one attempt; HOLDS without --yes.
+  website-to-figma diag-screenshots --run RUN_DIR --out DIR [--yes]
+      Guarded local download of an accepted diagnostic's 2 screenshot URLs only; HOLDS without --yes.
+  website-to-figma diag-interpret --run RUN_DIR [--images MANIFEST]
+      Offline interpretation of probes (and PNG crop sizes if downloaded).
   website-to-figma validate <FILE>
       Validate a site map JSON file (schemaVersion 1 or 2).`;
 
@@ -95,7 +106,7 @@ function parseFlags(args: string[]): { positional: string[]; flags: Map<string, 
     const a = args[i]!;
     if (a === "--yes" || a === "--help" || a === "-h" || a === "--no-map" || a === "--confirm-existing-credits" || a === "--confirm-no-topup" || a === "--acknowledge-synthetic-modifications") {
       flags.set(a.replace(/^-+/, ""), true);
-    } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label" || a === "--font-map" || a === "--normalize-reference" || a === "--plan" || a === "--state-reactions" || a === "--preview" || a === "--ledger" || a === "--operator-credits-per-request" || a === "--reviewed-continuation" || a === "--run" || a === "--prior-credits" || a === "--note" || a === "--id" || a === "--credits" || a === "--doc" || a === "--renderer" || a === "--renderer-sha256" || a === "--max-job-chars" || a === "--image-hashes") {
+    } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label" || a === "--font-map" || a === "--normalize-reference" || a === "--plan" || a === "--state-reactions" || a === "--preview" || a === "--ledger" || a === "--operator-credits-per-request" || a === "--reviewed-continuation" || a === "--run" || a === "--prior-credits" || a === "--note" || a === "--id" || a === "--credits" || a === "--doc" || a === "--renderer" || a === "--renderer-sha256" || a === "--max-job-chars" || a === "--image-hashes" || a === "--images") {
       const v = args[++i];
       if (v === undefined) throw new UsageError(`${a} needs a value`);
       if (a === "--exclude") excludes.push(v);
@@ -321,6 +332,104 @@ async function main(argv: string[]): Promise<number> {
       }
     }
     writeExclusive(join(dir, "manifest.json"), JSON.stringify({ schema: "website-to-figma/asset-manifest", schemaVersion: 1, assets }, null, 2) + "\n");
+    console.log(`Wrote ${dir} (PRIVATE; ${assets.length} saved, ${failed} need manual download)`);
+    return failed ? 4 : 0;
+  }
+
+  if (cmd === "diag-plan") {
+    const out = flags.get("out");
+    if (typeof out !== "string") throw new UsageError("diag-plan needs --out FILE");
+    const preview = buildDiagnosticPreview();
+    const path = resolve(out);
+    mkdirSync(dirname(path), { recursive: true });
+    writeExclusive(path, JSON.stringify(preview, null, 2) + "\n");
+    console.log(`Wrote ${path} (diagnostic PREVIEW; NOTHING sent). Canonical preview sha256 ${diagnosticPreviewSha256(preview)}`);
+    return 0;
+  }
+
+  if (cmd === "diag-run") {
+    const previewPath = flags.get("preview");
+    const out = flags.get("out");
+    if (typeof previewPath !== "string" || typeof out !== "string") throw new UsageError("diag-run needs --preview FILE --out DIR");
+    const validated = validateDiagnosticPreview(readBoundedJson(previewPath, 1_000_000, "diagnostic preview"));
+    const optInt = (k: string) => (flags.get(k) === undefined ? undefined : intFlag(flags.get(k), k, 0));
+    const gates = {
+      operatorCreditsPerRequest: optInt("operator-credits-per-request"),
+      operatorReportedBalance: optInt("operator-reported-balance"),
+      confirmExistingCredits: flags.has("confirm-existing-credits"),
+      confirmNoTopup: flags.has("confirm-no-topup"),
+      ledgerPath: typeof flags.get("ledger") === "string" ? (flags.get("ledger") as string) : undefined,
+      reviewedContinuation: typeof flags.get("reviewed-continuation") === "string" ? (flags.get("reviewed-continuation") as string) : undefined,
+    };
+    const { assertDiagnosticGates } = await import("./states/diagnostic");
+    const g = assertDiagnosticGates(gates);
+    console.log(`Exact diagnostic request (preview sha256 ${validated.previewSha256}; request sha256 ${validated.requestSha256}): ONE POST /v2/scrape ${DIAG_URL}, one attempt, no retries`);
+    console.log(`  actions: ${validated.preview.roles.map((r) => (r.tag ? `${r.role}:${r.tag}` : r.role)).join(", ")}; combined waits 3000 ms; screenshots fullPage false, viewport 1920x1080`);
+    console.log(`Operator-asserted reservation ${g.perRequest} (NOT a price; cost unknown). Ledger committed ${g.committed}, remaining local allowance ${g.remaining} (not a provider cap).`);
+    console.log("Stops: preview mismatch; missing gate; unresolved/duplicate/over-ceiling ledger; URL guard/redirect/non-2xx/non-HTML; SDK error (4xx failed, else ambiguous; never retried); partial probes or != 2 screenshots (ambiguous); missing request credits (ambiguous); overrun recorded.");
+    if (!flags.has("yes")) {
+      console.log("HOLD: nothing was sent and no key was read. Re-run with --yes only after origin review.");
+      return 3;
+    }
+    const runDir = createExclusiveDir(out, `diag-run-${sha256(`${validated.previewSha256}:${Date.now()}`).slice(0, 12)}`);
+    const rec = await executeDiagnostic({
+      validated,
+      gates,
+      getApiKey: () => {
+        if (existsSync(".env")) process.loadEnvFile(".env");
+        return process.env.FIRECRAWL_API_KEY;
+      },
+      save: (w) => writeExclusive(join(runDir, "diagnostic.response.json"), JSON.stringify(w) + "\n"),
+      log: (m) => console.error(m),
+    });
+    writeExclusive(join(runDir, "diagnostic.json"), JSON.stringify(rec, null, 2) + "\n");
+    console.log(`Wrote ${runDir} (PRIVATE). status ${rec.status}${rec.reason ? ` (${rec.reason})` : ""}; credits reported ${rec.reportedCreditsUsed ?? "NOT reported"}`);
+    return rec.status === "accepted" ? 0 : 4;
+  }
+
+  if (cmd === "diag-screenshots" || cmd === "diag-interpret") {
+    const runDir = flags.get("run");
+    if (typeof runDir !== "string") throw new UsageError(`${cmd} needs --run RUN_DIR`);
+    const rec = readBoundedJson(join(runDir, "diagnostic.json"), 2_000_000, "diagnostic record") as DiagnosticRecord;
+    if (rec?.schema !== "website-to-figma/diagnostic-run" || rec.schemaVersion !== 1) throw new UsageError("not a diagnostic run record");
+    if (rec.status !== "accepted" || !Array.isArray(rec.screenshots) || rec.screenshots.length !== 2) throw new UsageError(`diagnostic status ${rec.status}; screenshots are linked only for accepted runs with exactly 2 screenshots`);
+    if (cmd === "diag-interpret") {
+      const imgs = flags.get("images");
+      let images: ({ width: number; height: number } | null)[] = [];
+      if (typeof imgs === "string") {
+        const m = readBoundedJson(imgs, 1_000_000, "screenshot manifest") as { assets?: { id: string; width?: number; height?: number }[] };
+        images = ["diag-S1", "diag-S2"].map((id) => {
+          const a = m.assets?.find((x) => x.id === id);
+          return a && typeof a.width === "number" && typeof a.height === "number" ? { width: a.width, height: a.height } : null;
+        });
+      }
+      console.log(JSON.stringify(interpretDiagnostic(rec, images), null, 2));
+      return 0;
+    }
+    const out = flags.get("out");
+    if (typeof out !== "string") throw new UsageError("diag-screenshots needs --out DIR");
+    for (const [i, u] of rec.screenshots.entries()) console.log(`  S${i + 1}: ${String(u).slice(0, 120)}`);
+    if (!flags.has("yes")) {
+      console.log("HOLD: nothing downloaded. Re-run with --yes (local fetch; full local DNS guard, no hosted exception).");
+      return 3;
+    }
+    const dir = createExclusiveDir(out, `diag-screenshots-${rec.runId}`);
+    const assets: Record<string, unknown>[] = [];
+    let failed = 0;
+    for (const [i, u] of rec.screenshots.entries()) {
+      try {
+        const a = await acquireImage(u, httpsTransport);
+        const info = inspectImage(a.bytes);
+        const file = `diag-S${i + 1}.${a.mime === "image/png" ? "png" : "jpg"}`;
+        writeExclusive(join(dir, file), a.bytes);
+        assets.push({ id: `diag-S${i + 1}`, file, sha256: a.sha256, width: info?.width ?? a.width, height: info?.height ?? a.height, runId: rec.runId, requestSha256: rec.requestSha256 });
+        console.log(`  saved ${file} ${a.width}x${a.height} sha256 ${a.sha256}`);
+      } catch (err) {
+        failed++;
+        console.log(`  S${i + 1} NOT downloaded (${err instanceof Error ? err.message : String(err)}): download it manually and add { id: "diag-S${i + 1}", width, height, sha256 } to the manifest.`);
+      }
+    }
+    writeExclusive(join(dir, "manifest.json"), JSON.stringify({ schema: "website-to-figma/diagnostic-screenshots", schemaVersion: 1, runId: rec.runId, assets }, null, 2) + "\n");
     console.log(`Wrote ${dir} (PRIVATE; ${assets.length} saved, ${failed} need manual download)`);
     return failed ? 4 : 0;
   }

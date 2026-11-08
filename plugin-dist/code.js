@@ -1171,7 +1171,7 @@
     }
     component(parent, p) {
       const c = this.track(figma.createComponent());
-      parent.appendChild(c);
+      if (parent) parent.appendChild(c);
       this.box(c, p);
       c.clipsContent = p.clipsContent;
       if (p.description !== void 0) c.description = p.description;
@@ -1603,7 +1603,7 @@ Width fit skipped for ${unfitted} measured text run(s) (difference too large); n
     const comps = [];
     let x = 0;
     for (const v of st.variants) {
-      const comp = host.component(root, { name: `State=${v.name}`, x: X0 + x, y: top, w: Math.max(1, v.frame.w), h: Math.max(1, v.frame.h), fill: null, clipsContent: true, ...opts.nodes === false ? {} : { description: v.notes.join("\n") } });
+      const comp = host.component(null, { name: `State=${v.name}`, x: X0 + x, y: top, w: Math.max(1, v.frame.w), h: Math.max(1, v.frame.h), fill: null, clipsContent: true, ...opts.nodes === false ? {} : { description: v.notes.join("\n") } });
       host.meta(comp, { state: v.name, provenance: v.provenance, frame: v.frame, screenshot: v.screenshot });
       const ref = v.referenceAssetId ? doc.assets.find((a) => a.id === v.referenceAssetId) : void 0;
       if (ref && v.screenshot && v.screenshot.scrollY !== null) {
@@ -1612,13 +1612,13 @@ Width fit skipped for ${unfitted} measured text run(s) (difference too large); n
         const r = host.rect(comp, { name: ok ? name : `${name} (IMAGE PLACEHOLDER)`, x: -v.frame.x, y: v.screenshot.scrollY - v.frame.y, w: ref.width, h: ref.height, fill: null, ...ok ? { image: { assetId: ref.id, mode: "FILL" } } : { placeholder: "missing" } });
         host.hide(r);
       }
-      if (opts.nodes !== false) await renderNodes(c, comp, v.nodes, [], () => "");
       comps.push(comp);
       x += v.frame.w + 40;
       c.stats.variants++;
     }
     await host.variants(root, comps, { name: statesSetName(page), x: X0, y: top, gap: 40 });
     c.stats.variantSets++;
+    if (opts.nodes !== false) for (const [i, v] of st.variants.entries()) await renderNodes(c, comps[i], v.nodes, [], () => "");
     if (st.reactions === "click-cycle" && comps.length > 1) {
       await host.flush();
       for (const [i, comp] of comps.entries()) {

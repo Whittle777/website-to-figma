@@ -127,6 +127,8 @@ export function attachStates(ctx: StateContext): void {
     if (rawStates.length || stateRefs.length) {
       const variants: StateVariant[] = [];
       const refSha = new Map<StateVariant, string>();
+      // measured target identity (scope selector) of each measured variant, when recorded
+      const targetOf = new Map<StateVariant, string | null>();
       const base = rawStates.find((s) => s.seq === 0) ?? null;
       const KINDS = ["synthetic", "scroll-triggered", "page-api"];
       const ordered = base ? [base, ...rawStates.filter((s) => s !== base && KINDS.includes(String(s.provenance)))] : [];
@@ -209,6 +211,7 @@ export function attachStates(ctx: StateContext): void {
           notes: notes.slice(0, 10).map(note),
         });
         if (ref) refSha.set(variants[variants.length - 1]!, ref.sha256);
+        targetOf.set(variants[variants.length - 1]!, isObj(st.verify) && isObj(st.verify.target) && typeof st.verify.target.selector === "string" ? st.verify.target.selector : null);
         if (ref && assoc !== "action-order") pw(`State "${name}": screenshot was not tied to this state by action order; check the operator's manifest label`);
       }
       // Manual (operator-captured) states: screenshot only, never measured.
@@ -244,6 +247,33 @@ export function attachStates(ctx: StateContext): void {
         });
         refSha.set(variants[variants.length - 1]!, ref.sha256);
         budget -= 1;
+      }
+      // Group validity: every measured variant must show the SAME target as the
+      // baseline (same measured scope selector when recorded, compatible frame
+      // geometry) and differ from it. Others are suppressed with a warning;
+      // unrelated regions are never forced into one variant set.
+      const baseV = variants.find((v) => v.provenance === "baseline");
+      const sig = (v: StateVariant) => JSON.stringify(v.nodes.map((n) => [n.kind, Math.round(n.x), Math.round(n.y), Math.round(n.w), Math.round(n.h), n.kind === "text" ? n.text : null, n.kind === "box" ? [n.fill, n.opacity] : null, n.kind === "text" ? n.color : null]));
+      if (baseV) {
+        const bt = targetOf.get(baseV) ?? null;
+        for (const v of [...variants]) {
+          if (v === baseV || v.provenance === "manual") continue;
+          const t = targetOf.get(v) ?? null;
+          const f = v.frame;
+          const b = baseV.frame;
+          let why: string | null = null;
+          if (bt !== null && t !== null && bt !== t) why = `targets ${t}, not the baseline's ${bt}`;
+          else if (Math.abs(f.x - b.x) > 2 || Math.abs(f.w - b.w) > 2 || Math.abs(f.y - b.y) > 100) why = `frame (${Math.round(f.x)},${Math.round(f.y)} ${Math.round(f.w)}x${Math.round(f.h)}) is not the baseline's region (${Math.round(b.x)},${Math.round(b.y)} ${Math.round(b.w)}x${Math.round(b.h)})`;
+          else if (sig(v) === sig(baseV)) why = "measured identical to the baseline (not a distinct state)";
+          if (why) {
+            pw(`State "${v.name}" suppressed from the variant set: ${why}`);
+            variants.splice(variants.indexOf(v), 1);
+          }
+        }
+      }
+      if (variants.length < 2) {
+        if (variants.length || rawStates.length > 1) pw(`State group suppressed: fewer than 2 valid, distinct variants of the same target remain (no variant set or reactions created)`);
+        variants.length = 0;
       }
       // Byte-identical screenshots across states are flagged: identical images
       // must never be presented as visually distinct states.

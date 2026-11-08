@@ -224,7 +224,7 @@ export interface RunResult {
   stoppedEarly: boolean;
 }
 
-function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+export function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const t = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(Object.assign(new Error(`scrape did not finish within ${ms} ms (wall clock)`), { w2fTimeout: true })), ms);
@@ -235,7 +235,7 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 // Error classification for ONE attempt. 4xx (other than 408/429-free) = the
 // request was refused ("failed"); everything else (timeouts, network, 5xx,
 // 408) = outcome unknown ("ambiguous"). Neither is ever retried.
-function classify(err: unknown): "failed" | "ambiguous" {
+export function classify(err: unknown): "failed" | "ambiguous" {
   const status = isObj(err) && typeof err.status === "number" ? err.status : isObj(err) && isObj(err.response) && typeof err.response.status === "number" ? err.response.status : null;
   if (status !== null && status >= 400 && status < 500 && status !== 408) return "failed";
   return "ambiguous";

@@ -92,13 +92,12 @@ describe(LABEL, () => {
 
   it("variants are cropped in local coordinates with their target nodes (not a lone body box)", () => {
     const vs = doc.pages[0]!.states!.variants;
-    expect(vs.map((v) => [v.name, v.provenance, Math.round(v.frame.y)])).toEqual([["Default", "baseline", 70814], ["AOS revealed", "scroll-triggered", 70814], ["Testimonial next", "page-api", 75540]]);
+    // the Swiper state measured ANOTHER region (y 75540 vs 70814): suppressed, never forced into this set
+    expect(vs.map((v) => [v.name, v.provenance, Math.round(v.frame.y)])).toEqual([["Default", "baseline", 70814], ["AOS revealed", "scroll-triggered", 70814]]);
+    expect(doc.pages[0]!.warnings.join(" ")).toMatch(/State "Testimonial next" suppressed from the variant set: frame \(0,75540 1920x488\) is not the baseline's region/);
     for (const v of vs) expect(v.nodes.length).toBeGreaterThan(1);
     const text = (i: number) => vs[i]!.nodes.filter((n) => n.kind === "text").map((n) => (n as { text: string }).text);
     expect(text(1)).toContain("Feature one");
-    expect(text(2)).toEqual(["Second testimonial"]);
-    const t = vs[2]!.nodes.find((n) => n.kind === "text")!;
-    expect([t.x, Math.round(t.y)]).toEqual([600, 80]); // frame-local
     // AOS: opacity 0 in the baseline, 1 after the scroll trigger (measured difference)
     const card = (i: number) => vs[i]!.nodes.find((n) => n.kind === "box" && Math.round(n.y) === 40 && n.w === 400) as { opacity: number } | undefined;
     expect(card(1)?.opacity).toBe(1);
@@ -111,5 +110,19 @@ describe(LABEL, () => {
     const w = doc.pages[0]!.warnings.join(" ");
     expect(w).toMatch(/byte-identical \(sha256 [0-9a-f]{16}\.\.\.\): no visual distinctness/);
     expect(w).toMatch(/screenshot position unverifiable \(expanded action viewport\)/);
+  });
+
+  it("the saved bad-capture shape (Default and AOS identical, Swiper elsewhere) renders NO variant set", () => {
+    const r = response() as any;
+    const R = r.data.actions.javascriptReturns as any[];
+    const m = (seq: number) => R.find((x: any) => x.value.w2f === "state" && x.value.seq === seq).value;
+    m(1).measured = JSON.parse(JSON.stringify(m(0).measured));
+    const cap2 = captureFromScrapeResponses([{ name: "synthetic.json", json: r }], LABEL);
+    const d2 = convertCapture({ capture: cap2.capture, assets, assetWarnings: [] });
+    expect(d2.pages[0]!.states).toBeUndefined();
+    const w = d2.pages[0]!.warnings.join(" ");
+    expect(w).toMatch(/"AOS revealed" suppressed from the variant set: measured identical to the baseline/);
+    expect(w).toMatch(/"Testimonial next" suppressed/);
+    expect(w).toMatch(/State group suppressed/);
   });
 });

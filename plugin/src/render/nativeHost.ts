@@ -146,9 +146,9 @@ export class NativeHost implements Host<SceneNode> {
     n.visible = false;
     n.locked = true;
   }
-  component(parent: SceneNode, p: FrameSpec & { description?: string }): SceneNode {
+  component(parent: SceneNode | null, p: FrameSpec & { description?: string }): SceneNode {
     const c = this.track(figma.createComponent());
-    (parent as unknown as Parent).appendChild(c);
+    if (parent) (parent as unknown as Parent).appendChild(c);
     this.box(c, p);
     c.clipsContent = p.clipsContent;
     if (p.description !== undefined) c.description = p.description;

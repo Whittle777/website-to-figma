@@ -194,9 +194,9 @@ export class PlannedHost implements Host<FigWrapper> {
     n.set({ visible: false, locked: true });
     this.markSet();
   }
-  component(parent: FigWrapper, p: FrameSpec & { description?: string }): FigWrapper {
+  component(parent: FigWrapper | null, p: FrameSpec & { description?: string }): FigWrapper {
     const c = this.fig.component({ ...this.boxProps(p), clipsContent: p.clipsContent, ...(p.description !== undefined ? { description: p.description } : {}) });
-    parent.append(c);
+    if (parent) parent.append(c);
     this.mark(p.name);
     return c;
   }
