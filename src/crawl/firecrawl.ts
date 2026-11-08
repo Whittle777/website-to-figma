@@ -18,7 +18,7 @@ import { buildSiteMapBounded } from "../normalize/boundedBuild";
 import { canonicalizeUrl } from "../normalize/canonicalize";
 import { LIMITS } from "../shared/limits";
 import type { SiteMapDoc } from "../shared/schema";
-import { assertCreditBudget, buildCrawlRequest, buildMapRequest, CrawlPolicyError, isExcludedPath, normalizeExcludes } from "./plan";
+import { assertCreditBudget, buildCrawlRequest, buildMapRequest, CrawlPolicyError, isExcludedPath, normalizeExcludes, standardEstimate } from "./plan";
 
 export interface CrawlClient {
   map(url: string, options?: MapOptions): Promise<MapData>;
@@ -46,7 +46,8 @@ export interface CrawlRunOptions {
   excludes?: string[];
   // Discovery via map (1 credit). false = crawl only; total count unknown.
   useMap?: boolean;
-  // Required. Refuses before any request unless the documented worst case fits.
+  // Required. While no enforceable provider ceiling exists, runCrawl refuses
+  // before any request for every value (see plan.ts STRICT_CREDIT_CEILING_SUPPORTED).
   maxCredits?: number;
 }
 
@@ -184,16 +185,41 @@ function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-export async function runCrawl(opts: CrawlRunOptions): Promise<SiteMapDoc> {
+export interface CrawlPlan {
+  limit: number;
+  excludes: string[];
+  useMap: boolean;
+  // Standard estimate from documented per-call/per-page prices. NOT a guarantee.
+  estimate: number;
+  crawlRequest: CrawlOptions;
+}
+
+// Network-free validation of a crawl request (no credit gate).
+export function planCrawl(opts: CrawlRunOptions): CrawlPlan {
   const limit = assertLimit(opts.limit);
   if (!Number.isInteger(opts.timeoutSec) || opts.timeoutSec < 10 || opts.timeoutSec > MAX_TIMEOUT_SEC) {
     throw new RangeError(`--timeout must be an integer between 10 and ${MAX_TIMEOUT_SEC} seconds`);
   }
-  // ---- Preflight: everything below refuses before any Firecrawl request. ----
   const excludes = normalizeExcludes(opts.excludes ?? []);
   const useMap = opts.useMap ?? true;
-  const bound = assertCreditBudget(limit, useMap, opts.maxCredits);
-  const crawlRequest = buildCrawlRequest(limit, excludes);
+  return { limit, excludes, useMap, estimate: standardEstimate(limit, useMap), crawlRequest: buildCrawlRequest(limit, excludes) };
+}
+
+// Public entry point. The strict credit gate runs before any Firecrawl request
+// (including the balance read) and, while STRICT_CREDIT_CEILING_SUPPORTED is
+// false, always refuses. There is no flag that turns it into an estimate.
+export async function runCrawl(opts: CrawlRunOptions): Promise<SiteMapDoc> {
+  const plan = planCrawl(opts);
+  assertCreditBudget(plan.limit, plan.useMap, opts.maxCredits);
+  return executeCrawl(opts, plan);
+}
+
+// Performs the Firecrawl requests. Not reachable from runCrawl or the CLI while
+// the strict gate refuses; exported only so fake-client tests can cover the
+// request, cleanup and filtering logic.
+export async function executeCrawl(opts: CrawlRunOptions, plan: CrawlPlan): Promise<SiteMapDoc> {
+  const { limit, excludes, useMap, crawlRequest } = plan;
+  const bound = plan.estimate;
   const resolver = opts.resolver ?? systemResolver;
   const log = opts.log ?? (() => {});
   const sleep = opts.sleep ?? ((ms: number) => abortableSleep(ms, opts.signal));
@@ -212,7 +238,7 @@ export async function runCrawl(opts: CrawlRunOptions): Promise<SiteMapDoc> {
 
   // 0) Balance gate (GET /team/credit-usage; not listed as a billed endpoint on
   //    the billing page, but its cost is not documented either). Refuses unless
-  //    the existing balance covers the documented worst case, so the run should
+  //    the existing balance covers the standard estimate, so the run should
   //    not need a pay-as-you-go top-up (barring concurrent use of the account).
   let remaining: unknown;
   try {
@@ -221,9 +247,9 @@ export async function runCrawl(opts: CrawlRunOptions): Promise<SiteMapDoc> {
     throw new CrawlPolicyError("Refusing: could not read the remaining credit balance. No crawl started.");
   }
   if (typeof remaining !== "number" || !Number.isFinite(remaining) || remaining < bound) {
-    throw new CrawlPolicyError(`Refusing: remaining credits ${String(remaining)} < documented worst case ${bound}. No crawl started.`);
+    throw new CrawlPolicyError(`Refusing: remaining credits ${String(remaining)} < standard estimate ${bound}. No crawl started.`);
   }
-  log(`Credit preflight: worst case ${bound}, budget ${opts.maxCredits}, remaining ${remaining}`);
+  log(`Credit preflight: standard estimate ${bound}, remaining ${remaining}`);
   if (opts.signal?.aborted) throw abortError();
 
   // 1) Optional discovery (1 credit per call per Firecrawl docs), bounded to
@@ -267,7 +293,7 @@ export async function runCrawl(opts: CrawlRunOptions): Promise<SiteMapDoc> {
       // Usage telemetry, not a ceiling: credits are billed per completed page,
       // so this can only stop further spend after the bound was exceeded.
       if (typeof job?.creditsUsed === "number" && job.creditsUsed > bound) {
-        notes.add(`Firecrawl reported ${job.creditsUsed} credits used (> worst case ${bound}); cancelled`);
+        notes.add(`Firecrawl reported ${job.creditsUsed} credits used (> standard estimate ${bound}); cancelled`);
         incomplete = true;
         break;
       }
@@ -307,7 +333,7 @@ export async function runCrawl(opts: CrawlRunOptions): Promise<SiteMapDoc> {
     notes.add("Could not fetch crawl error report");
   }
 
-  if (typeof job?.creditsUsed === "number") notes.add(`Firecrawl reported crawl creditsUsed: ${job.creditsUsed} (documented worst case for this run: ${bound})`);
+  if (typeof job?.creditsUsed === "number") notes.add(`Firecrawl reported crawl creditsUsed: ${job.creditsUsed} (standard estimate for this run: ${bound})`);
   const { pages, dropped } = await processCrawlDocuments(data, start, resolver, excludes);
   for (const [reason, n] of Object.entries(dropped).sort()) {
     notes.add(`${n} page(s) dropped: ${reason}`);

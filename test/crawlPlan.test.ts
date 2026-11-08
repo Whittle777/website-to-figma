@@ -7,11 +7,14 @@ import {
   CrawlPolicyError,
   excludeRegex,
   isExcludedPath,
-  maxCreditBound,
+  standardEstimate,
+  STRICT_CREDIT_CEILING_SUPPORTED,
   normalizeExcludePrefix,
   normalizeExcludes,
 } from "../src/crawl/plan";
-import { countDiscovered, processCrawlDocuments, runCrawl, type CrawlClient } from "../src/crawl/firecrawl";
+import { countDiscovered, executeCrawl, planCrawl, processCrawlDocuments, runCrawl, type CrawlClient, type CrawlRunOptions } from "../src/crawl/firecrawl";
+
+const execute = (o: CrawlRunOptions) => executeCrawl(o, planCrawl(o));
 import { buildSiteMap } from "../src/normalize/build";
 
 const EXCLUDES = ["/lessons/", "/faq/", "/login/"];
@@ -74,18 +77,52 @@ describe("request objects (built before any API call)", () => {
   });
 });
 
-describe("credit preflight", () => {
-  it("computes the documented worst case and refuses fail-closed", () => {
-    expect(maxCreditBound(10, true)).toBe(11);
-    expect(maxCreditBound(10, false)).toBe(10);
-    expect(assertCreditBudget(10, true, 20)).toBe(11);
+describe("strict credit gate (fail closed)", () => {
+  it("reports a standard estimate separately from any guarantee", () => {
+    expect(standardEstimate(10, true)).toBe(11);
+    expect(standardEstimate(10, false)).toBe(10);
+  });
+
+  it("has no enforceable provider ceiling, so every bounded budget is refused", () => {
+    expect(STRICT_CREDIT_CEILING_SUPPORTED).toBe(false);
     expect(() => assertCreditBudget(10, true, undefined)).toThrow(/--max-credits is required/);
-    expect(() => assertCreditBudget(20, true, 20)).toThrow(/worst case 21 credits .* exceeds --max-credits 20/);
     expect(() => assertCreditBudget(10, true, 0)).toThrow(CrawlPolicyError);
+    expect(() => assertCreditBudget(20, true, 20)).toThrow(/standard estimate 21 credits already exceeds --max-credits 20/);
+    for (const max of [10, 20, 1000]) {
+      expect(() => assertCreditBudget(10, false, max)).toThrow(/strict credit ceiling cannot be guaranteed/);
+      expect(() => assertCreditBudget(10, false, max)).toThrow(/Standard estimate, not a guarantee: 10 credits/);
+    }
+  });
+
+  it("runCrawl makes zero Firecrawl calls (not even the balance read) for any --max-credits", async () => {
+    const calls: string[] = [];
+    const spy = (name: string) => async () => {
+      calls.push(name);
+      throw new Error(`unexpected ${name}`);
+    };
+    const client = {
+      getCreditUsage: spy("credits"),
+      map: spy("map"),
+      startCrawl: spy("startCrawl"),
+      getCrawlStatus: spy("status"),
+      cancelCrawl: spy("cancel"),
+      getCrawlErrors: spy("errors"),
+    } as unknown as CrawlClient;
+    const resolverCalls: string[] = [];
+    const resolver = async (h: string) => {
+      resolverCalls.push(h);
+      return ["93.184.215.14"];
+    };
+    const common = { url: "https://www.scrape.example.com/", limit: 10, timeoutSec: 10, apiKey: "unused", client, resolver, useMap: false, excludes: EXCLUDES };
+    for (const maxCredits of [undefined, 9, 10, 20, 1000]) {
+      await expect(runCrawl({ ...common, maxCredits })).rejects.toBeInstanceOf(CrawlPolicyError);
+    }
+    expect(calls).toEqual([]);
+    expect(resolverCalls).toEqual([]);
   });
 });
 
-describe("runCrawl ordering and enforcement (fake client, no network)", () => {
+describe("internal request flow via executeCrawl (fake client, no network)", () => {
   const publicDns = async () => ["93.184.215.14"];
   const site = "https://www.scrape.example.com";
   const page = (path: string, extra: Record<string, unknown> = {}): Document => ({
@@ -139,20 +176,20 @@ describe("runCrawl ordering and enforcement (fake client, no network)", () => {
   it("refuses when an exclusion is invalid or covers the start URL, before any client call", async () => {
     const f = fake({ remaining: 100 });
     await expect(runCrawl({ ...base, client: f.client, maxCredits: 20, excludes: ["faq"] })).rejects.toThrow(/must be a path/);
-    await expect(runCrawl({ ...base, url: site + "/faq", client: f.client, maxCredits: 20, excludes: ["/faq"] })).rejects.toThrow(/start URL/);
+    await expect(execute({ ...base, url: site + "/faq", client: f.client, maxCredits: 20, excludes: ["/faq"] })).rejects.toThrow(/start URL/);
     expect(f.calls).toEqual([]);
   });
 
   it("refuses after only the balance read when the balance is short, unknown or unreadable", async () => {
     for (const f of [fake({ remaining: 10 }), fake({ remaining: undefined }), fake({ remaining: "100" }), fake({ creditsFail: true })]) {
-      await expect(runCrawl({ ...base, client: f.client, maxCredits: 20 })).rejects.toBeInstanceOf(CrawlPolicyError);
+      await expect(execute({ ...base, client: f.client, maxCredits: 20 })).rejects.toBeInstanceOf(CrawlPolicyError);
       expect(f.calls).toEqual(["credits"]);
     }
   });
 
   it("sends exclusions in the crawl request and filters excluded/off-site final URLs locally", async () => {
     const f = fake({ remaining: 100, docs: [page("/"), page("/pages"), page("/lessons/x"), page("/pages?page=2"), page("/faq")] });
-    const doc = await runCrawl({ ...base, client: f.client, maxCredits: 20, excludes: EXCLUDES });
+    const doc = await execute({ ...base, client: f.client, maxCredits: 20, excludes: EXCLUDES });
     expect(f.calls.slice(0, 3)).toEqual(["credits", "map", "startCrawl"]);
     expect(f.req()?.excludePaths).toEqual(["^/?faq(?:/.*)?$", "^/?lessons(?:/.*)?$", "^/?login(?:/.*)?$"]);
     expect(f.req()?.scrapeOptions).toMatchObject({ parsers: [], proxy: "basic", threatProtection: { mode: "off" } });
@@ -167,7 +204,7 @@ describe("runCrawl ordering and enforcement (fake client, no network)", () => {
 
   it("--no-map skips discovery entirely and reports the count as unknown", async () => {
     const f = fake({ remaining: 10 });
-    const doc = await runCrawl({ ...base, client: f.client, maxCredits: 10, useMap: false });
+    const doc = await execute({ ...base, client: f.client, maxCredits: 10, useMap: false });
     expect(f.calls).not.toContain("map");
     expect(f.calls[0]).toBe("credits");
     expect(doc.crawl.discoveredCount).toBeNull();
@@ -176,8 +213,8 @@ describe("runCrawl ordering and enforcement (fake client, no network)", () => {
 
   it("reports creditsUsed telemetry without treating it as a ceiling", async () => {
     const f = fake({ remaining: 100, creditsUsed: 3 });
-    const doc = await runCrawl({ ...base, client: f.client, maxCredits: 20 });
-    expect(doc.crawl.notes.join("\n")).toMatch(/creditsUsed: 3 \(documented worst case for this run: 11\)/);
+    const doc = await execute({ ...base, client: f.client, maxCredits: 20 });
+    expect(doc.crawl.notes.join("\n")).toMatch(/creditsUsed: 3 \(standard estimate for this run: 11\)/);
   });
 });
 

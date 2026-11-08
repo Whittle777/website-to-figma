@@ -11,19 +11,18 @@ import { parseSiteMapJson, utf8Length, type SiteMapDoc } from "./shared/schema";
 import { parseHttpUrl } from "./security/urlGuard";
 import { assertLimit } from "./normalize/build";
 import { MAX_TIMEOUT_SEC, runCrawl } from "./crawl/firecrawl";
-import { assertCreditBudget, CrawlPolicyError, normalizeExcludes } from "./crawl/plan";
+import { assertCreditBudget, CrawlPolicyError, normalizeExcludes, standardEstimate } from "./crawl/plan";
 
 const USAGE = `Usage:
   website-to-figma fixture <5|10|20> [--out FILE]
       Write a deterministic SYNTHETIC fixture site map (no network, no key).
   website-to-figma crawl <url> --max-credits N [--limit N] [--exclude /path]... [--no-map]
                             [--timeout SECONDS] [--out FILE] [--yes]
-      Map + crawl a real public site with Firecrawl. Needs FIRECRAWL_API_KEY
-      (environment or a git-ignored .env). Uses Firecrawl credits, so it only
-      runs with --yes, and refuses unless the documented worst case
-      ((map ? 1 : 0) + limit) fits --max-credits and the remaining balance.
-      --exclude /prefix (repeatable) is sent as excludePaths before fetching.
-      --no-map skips discovery (saves 1 credit; total page count unknown).
+      CURRENTLY ALWAYS REFUSES (fail closed) before any Firecrawl request:
+      --max-credits is required, and no documented, enforceable Firecrawl
+      credit ceiling exists, so a strict budget cannot be guaranteed. The
+      standard estimate ((map ? 1 : 0) + limit) is printed, not guaranteed.
+      --exclude /prefix (repeatable) and --no-map are validated and planned.
       Default limit ${LIMITS.defaultPages}, hard cap ${LIMITS.hardMaxPages}.
   website-to-figma validate <FILE>
       Validate a site map JSON file against the current schema.`;
@@ -117,11 +116,13 @@ async function main(argv: string[]): Promise<number> {
     const useMap = !flags.has("no-map");
     const maxCreditsFlag = flags.get("max-credits");
     const maxCredits = maxCreditsFlag === undefined ? undefined : intFlag(maxCreditsFlag, "max-credits", 0);
-    const bound = assertCreditBudget(limit, useMap, maxCredits);
     console.error(
-      `Plan: ${useMap ? "map (1 credit) + " : ""}crawl <= ${limit} page(s) x 1 credit = worst case ${bound} credit(s), budget ${maxCredits}.\n` +
-        `Exclusions (sent as excludePaths before fetching): ${excludes.length > 0 ? excludes.join(", ") : "none"}.`,
+      `Standard estimate (NOT a guarantee): ${useMap ? "map 1 + " : ""}${limit} page(s) x 1 = ${standardEstimate(limit, useMap)} credit(s).\n` +
+        `Exclusions (would be sent as excludePaths): ${excludes.length > 0 ? excludes.join(", ") : "none"}.`,
     );
+    // Strict bounded-budget gate: refuses here, before the key is read and
+    // before any Firecrawl request, while no enforceable ceiling exists.
+    assertCreditBudget(limit, useMap, maxCredits);
 
     if (existsSync(".env")) process.loadEnvFile(".env");
     const apiKey = process.env.FIRECRAWL_API_KEY?.trim();
@@ -135,7 +136,7 @@ async function main(argv: string[]): Promise<number> {
     }
     if (!flags.has("yes")) {
       console.error(
-        "This would read the credit balance and then spend up to the worst case above.\n" + "Re-run with --yes to proceed.",
+        "This would spend Firecrawl credits (the estimate above is not a guarantee). Re-run with --yes to proceed.",
       );
       return 3;
     }

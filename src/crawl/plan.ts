@@ -1,6 +1,7 @@
 // Pure, network-free crawl planning: validated exclusions, the exact request
-// objects sent to Firecrawl, and a conservative credit bound. Everything here
-// runs (and can refuse) before any Firecrawl request is made.
+// objects sent to Firecrawl, a standard credit estimate, and the strict
+// bounded-budget gate. Everything here runs (and can refuse) before any
+// Firecrawl request is made.
 //
 // Credit semantics relied on (docs.firecrawl.dev, checked for this version):
 //  - /billing: Crawl "1 credit / page"; Map "1 credit / call"; enhanced proxy
@@ -14,8 +15,9 @@
 //  - /api-reference/endpoint/crawl-post: proxy values basic|enhanced|auto,
 //    default auto, "Billed at the same credit cost as basic"; threatProtection
 //    `normal` is "+2 credits per URL scanned" (no documented default).
-// So with the options pinned below, the documented worst case is
-//   (map ? 1 : 0) + limit * 1.
+// So with the options pinned below, the STANDARD ESTIMATE is
+//   (map ? 1 : 0) + limit * 1
+// which is not a guarantee (see STRICT_CREDIT_CEILING_SUPPORTED).
 import type { CrawlOptions, MapOptions, ScrapeOptions } from "@mendable/firecrawl-js";
 import { LIMITS } from "../shared/limits";
 
@@ -109,21 +111,42 @@ export function buildMapRequest(): MapOptions {
   };
 }
 
-export function maxCreditBound(limit: number, useMap: boolean): number {
+// Standard estimate: documented base prices only, assuming no account-level
+// surcharges. This is NOT a credit ceiling.
+export function standardEstimate(limit: number, useMap: boolean): number {
   return (useMap ? CREDITS_PER_MAP_CALL : 0) + limit * MAX_CREDITS_PER_PAGE;
 }
 
-// Refuses unless an explicit budget is given and the documented worst case fits.
+// Whether a strict, provider-enforced credit ceiling exists for this crawl
+// route. It does not today, so bounded-budget crawls fail closed:
+//  - no crawl-level credit cap is documented (SDK 4.52's only maxCredits is in
+//    the agent API); `limit` caps pages, not credits;
+//  - teams with enforced threat protection "may raise the mode per request but
+//    never lower it" (SDK typings) -> +2 credits per URL despite mode "off";
+//  - pay-as-you-go top-ups at zero balance, or concurrent use of the account,
+//    can create new charges that no client-side check can rule out;
+//  - whether GET /team/credit-usage itself bills is undocumented.
+// Change only when a documented, enforceable provider ceiling is available.
+export const STRICT_CREDIT_CEILING_SUPPORTED: boolean = false;
+
+export const STRICT_CEILING_UNSUPPORTED_MESSAGE =
+  "Refusing before any Firecrawl request: a strict credit ceiling cannot be guaranteed for crawls. " +
+  "Firecrawl documents no enforceable crawl credit cap; enforced threat protection can add +2 credits per URL; " +
+  "pay-as-you-go top-ups or concurrent account usage can create new charges; and billing of the balance endpoint is undocumented.";
+
+// Bounded-budget gate. --max-credits is required; while a strict ceiling is
+// unsupported this always refuses (after reporting the estimate in the error).
 export function assertCreditBudget(limit: number, useMap: boolean, maxCredits: number | undefined): number {
-  const bound = maxCreditBound(limit, useMap);
+  const estimate = standardEstimate(limit, useMap);
   if (maxCredits === undefined) {
-    throw new CrawlPolicyError(`Refusing: --max-credits is required for a live crawl (documented worst case for this run is ${bound})`);
+    throw new CrawlPolicyError(`Refusing: --max-credits is required for a live crawl (standard estimate ${estimate}, not a guarantee)`);
   }
   if (!Number.isInteger(maxCredits) || maxCredits < 1) throw new CrawlPolicyError("--max-credits must be a positive integer");
-  if (bound > maxCredits) {
-    throw new CrawlPolicyError(
-      `Refusing: documented worst case ${bound} credits (${useMap ? "1 map + " : ""}${limit} page(s) x ${MAX_CREDITS_PER_PAGE}) exceeds --max-credits ${maxCredits}`,
-    );
+  if (estimate > maxCredits) {
+    throw new CrawlPolicyError(`Refusing: standard estimate ${estimate} credits already exceeds --max-credits ${maxCredits}`);
   }
-  return bound;
+  if (!STRICT_CREDIT_CEILING_SUPPORTED) {
+    throw new CrawlPolicyError(`${STRICT_CEILING_UNSUPPORTED_MESSAGE} (Standard estimate, not a guarantee: ${estimate} credits; requested ceiling: ${maxCredits}.)`);
+  }
+  return estimate;
 }

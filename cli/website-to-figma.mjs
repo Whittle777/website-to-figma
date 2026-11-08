@@ -6225,23 +6225,24 @@ function buildMapRequest() {
     threatProtection: { mode: "off" }
   };
 }
-function maxCreditBound(limit, useMap) {
+function standardEstimate(limit, useMap) {
   return (useMap ? CREDITS_PER_MAP_CALL : 0) + limit * MAX_CREDITS_PER_PAGE;
 }
 function assertCreditBudget(limit, useMap, maxCredits) {
-  const bound = maxCreditBound(limit, useMap);
+  const estimate = standardEstimate(limit, useMap);
   if (maxCredits === void 0) {
-    throw new CrawlPolicyError(`Refusing: --max-credits is required for a live crawl (documented worst case for this run is ${bound})`);
+    throw new CrawlPolicyError(`Refusing: --max-credits is required for a live crawl (standard estimate ${estimate}, not a guarantee)`);
   }
   if (!Number.isInteger(maxCredits) || maxCredits < 1) throw new CrawlPolicyError("--max-credits must be a positive integer");
-  if (bound > maxCredits) {
-    throw new CrawlPolicyError(
-      `Refusing: documented worst case ${bound} credits (${useMap ? "1 map + " : ""}${limit} page(s) x ${MAX_CREDITS_PER_PAGE}) exceeds --max-credits ${maxCredits}`
-    );
+  if (estimate > maxCredits) {
+    throw new CrawlPolicyError(`Refusing: standard estimate ${estimate} credits already exceeds --max-credits ${maxCredits}`);
   }
-  return bound;
+  if (!STRICT_CREDIT_CEILING_SUPPORTED) {
+    throw new CrawlPolicyError(`${STRICT_CEILING_UNSUPPORTED_MESSAGE} (Standard estimate, not a guarantee: ${estimate} credits; requested ceiling: ${maxCredits}.)`);
+  }
+  return estimate;
 }
-var CrawlPolicyError, MAX_EXCLUDES, CREDITS_PER_MAP_CALL, MAX_CREDITS_PER_PAGE, SCRAPE_OPTIONS;
+var CrawlPolicyError, MAX_EXCLUDES, CREDITS_PER_MAP_CALL, MAX_CREDITS_PER_PAGE, SCRAPE_OPTIONS, STRICT_CREDIT_CEILING_SUPPORTED, STRICT_CEILING_UNSUPPORTED_MESSAGE;
 var init_plan = __esm({
   "src/crawl/plan.ts"() {
     "use strict";
@@ -6265,6 +6266,8 @@ var init_plan = __esm({
       proxy: "basic",
       threatProtection: { mode: "off" }
     };
+    STRICT_CREDIT_CEILING_SUPPORTED = false;
+    STRICT_CEILING_UNSUPPORTED_MESSAGE = "Refusing before any Firecrawl request: a strict credit ceiling cannot be guaranteed for crawls. Firecrawl documents no enforceable crawl credit cap; enforced threat protection can add +2 credits per URL; pay-as-you-go top-ups or concurrent account usage can create new charges; and billing of the balance endpoint is undocumented.";
   }
 });
 
@@ -36138,15 +36141,23 @@ function abortableSleep(ms, signal) {
     signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
-async function runCrawl(opts) {
+function planCrawl(opts) {
   const limit = assertLimit(opts.limit);
   if (!Number.isInteger(opts.timeoutSec) || opts.timeoutSec < 10 || opts.timeoutSec > MAX_TIMEOUT_SEC) {
     throw new RangeError(`--timeout must be an integer between 10 and ${MAX_TIMEOUT_SEC} seconds`);
   }
   const excludes = normalizeExcludes(opts.excludes ?? []);
   const useMap = opts.useMap ?? true;
-  const bound = assertCreditBudget(limit, useMap, opts.maxCredits);
-  const crawlRequest = buildCrawlRequest(limit, excludes);
+  return { limit, excludes, useMap, estimate: standardEstimate(limit, useMap), crawlRequest: buildCrawlRequest(limit, excludes) };
+}
+async function runCrawl(opts) {
+  const plan = planCrawl(opts);
+  assertCreditBudget(plan.limit, plan.useMap, opts.maxCredits);
+  return executeCrawl(opts, plan);
+}
+async function executeCrawl(opts, plan) {
+  const { limit, excludes, useMap, crawlRequest } = plan;
+  const bound = plan.estimate;
   const resolver = opts.resolver ?? systemResolver;
   const log = opts.log ?? (() => {
   });
@@ -36169,9 +36180,9 @@ async function runCrawl(opts) {
     throw new CrawlPolicyError("Refusing: could not read the remaining credit balance. No crawl started.");
   }
   if (typeof remaining !== "number" || !Number.isFinite(remaining) || remaining < bound) {
-    throw new CrawlPolicyError(`Refusing: remaining credits ${String(remaining)} < documented worst case ${bound}. No crawl started.`);
+    throw new CrawlPolicyError(`Refusing: remaining credits ${String(remaining)} < standard estimate ${bound}. No crawl started.`);
   }
-  log(`Credit preflight: worst case ${bound}, budget ${opts.maxCredits}, remaining ${remaining}`);
+  log(`Credit preflight: standard estimate ${bound}, remaining ${remaining}`);
   if (opts.signal?.aborted) throw abortError();
   let discoveredCount = null;
   if (useMap) {
@@ -36203,7 +36214,7 @@ async function runCrawl(opts) {
         break;
       }
       if (typeof job?.creditsUsed === "number" && job.creditsUsed > bound) {
-        notes.add(`Firecrawl reported ${job.creditsUsed} credits used (> worst case ${bound}); cancelled`);
+        notes.add(`Firecrawl reported ${job.creditsUsed} credits used (> standard estimate ${bound}); cancelled`);
         incomplete = true;
         break;
       }
@@ -36240,7 +36251,7 @@ async function runCrawl(opts) {
   } catch {
     notes.add("Could not fetch crawl error report");
   }
-  if (typeof job?.creditsUsed === "number") notes.add(`Firecrawl reported crawl creditsUsed: ${job.creditsUsed} (documented worst case for this run: ${bound})`);
+  if (typeof job?.creditsUsed === "number") notes.add(`Firecrawl reported crawl creditsUsed: ${job.creditsUsed} (standard estimate for this run: ${bound})`);
   const { pages, dropped } = await processCrawlDocuments(data, start, resolver, excludes);
   for (const [reason, n] of Object.entries(dropped).sort()) {
     notes.add(`${n} page(s) dropped: ${reason}`);
@@ -36366,11 +36377,11 @@ async function main2(argv) {
     const useMap = !flags.has("no-map");
     const maxCreditsFlag = flags.get("max-credits");
     const maxCredits = maxCreditsFlag === void 0 ? void 0 : intFlag(maxCreditsFlag, "max-credits", 0);
-    const bound = assertCreditBudget(limit, useMap, maxCredits);
     console.error(
-      `Plan: ${useMap ? "map (1 credit) + " : ""}crawl <= ${limit} page(s) x 1 credit = worst case ${bound} credit(s), budget ${maxCredits}.
-Exclusions (sent as excludePaths before fetching): ${excludes.length > 0 ? excludes.join(", ") : "none"}.`
+      `Standard estimate (NOT a guarantee): ${useMap ? "map 1 + " : ""}${limit} page(s) x 1 = ${standardEstimate(limit, useMap)} credit(s).
+Exclusions (would be sent as excludePaths): ${excludes.length > 0 ? excludes.join(", ") : "none"}.`
     );
+    assertCreditBudget(limit, useMap, maxCredits);
     if (existsSync(".env")) process.loadEnvFile(".env");
     const apiKey = process.env.FIRECRAWL_API_KEY?.trim();
     if (!apiKey) {
@@ -36381,7 +36392,7 @@ Exclusions (sent as excludePaths before fetching): ${excludes.length > 0 ? exclu
     }
     if (!flags.has("yes")) {
       console.error(
-        "This would read the credit balance and then spend up to the worst case above.\nRe-run with --yes to proceed."
+        "This would spend Firecrawl credits (the estimate above is not a guarantee). Re-run with --yes to proceed."
       );
       return 3;
     }
@@ -36421,12 +36432,11 @@ var init_cli = __esm({
       Write a deterministic SYNTHETIC fixture site map (no network, no key).
   website-to-figma crawl <url> --max-credits N [--limit N] [--exclude /path]... [--no-map]
                             [--timeout SECONDS] [--out FILE] [--yes]
-      Map + crawl a real public site with Firecrawl. Needs FIRECRAWL_API_KEY
-      (environment or a git-ignored .env). Uses Firecrawl credits, so it only
-      runs with --yes, and refuses unless the documented worst case
-      ((map ? 1 : 0) + limit) fits --max-credits and the remaining balance.
-      --exclude /prefix (repeatable) is sent as excludePaths before fetching.
-      --no-map skips discovery (saves 1 credit; total page count unknown).
+      CURRENTLY ALWAYS REFUSES (fail closed) before any Firecrawl request:
+      --max-credits is required, and no documented, enforceable Firecrawl
+      credit ceiling exists, so a strict budget cannot be guaranteed. The
+      standard estimate ((map ? 1 : 0) + limit) is printed, not guaranteed.
+      --exclude /prefix (repeatable) and --no-map are validated and planned.
       Default limit ${LIMITS.defaultPages}, hard cap ${LIMITS.hardMaxPages}.
   website-to-figma validate <FILE>
       Validate a site map JSON file against the current schema.`;

@@ -18,7 +18,7 @@ Early development. What has and has not been verified:
 | --- | --- |
 | CLI fixtures, normalization, caps, schema, URL safety, layout planning | Unit-tested (`npm test`) |
 | CLI + plugin typecheck and build | `npm run typecheck`, `npm run build` |
-| Firecrawl live crawl | **Not run yet** (needs a key and paid credits). Code paths are typed against `@mendable/firecrawl-js` 4.52.0. |
+| Firecrawl live crawl | **Not possible through this CLI**: it fails closed because no enforceable credit ceiling exists. Never run. Request code is typed against `@mendable/firecrawl-js` 4.52.0 and tested with fake clients only. |
 | Importing into Figma | **Not verified yet.** The plugin builds and typechecks against `@figma/plugin-typings`, but nobody has imported it into Figma from this repo yet. |
 
 ## Requirements
@@ -41,11 +41,9 @@ npx tsx src/cli.ts fixture 5            # or 10, 20  -> out/fixture-5.json
 # Validate any site map JSON
 npx tsx src/cli.ts validate samples/fixture-10.json
 
-# Real crawl (uses Firecrawl credits). Refuses without --yes, and refuses unless the
-# documented worst case ((map ? 1 : 0) + limit) fits --max-credits and the remaining balance.
-cp .env.example .env                    # put FIRECRAWL_API_KEY=... in .env (git-ignored)
-npx tsx src/cli.ts crawl https://example.com --limit 10 --no-map \
-  --exclude /login/ --max-credits 20 --yes
+# Real crawl: CURRENTLY ALWAYS REFUSES (fail closed, exit 3) before any Firecrawl request,
+# because no documented, enforceable Firecrawl credit ceiling exists. See cli/README.md.
+npx tsx src/cli.ts crawl https://example.com --limit 10 --no-map --exclude /login/ --max-credits 20
 ```
 
 After `npm run build` the same commands work as `node dist/cli.js ...`. A self-contained
@@ -57,7 +55,7 @@ single-file build (no `node_modules` needed, Node >= 20.12) is committed at
 - **Limits:** default 10 pages, hard cap 20. `--limit 21` or higher is rejected, not silently
   reduced. The default timeout is 120s (max 300s). On timeout the crawl is cancelled and the
   partial results are marked `incomplete`.
-- **Timeouts and cancellation:** the client is created with `maxRetries: 1` (a single attempt in
+- **Timeouts and cancellation** (live request path, not currently reachable): the client is created with `maxRetries: 1` (a single attempt in
   SDK 4.52) and `timeoutMs: 30000`. In the SDK's axios Node adapter, `timeoutMs` acts as a
   socket-inactivity timeout, not a total-time limit. Each awaited SDK call is therefore also raced
   against a wall-clock timer: map 45s, startCrawl 30s, getCrawlStatus 60s, cancelCrawl 15s and
@@ -69,6 +67,17 @@ single-file build (no `node_modules` needed, Node >= 20.12) is committed at
   first Ctrl-C) sends `cancelCrawl`, but Firecrawl may already have finished pages or may not
   honour the cancel. If `startCrawl` itself times out after the server created the job, no job ID
   is known and that job can't be cancelled from here. It is still limited to `--limit` pages.
+- **Parsing bounds:** crawled HTML is cut to 1,000,000 characters and 15,000 opening tags
+  *before* parsing, because `node-html-parser` is super-linear on deeply unclosed markup.
+  Extraction then runs in a worker thread with a 60s deadline and a 512 MB heap limit. If either
+  limit is hit, the run aborts and writes nothing.
+- **Credits (fail closed):** `crawl` requires `--max-credits` and currently refuses every
+  bounded-budget crawl before any Firecrawl request, including the balance read. Firecrawl
+  documents no enforceable crawl credit ceiling. Enforced threat protection can add +2 credits per
+  URL, and pay-as-you-go top-ups or concurrent account use can create new charges. There is no
+  override flag. The CLI prints a *standard estimate* (`(map ? 1 : 0) + limit`) separately and
+  labels it as not a guarantee. `--exclude` and `--no-map` are validated and planned. Details and
+  citations are in [`cli/README.md`](cli/README.md).
 - **Parsing bounds:** crawled HTML is cut to 1,000,000 characters and 15,000 opening tags
   *before* parsing, because `node-html-parser` is super-linear on deeply unclosed markup.
   Extraction then runs in a worker thread with a 60s deadline and a 512 MB heap limit. If either

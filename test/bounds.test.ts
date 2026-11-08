@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import type { CrawlJob, Document } from "@mendable/firecrawl-js";
 import { extractPage, tagLimitIndex } from "../src/normalize/extract";
 import { buildSiteMapBounded } from "../src/normalize/boundedBuild";
-import { runCrawl, type CrawlClient } from "../src/crawl/firecrawl";
+import { executeCrawl, planCrawl, type CrawlClient, type CrawlRunOptions } from "../src/crawl/firecrawl";
+
+// The strict gate in runCrawl always refuses; the request/cleanup flow is covered
+// directly through the internal executeCrawl with fake clients.
+const execute = (o: CrawlRunOptions) => executeCrawl(o, planCrawl(o));
 import { parseSiteMapJson } from "../src/shared/schema";
 import { buildFixture } from "../src/fixtures/generate";
 import { LIMITS } from "../src/shared/limits";
@@ -93,21 +97,21 @@ describe("crawl job cleanup", () => {
 
   it("does not cancel a completed job", { timeout: 20_000 }, async () => {
     const { client, calls } = fakeClient([job("completed", [doc])]);
-    const out = await runCrawl({ ...base, client });
+    const out = await execute({ ...base, client });
     expect(calls.cancel).toBe(0);
     expect(out.pages).toHaveLength(1);
   });
 
   it("cancels when polling throws", async () => {
     const { client, calls } = fakeClient([new Error("network down")]);
-    await expect(runCrawl({ ...base, client })).rejects.toThrow(/network down/);
+    await expect(execute({ ...base, client })).rejects.toThrow(/network down/);
     expect(calls.cancel).toBe(1);
   });
 
   it("cancels on deadline and marks partial results incomplete", { timeout: 20_000 }, async () => {
     let t = 0;
     const { client, calls } = fakeClient([job("scraping", [doc])]);
-    const out = await runCrawl({ ...base, client, now: () => (t += 6_000) });
+    const out = await execute({ ...base, client, now: () => (t += 6_000) });
     expect(calls.cancel).toBe(1);
     expect(out.crawl.incomplete).toBe(true);
     expect(out.crawl.notes.join("\n")).toMatch(/timed out/);
@@ -117,33 +121,33 @@ describe("crawl job cleanup", () => {
     const ac = new AbortController();
     const { client, calls } = fakeClient([job("scraping")]);
     const sleep = async () => ac.abort();
-    await expect(runCrawl({ ...base, client, sleep, signal: ac.signal })).rejects.toThrow(/Aborted/);
+    await expect(execute({ ...base, client, sleep, signal: ac.signal })).rejects.toThrow(/Aborted/);
     expect(calls.cancel).toBe(1);
   });
 
   it("survives a null status body until the deadline, then cancels", { timeout: 20_000 }, async () => {
     let t = 0;
     const { client, calls } = fakeClient([null as unknown as CrawlJob]);
-    await expect(runCrawl({ ...base, client, now: () => (t += 6_000) })).rejects.toThrow(/no crawled page/);
+    await expect(execute({ ...base, client, now: () => (t += 6_000) })).rejects.toThrow(/no crawled page/);
     expect(calls.cancel).toBe(1);
   });
 
   it("bounds a hung status call with a wall-clock timeout, then cancels", { timeout: 20_000 }, async () => {
     const { client, calls } = fakeClient([job("scraping")]);
     client.getCrawlStatus = () => new Promise<CrawlJob>(() => {});
-    await expect(runCrawl({ ...base, client, callTimeouts: { status: 50 } })).rejects.toThrow(/getCrawlStatus call did not finish within 50 ms/);
+    await expect(execute({ ...base, client, callTimeouts: { status: 50 } })).rejects.toThrow(/getCrawlStatus call did not finish within 50 ms/);
     expect(calls.cancel).toBe(1);
   });
 
   it("does not wait forever on a hung cancel call", { timeout: 20_000 }, async () => {
     const { client } = fakeClient([new Error("boom")]);
     client.cancelCrawl = () => new Promise<boolean>(() => {});
-    await expect(runCrawl({ ...base, client, callTimeouts: { cancel: 50 } })).rejects.toThrow(/boom/);
+    await expect(execute({ ...base, client, callTimeouts: { cancel: 50 } })).rejects.toThrow(/boom/);
   });
 
   it("aborts with nothing usable when API documents are malformed", async () => {
     const bad = [null, "x", { html: "<p>", metadata: null }, { html: 5, metadata: { url: 7 } }] as unknown as Document[];
     const { client } = fakeClient([job("completed", bad)]);
-    await expect(runCrawl({ ...base, client })).rejects.toThrow(/no crawled page/);
+    await expect(execute({ ...base, client })).rejects.toThrow(/no crawled page/);
   });
 });
