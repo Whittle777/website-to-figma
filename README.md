@@ -41,12 +41,16 @@ npx tsx src/cli.ts fixture 5            # or 10, 20  -> out/fixture-5.json
 # Validate any site map JSON
 npx tsx src/cli.ts validate samples/fixture-10.json
 
-# Real crawl (uses Firecrawl credits; refuses to run without --yes)
+# Real crawl (uses Firecrawl credits). Refuses without --yes, and refuses unless the
+# documented worst case ((map ? 1 : 0) + limit) fits --max-credits and the remaining balance.
 cp .env.example .env                    # put FIRECRAWL_API_KEY=... in .env (git-ignored)
-npx tsx src/cli.ts crawl https://example.com --limit 10 --yes
+npx tsx src/cli.ts crawl https://example.com --limit 10 --no-map \
+  --exclude /login/ --max-credits 20 --yes
 ```
 
-After `npm run build` the same commands work as `node dist/cli.js ...`.
+After `npm run build` the same commands work as `node dist/cli.js ...`. A self-contained
+single-file build (no `node_modules` needed, Node >= 20.12) is committed at
+[`cli/website-to-figma.mjs`](cli/README.md). Rebuild it with `npm run dist`.
 
 - **`crawl` never falls back to synthetic data.** If no key is set, it explains this, writes
   nothing and exits with code 2. Fixtures only come from the separate `fixture` command.
@@ -69,8 +73,12 @@ After `npm run build` the same commands work as `node dist/cli.js ...`.
   *before* parsing, because `node-html-parser` is super-linear on deeply unclosed markup.
   Extraction then runs in a worker thread with a 60s deadline and a 512 MB heap limit. If either
   limit is hit, the run aborts and writes nothing.
-- **Cost:** the Firecrawl docs list map at 1 credit per call and crawl at 1 credit per page.
-  Check your plan before running.
+- **Credits:** the CLI refuses before any request unless `--max-credits` covers the documented
+  worst case, then checks the remaining balance before spending. `--exclude /prefix` (repeatable)
+  is sent to Firecrawl as `excludePaths` before fetching, and also checked locally on final URLs.
+  `--no-map` skips the 1-credit discovery call. The exact credit semantics, citations and limits
+  are in [`cli/README.md`](cli/README.md). The worst case is derived from the docs, not a hard
+  credit ceiling.
 
 ### Output format (`schema: "website-to-figma/site-map"`, `schemaVersion: 1`)
 

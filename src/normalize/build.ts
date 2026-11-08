@@ -26,6 +26,9 @@ export interface BuildInput {
   discoveredCount: number | null;
   incomplete: boolean;
   notes: string[];
+  // Treat "/a?x=1" and "/a" as one page (matches Firecrawl's
+  // ignoreQueryParameters). Default false keeps fixture behaviour unchanged.
+  ignoreQueryVariants?: boolean;
 }
 
 export class Notes {
@@ -55,9 +58,9 @@ interface Candidate {
   raw: RawPage;
 }
 
-function dedupeKey(canonical: string): string {
+function dedupeKey(canonical: string, ignoreQuery = false): string {
   const u = new URL(canonical);
-  return siteKey(u.hostname) + u.pathname + u.search;
+  return siteKey(u.hostname) + u.pathname + (ignoreQuery ? "" : u.search);
 }
 
 function segmentsOf(canonical: string): string[] {
@@ -91,12 +94,20 @@ export function buildSiteMap(input: BuildInput): SiteMapDoc {
       offSite++;
       continue;
     }
-    const key = dedupeKey(canonical);
+    const ignoreQuery = input.ignoreQueryVariants === true;
+    const key = dedupeKey(canonical, ignoreQuery);
     const existing = byKey.get(key);
     if (existing) {
       duplicates++;
-      // Prefer the https variant deterministically.
-      if (existing.canonical.startsWith("http:") && canonical.startsWith("https:")) existing.canonical = canonical;
+      if (ignoreQuery && existing.hasQuery && u.search === "") {
+        // Prefer the query-less variant of a path.
+        existing.canonical = canonical;
+        existing.hasQuery = false;
+        existing.raw = raw;
+      } else if (existing.canonical.startsWith("http:") && canonical.startsWith("https:")) {
+        // Prefer the https variant deterministically.
+        existing.canonical = canonical;
+      }
       continue;
     }
     byKey.set(key, { canonical, key, segments: segmentsOf(canonical), hasQuery: u.search !== "", raw });
@@ -107,7 +118,7 @@ export function buildSiteMap(input: BuildInput): SiteMapDoc {
   }
   if (duplicates > 0) notes.add(`${duplicates} duplicate URL(s) merged after canonicalization`);
 
-  const startKey = dedupeKey(start.toString());
+  const startKey = dedupeKey(start.toString(), input.ignoreQueryVariants === true);
   const sorted = [...byKey.values()].sort((a, b) => {
     if (a.key === startKey) return -1;
     if (b.key === startKey) return 1;
@@ -134,6 +145,9 @@ export function buildSiteMap(input: BuildInput): SiteMapDoc {
   // Underfill: the crawler spent its page budget on URLs that merged or were
   // dropped here, so fewer than `limit` pages remain while more may exist.
   const mayHaveMore = discovered === null || discovered > kept.length;
+  if (discovered === null && kept.length === limit) {
+    notes.add(`Returned exactly the limit (${limit}); total page count unknown, so more pages may exist`);
+  }
   if (kept.length < limit && (duplicates > 0 || offSite > 0) && mayHaveMore) {
     incomplete = true;
     notes.add(`Underfilled: ${kept.length} of limit ${limit} after merging/dropping URLs; more same-site pages may exist`);

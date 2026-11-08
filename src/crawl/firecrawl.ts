@@ -11,13 +11,14 @@
 // same syntax + local-DNS checks as the start URL and be on the same site. We
 // cannot observe the IPs Firecrawl actually connected to or its redirect
 // chain; that is outside this tool's control.
-import type { CrawlErrorsResponse, CrawlJob, CrawlOptions, Document, MapData, MapOptions, PaginationConfig } from "@mendable/firecrawl-js";
+import type { CrawlErrorsResponse, CrawlJob, CrawlOptions, CreditUsage, Document, MapData, MapOptions, PaginationConfig } from "@mendable/firecrawl-js";
 import { assertPublicHttpUrl, isSameSite, parseHttpUrl, siteKey, systemResolver, UnsafeUrlError, type Resolver } from "../security/urlGuard";
 import { assertLimit, Notes, type RawPage } from "../normalize/build";
 import { buildSiteMapBounded } from "../normalize/boundedBuild";
 import { canonicalizeUrl } from "../normalize/canonicalize";
 import { LIMITS } from "../shared/limits";
 import type { SiteMapDoc } from "../shared/schema";
+import { assertCreditBudget, buildCrawlRequest, buildMapRequest, CrawlPolicyError, isExcludedPath, normalizeExcludes } from "./plan";
 
 export interface CrawlClient {
   map(url: string, options?: MapOptions): Promise<MapData>;
@@ -25,6 +26,7 @@ export interface CrawlClient {
   getCrawlStatus(jobId: string, pagination?: PaginationConfig): Promise<CrawlJob>;
   cancelCrawl(jobId: string): Promise<boolean>;
   getCrawlErrors(jobId: string): Promise<CrawlErrorsResponse>;
+  getCreditUsage(): Promise<CreditUsage>;
 }
 
 export interface CrawlRunOptions {
@@ -39,6 +41,13 @@ export interface CrawlRunOptions {
   now?: () => number;
   signal?: AbortSignal;
   callTimeouts?: Partial<CallTimeouts>;
+  // Path prefixes ("/lessons") excluded before fetching (server-side
+  // excludePaths) and again locally on final URLs.
+  excludes?: string[];
+  // Discovery via map (1 credit). false = crawl only; total count unknown.
+  useMap?: boolean;
+  // Required. Refuses before any request unless the documented worst case fits.
+  maxCredits?: number;
 }
 
 export const MAX_TIMEOUT_SEC = 300;
@@ -48,7 +57,7 @@ const POLL_MS = 3_000;
 // axios socket-inactivity timeout, which a slow-dripping response can outlast,
 // so each call is also raced against our own timer. A timed-out request is not
 // aborted underneath (the SDK takes no per-call signal); we stop waiting for it.
-export const CALL_TIMEOUT_MS = { map: 45_000, start: 30_000, status: 60_000, cancel: 15_000, errors: 30_000 } as const;
+export const CALL_TIMEOUT_MS = { credits: 30_000, map: 45_000, start: 30_000, status: 60_000, cancel: 15_000, errors: 30_000 } as const;
 type CallTimeouts = { [K in keyof typeof CALL_TIMEOUT_MS]: number };
 
 export class CallTimeoutError extends Error {
@@ -81,7 +90,7 @@ function underStartPath(u: URL, start: URL): boolean {
 
 // Count unique same-site URLs from map output (syntax-checked only; these are
 // unverified discovery hints, never fetched by us).
-export function countDiscovered(map: MapData, start: URL): number {
+export function countDiscovered(map: MapData, start: URL, excludes: string[] = []): number {
   const keys = new Set<string>();
   for (const link of (map.links ?? []).slice(0, LIMITS.maxMapLinks)) {
     if (typeof link?.url !== "string") continue;
@@ -89,7 +98,9 @@ export function countDiscovered(map: MapData, start: URL): number {
       const u = parseHttpUrl(link.url);
       if (!isSameSite(u, start) || !underStartPath(u, start)) continue;
       const c = new URL(canonicalizeUrl(u));
-      keys.add(siteKey(c.hostname) + c.pathname + c.search);
+      if (isExcludedPath(c.pathname, excludes)) continue;
+      // Query variants count once, matching ignoreQueryParameters on the crawl.
+      keys.add(siteKey(c.hostname) + c.pathname);
     } catch {
       // ignore unusable links
     }
@@ -102,6 +113,7 @@ export async function processCrawlDocuments(
   docs: Document[],
   start: URL,
   resolver: Resolver,
+  excludes: string[] = [],
 ): Promise<{ pages: RawPage[]; dropped: Record<string, number> }> {
   const pages: RawPage[] = [];
   const dropped: Record<string, number> = {};
@@ -130,6 +142,12 @@ export async function processCrawlDocuments(
     }
     if (!isSameSite(u, start)) {
       drop("final URL on a different site");
+      continue;
+    }
+    // Post-fetch defence only: if this triggers, the page was already fetched
+    // (and billed) despite the server-side excludePaths.
+    if (isExcludedPath(new URL(canonicalizeUrl(u)).pathname, excludes)) {
+      drop("excluded path (fetched despite exclusion)");
       continue;
     }
     if (typeof meta.statusCode === "number" && meta.statusCode >= 400) {
@@ -171,6 +189,11 @@ export async function runCrawl(opts: CrawlRunOptions): Promise<SiteMapDoc> {
   if (!Number.isInteger(opts.timeoutSec) || opts.timeoutSec < 10 || opts.timeoutSec > MAX_TIMEOUT_SEC) {
     throw new RangeError(`--timeout must be an integer between 10 and ${MAX_TIMEOUT_SEC} seconds`);
   }
+  // ---- Preflight: everything below refuses before any Firecrawl request. ----
+  const excludes = normalizeExcludes(opts.excludes ?? []);
+  const useMap = opts.useMap ?? true;
+  const bound = assertCreditBudget(limit, useMap, opts.maxCredits);
+  const crawlRequest = buildCrawlRequest(limit, excludes);
   const resolver = opts.resolver ?? systemResolver;
   const log = opts.log ?? (() => {});
   const sleep = opts.sleep ?? ((ms: number) => abortableSleep(ms, opts.signal));
@@ -181,22 +204,41 @@ export async function runCrawl(opts: CrawlRunOptions): Promise<SiteMapDoc> {
 
   const start = await assertPublicHttpUrl(opts.url, resolver);
   const startUrl = canonicalizeUrl(start);
+  if (isExcludedPath(new URL(startUrl).pathname, excludes)) {
+    throw new CrawlPolicyError("Refusing: the start URL itself matches an --exclude prefix");
+  }
   const client = opts.client ?? (await createClient(opts.apiKey));
   if (opts.signal?.aborted) throw abortError();
 
-  // 1) Discovery (1 credit per call per Firecrawl docs), bounded to
+  // 0) Balance gate (GET /team/credit-usage; not listed as a billed endpoint on
+  //    the billing page, but its cost is not documented either). Refuses unless
+  //    the existing balance covers the documented worst case, so the run should
+  //    not need a pay-as-you-go top-up (barring concurrent use of the account).
+  let remaining: unknown;
+  try {
+    remaining = (await withTimeout(client.getCreditUsage(), ct.credits, "getCreditUsage"))?.remainingCredits;
+  } catch {
+    throw new CrawlPolicyError("Refusing: could not read the remaining credit balance. No crawl started.");
+  }
+  if (typeof remaining !== "number" || !Number.isFinite(remaining) || remaining < bound) {
+    throw new CrawlPolicyError(`Refusing: remaining credits ${String(remaining)} < documented worst case ${bound}. No crawl started.`);
+  }
+  log(`Credit preflight: worst case ${bound}, budget ${opts.maxCredits}, remaining ${remaining}`);
+  if (opts.signal?.aborted) throw abortError();
+
+  // 1) Optional discovery (1 credit per call per Firecrawl docs), bounded to
   //    maxMapLinks results. Used only to report how many same-site URLs exist.
   let discoveredCount: number | null = null;
-  try {
-    log("Mapping site (discovery)...");
-    const map = await withTimeout(
-      client.map(startUrl, { limit: LIMITS.maxMapLinks, sitemap: "include", includeSubdomains: false, timeout: 30_000 }),
-      ct.map,
-      "map",
-    );
-    discoveredCount = countDiscovered(map, start);
-  } catch {
-    notes.add("Discovery (map) failed; total page count unknown");
+  if (useMap) {
+    try {
+      log("Mapping site (discovery)...");
+      const map = await withTimeout(client.map(startUrl, buildMapRequest()), ct.map, "map");
+      discoveredCount = countDiscovered(map, start, excludes);
+    } catch {
+      notes.add("Discovery (map) failed; total page count unknown");
+    }
+  } else {
+    notes.add("Discovery skipped (--no-map): total page count unknown, so truncation cannot be determined");
   }
   if (opts.signal?.aborted) throw abortError();
 
@@ -206,17 +248,7 @@ export async function runCrawl(opts: CrawlRunOptions): Promise<SiteMapDoc> {
   log(`Starting crawl (limit ${limit})...`);
   // If this call times out after the server created the job, no id is known
   // and the job cannot be cancelled from here (it remains bounded by `limit`).
-  const started = await withTimeout(client.startCrawl(startUrl, {
-    limit,
-    allowSubdomains: false,
-    allowExternalLinks: false,
-    crawlEntireDomain: false,
-    maxDiscoveryDepth: 3,
-    sitemap: "include",
-    ignoreQueryParameters: true,
-    deduplicateSimilarURLs: true,
-    scrapeOptions: { formats: ["html"], onlyMainContent: false, timeout: 20_000, blockAds: true, removeBase64Images: true },
-  }), ct.start, "startCrawl");
+  const started = await withTimeout(client.startCrawl(startUrl, crawlRequest), ct.start, "startCrawl");
   const id = typeof started?.id === "string" ? started.id : "";
   if (!id) throw new Error("Firecrawl did not return a crawl job id");
 
@@ -230,6 +262,13 @@ export async function runCrawl(opts: CrawlRunOptions): Promise<SiteMapDoc> {
       log(`  status=${String(job?.status)} completed=${String(job?.completed)} total=${String(job?.total)}`);
       if (TERMINAL.has(job?.status)) {
         terminal = true;
+        break;
+      }
+      // Usage telemetry, not a ceiling: credits are billed per completed page,
+      // so this can only stop further spend after the bound was exceeded.
+      if (typeof job?.creditsUsed === "number" && job.creditsUsed > bound) {
+        notes.add(`Firecrawl reported ${job.creditsUsed} credits used (> worst case ${bound}); cancelled`);
+        incomplete = true;
         break;
       }
       if (now() >= deadline) {
@@ -268,7 +307,8 @@ export async function runCrawl(opts: CrawlRunOptions): Promise<SiteMapDoc> {
     notes.add("Could not fetch crawl error report");
   }
 
-  const { pages, dropped } = await processCrawlDocuments(data, start, resolver);
+  if (typeof job?.creditsUsed === "number") notes.add(`Firecrawl reported crawl creditsUsed: ${job.creditsUsed} (documented worst case for this run: ${bound})`);
+  const { pages, dropped } = await processCrawlDocuments(data, start, resolver, excludes);
   for (const [reason, n] of Object.entries(dropped).sort()) {
     notes.add(`${n} page(s) dropped: ${reason}`);
     incomplete = true;
@@ -286,5 +326,6 @@ export async function runCrawl(opts: CrawlRunOptions): Promise<SiteMapDoc> {
     discoveredCount,
     incomplete,
     notes: notes.list(),
+    ignoreQueryVariants: true,
   });
 }

@@ -11,33 +11,41 @@ import { parseSiteMapJson, utf8Length, type SiteMapDoc } from "./shared/schema";
 import { parseHttpUrl } from "./security/urlGuard";
 import { assertLimit } from "./normalize/build";
 import { MAX_TIMEOUT_SEC, runCrawl } from "./crawl/firecrawl";
+import { assertCreditBudget, CrawlPolicyError, normalizeExcludes } from "./crawl/plan";
 
 const USAGE = `Usage:
   website-to-figma fixture <5|10|20> [--out FILE]
       Write a deterministic SYNTHETIC fixture site map (no network, no key).
-  website-to-figma crawl <url> [--limit N] [--timeout SECONDS] [--out FILE] [--yes]
+  website-to-figma crawl <url> --max-credits N [--limit N] [--exclude /path]... [--no-map]
+                            [--timeout SECONDS] [--out FILE] [--yes]
       Map + crawl a real public site with Firecrawl. Needs FIRECRAWL_API_KEY
       (environment or a git-ignored .env). Uses Firecrawl credits, so it only
-      runs with --yes. Default limit ${LIMITS.defaultPages}, hard cap ${LIMITS.hardMaxPages}.
+      runs with --yes, and refuses unless the documented worst case
+      ((map ? 1 : 0) + limit) fits --max-credits and the remaining balance.
+      --exclude /prefix (repeatable) is sent as excludePaths before fetching.
+      --no-map skips discovery (saves 1 credit; total page count unknown).
+      Default limit ${LIMITS.defaultPages}, hard cap ${LIMITS.hardMaxPages}.
   website-to-figma validate <FILE>
       Validate a site map JSON file against the current schema.`;
 
 class UsageError extends Error {}
 
-function parseFlags(args: string[]): { positional: string[]; flags: Map<string, string | true> } {
+function parseFlags(args: string[]): { positional: string[]; flags: Map<string, string | true>; excludes: string[] } {
   const positional: string[] = [];
   const flags = new Map<string, string | true>();
+  const excludes: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
-    if (a === "--yes" || a === "--help" || a === "-h") flags.set(a.replace(/^-+/, ""), true);
-    else if (a === "--limit" || a === "--timeout" || a === "--out") {
+    if (a === "--yes" || a === "--help" || a === "-h" || a === "--no-map") flags.set(a.replace(/^-+/, ""), true);
+    else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude") {
       const v = args[++i];
       if (v === undefined) throw new UsageError(`${a} needs a value`);
-      flags.set(a.slice(2), v);
+      if (a === "--exclude") excludes.push(v);
+      else flags.set(a.slice(2), v);
     } else if (a.startsWith("-")) throw new UsageError(`Unknown option ${a}`);
     else positional.push(a);
   }
-  return { positional, flags };
+  return { positional, flags, excludes };
 }
 
 function intFlag(v: string | true | undefined, name: string, fallback: number): number {
@@ -69,7 +77,7 @@ function summary(doc: SiteMapDoc, path: string): string {
 
 async function main(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv;
-  const { positional, flags } = parseFlags(rest);
+  const { positional, flags, excludes: rawExcludes } = parseFlags(rest);
   if (!cmd || cmd === "--help" || cmd === "-h" || flags.has("help")) {
     console.log(USAGE);
     return 0;
@@ -104,6 +112,17 @@ async function main(argv: string[]): Promise<number> {
     if (timeoutSec < 10 || timeoutSec > MAX_TIMEOUT_SEC) throw new UsageError(`--timeout must be 10..${MAX_TIMEOUT_SEC}`);
     parseHttpUrl(url);
 
+    // Credit/exclusion policy is checked before the key is even looked at.
+    const excludes = normalizeExcludes(rawExcludes);
+    const useMap = !flags.has("no-map");
+    const maxCreditsFlag = flags.get("max-credits");
+    const maxCredits = maxCreditsFlag === undefined ? undefined : intFlag(maxCreditsFlag, "max-credits", 0);
+    const bound = assertCreditBudget(limit, useMap, maxCredits);
+    console.error(
+      `Plan: ${useMap ? "map (1 credit) + " : ""}crawl <= ${limit} page(s) x 1 credit = worst case ${bound} credit(s), budget ${maxCredits}.\n` +
+        `Exclusions (sent as excludePaths before fetching): ${excludes.length > 0 ? excludes.join(", ") : "none"}.`,
+    );
+
     if (existsSync(".env")) process.loadEnvFile(".env");
     const apiKey = process.env.FIRECRAWL_API_KEY?.trim();
     if (!apiKey) {
@@ -116,8 +135,7 @@ async function main(argv: string[]): Promise<number> {
     }
     if (!flags.has("yes")) {
       console.error(
-        `This would call Firecrawl map (1 credit) and crawl up to ${limit} page(s) (about 1 credit per page, per Firecrawl docs).\n` +
-          "Re-run with --yes to proceed.",
+        "This would read the credit balance and then spend up to the worst case above.\n" + "Re-run with --yes to proceed.",
       );
       return 3;
     }
@@ -131,7 +149,7 @@ async function main(argv: string[]): Promise<number> {
     process.on("SIGINT", onSigint);
     let doc: SiteMapDoc;
     try {
-      doc = await runCrawl({ url, limit, timeoutSec, apiKey, signal: abort.signal, log: (m) => console.error(m) });
+      doc = await runCrawl({ url, limit, timeoutSec, apiKey, excludes, useMap, maxCredits, signal: abort.signal, log: (m) => console.error(m) });
     } finally {
       process.off("SIGINT", onSigint);
     }
@@ -147,6 +165,10 @@ async function main(argv: string[]): Promise<number> {
 main(process.argv.slice(2)).then(
   (code) => process.exit(code),
   (err: unknown) => {
+    if (err instanceof CrawlPolicyError) {
+      console.error(err.message);
+      process.exit(3);
+    }
     if (err instanceof UsageError) {
       console.error(`${err.message}\n\n${USAGE}`);
       process.exit(64);

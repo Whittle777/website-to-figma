@@ -29,6 +29,7 @@
     "test": "vitest run",
     "build": "node scripts/build.mjs",
     "samples": "tsx src/cli.ts fixture 5 --out samples/fixture-5.json && tsx src/cli.ts fixture 10 --out samples/fixture-10.json && tsx src/cli.ts fixture 20 --out samples/fixture-20.json",
-    "package": "npm run build && node scripts/package.mjs"
+    "package": "npm run build && node scripts/package.mjs",
+    "dist": "node scripts/build-dist.mjs"
   }
 }
