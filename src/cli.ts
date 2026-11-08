@@ -10,20 +10,22 @@ import { LIMITS } from "./shared/limits";
 import { parseSiteMapJson, utf8Length, type SiteMapDoc } from "./shared/schema";
 import { parseHttpUrl } from "./security/urlGuard";
 import { assertLimit } from "./normalize/build";
-import { MAX_TIMEOUT_SEC, runCrawl } from "./crawl/firecrawl";
-import { assertCreditBudget, CrawlPolicyError, normalizeExcludes, standardEstimate } from "./crawl/plan";
+import { MAX_TIMEOUT_SEC, planCrawl, runCrawl } from "./crawl/firecrawl";
+import { assertOperatorPrerequisites, CrawlPolicyError, normalizeExcludes, standardEstimate } from "./crawl/plan";
 
 const USAGE = `Usage:
   website-to-figma fixture <5|10|20> [--out FILE]
       Write a deterministic SYNTHETIC fixture site map (no network, no key).
-  website-to-figma crawl <url> --max-credits N [--limit N] [--exclude /path]... [--no-map]
-                            [--timeout SECONDS] [--out FILE] [--yes]
-      CURRENTLY ALWAYS REFUSES (fail closed) before any Firecrawl request:
-      --max-credits is required, and no documented, enforceable Firecrawl
-      credit ceiling exists, so a strict budget cannot be guaranteed. The
-      standard estimate ((map ? 1 : 0) + limit) is printed, not guaranteed.
-      --exclude /prefix (repeatable) and --no-map are validated and planned.
-      Default limit ${LIMITS.defaultPages}, hard cap ${LIMITS.hardMaxPages}.
+  website-to-figma crawl <url> --no-map --limit N(<=10) --max-credits N
+        --operator-reported-balance N --confirm-existing-credits --confirm-no-topup
+        [--exclude /path]... [--timeout SECONDS] [--out FILE] [--yes]
+      Live Firecrawl crawl (HTML links only; sitemap skipped; same site only).
+      Refuses before any Firecrawl request unless every operator input is
+      given. The CLI does NOT verify the balance or top-up settings and makes
+      no account API calls; the operator must have checked them at the origin.
+      --max-credits is an accepted-risk budget compared with creditsUsed
+      telemetry (best-effort cancel), not a provider-enforced ceiling. The
+      printed standard estimate (limit x 1) is not a worst case.
   website-to-figma validate <FILE>
       Validate a site map JSON file against the current schema.`;
 
@@ -35,8 +37,9 @@ function parseFlags(args: string[]): { positional: string[]; flags: Map<string, 
   const excludes: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
-    if (a === "--yes" || a === "--help" || a === "-h" || a === "--no-map") flags.set(a.replace(/^-+/, ""), true);
-    else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude") {
+    if (a === "--yes" || a === "--help" || a === "-h" || a === "--no-map" || a === "--confirm-existing-credits" || a === "--confirm-no-topup") {
+      flags.set(a.replace(/^-+/, ""), true);
+    } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance") {
       const v = args[++i];
       if (v === undefined) throw new UsageError(`${a} needs a value`);
       if (a === "--exclude") excludes.push(v);
@@ -116,13 +119,19 @@ async function main(argv: string[]): Promise<number> {
     const useMap = !flags.has("no-map");
     const maxCreditsFlag = flags.get("max-credits");
     const maxCredits = maxCreditsFlag === undefined ? undefined : intFlag(maxCreditsFlag, "max-credits", 0);
+    const balanceFlag = flags.get("operator-reported-balance");
+    const reportedBalance = balanceFlag === undefined ? undefined : intFlag(balanceFlag, "operator-reported-balance", 0);
+    const confirmExistingCredits = flags.has("confirm-existing-credits");
+    const confirmNoTopup = flags.has("confirm-no-topup");
     console.error(
-      `Standard estimate (NOT a guarantee): ${useMap ? "map 1 + " : ""}${limit} page(s) x 1 = ${standardEstimate(limit, useMap)} credit(s).\n` +
-        `Exclusions (would be sent as excludePaths): ${excludes.length > 0 ? excludes.join(", ") : "none"}.`,
+      `Standard estimate (NOT a worst case or ceiling): ${useMap ? "map 1 + " : ""}${limit} page(s) x 1 = ${standardEstimate(limit, useMap)} credit(s). ` +
+        `Accepted-risk budget: ${maxCredits ?? "missing"} (telemetry + best-effort cancel only).\n` +
+        `Exclusions (sent as excludePaths before fetching): ${excludes.length > 0 ? excludes.join(", ") : "none"}.`,
     );
-    // Strict bounded-budget gate: refuses here, before the key is read and
-    // before any Firecrawl request, while no enforceable ceiling exists.
-    assertCreditBudget(limit, useMap, maxCredits);
+    // Gates run before the key is read and before any Firecrawl request.
+    planCrawl({ url, limit, timeoutSec, apiKey: "", excludes, useMap });
+    assertOperatorPrerequisites(limit, useMap, { maxCredits, reportedBalance, confirmExistingCredits, confirmNoTopup });
+    console.error(`Operator affirmations accepted as given (not verified here): reported balance ${reportedBalance}, existing credits, no top-up.`);
 
     if (existsSync(".env")) process.loadEnvFile(".env");
     const apiKey = process.env.FIRECRAWL_API_KEY?.trim();
@@ -150,7 +159,20 @@ async function main(argv: string[]): Promise<number> {
     process.on("SIGINT", onSigint);
     let doc: SiteMapDoc;
     try {
-      doc = await runCrawl({ url, limit, timeoutSec, apiKey, excludes, useMap, maxCredits, signal: abort.signal, log: (m) => console.error(m) });
+      doc = await runCrawl({
+        url,
+        limit,
+        timeoutSec,
+        apiKey,
+        excludes,
+        useMap,
+        maxCredits,
+        reportedBalance,
+        confirmExistingCredits,
+        confirmNoTopup,
+        signal: abort.signal,
+        log: (m) => console.error(m),
+      });
     } finally {
       process.off("SIGINT", onSigint);
     }

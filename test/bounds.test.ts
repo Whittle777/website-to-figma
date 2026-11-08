@@ -89,11 +89,10 @@ describe("crawl job cleanup", () => {
         return true;
       },
       getCrawlErrors: async () => ({ errors: [], robotsBlocked: [] }),
-      getCreditUsage: async () => ({ remainingCredits: 100 }),
     };
     return { client, calls };
   }
-  const base = { url: "https://example.com/", limit: 5, timeoutSec: 10, apiKey: "test", resolver: publicDns, sleep: async () => {}, maxCredits: 20 };
+  const base = { url: "https://example.com/", limit: 5, timeoutSec: 10, apiKey: "test", resolver: publicDns, sleep: async () => {}, maxCredits: 20, useMap: false };
 
   it("does not cancel a completed job", { timeout: 20_000 }, async () => {
     const { client, calls } = fakeClient([job("completed", [doc])]);

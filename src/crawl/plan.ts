@@ -1,6 +1,6 @@
 // Pure, network-free crawl planning: validated exclusions, the exact request
-// objects sent to Firecrawl, a standard credit estimate, and the strict
-// bounded-budget gate. Everything here runs (and can refuse) before any
+// objects sent to Firecrawl, a standard (non-hard) credit estimate, and the
+// operator-prerequisite gate. Everything here runs (and can refuse) before any
 // Firecrawl request is made.
 //
 // Credit semantics relied on (docs.firecrawl.dev, checked for this version):
@@ -14,10 +14,11 @@
 //    off (image URLs then fail as unsupported).
 //  - /api-reference/endpoint/crawl-post: proxy values basic|enhanced|auto,
 //    default auto, "Billed at the same credit cost as basic"; threatProtection
-//    `normal` is "+2 credits per URL scanned" (no documented default).
+//    `normal` is "+2 credits per URL scanned" (features/threat-protection: org
+//    default Off; this CLI sends no override, so team policy applies).
 // So with the options pinned below, the STANDARD ESTIMATE is
 //   (map ? 1 : 0) + limit * 1
-// which is not a guarantee (see STRICT_CREDIT_CEILING_SUPPORTED).
+// which is neither a worst case nor a provider-enforced ceiling.
 import type { CrawlOptions, MapOptions, ScrapeOptions } from "@mendable/firecrawl-js";
 import { LIMITS } from "../shared/limits";
 
@@ -70,8 +71,10 @@ export function isExcludedPath(pathname: string, prefixes: string[]): boolean {
 }
 
 // Standard-only scrape settings: HTML only, no parsers (no per-PDF-page
-// billing), documented basic proxy, threat-protection scanning off, and no
-// surcharge feature enabled.
+// billing), documented basic proxy, and every surcharge feature explicitly
+// off. No threatProtection override is sent, so the team's own threat policy
+// applies unchanged (its scans, if enabled, are billed by Firecrawl and are
+// NOT included in the standard estimate).
 export const SCRAPE_OPTIONS: Omit<ScrapeOptions, "toolDetail"> = {
   formats: ["html"],
   onlyMainContent: false,
@@ -80,8 +83,14 @@ export const SCRAPE_OPTIONS: Omit<ScrapeOptions, "toolDetail"> = {
   removeBase64Images: true,
   parsers: [],
   proxy: "basic",
-  threatProtection: { mode: "off" },
+  lockdown: false,
+  checkPromptInjection: false,
+  redactPII: false,
 };
+
+// Live crawls are limited to this many pages (the schema hard cap of 20 still
+// applies to fixtures and validation).
+export const LIVE_MAX_PAGES = 10;
 
 export function buildCrawlRequest(limit: number, excludes: string[]): CrawlOptions {
   const req: CrawlOptions = {
@@ -90,10 +99,13 @@ export function buildCrawlRequest(limit: number, excludes: string[]): CrawlOptio
     allowExternalLinks: false,
     crawlEntireDomain: false,
     maxDiscoveryDepth: 3,
-    sitemap: "include",
+    // "skip" uses HTML links only (docs: features/crawl): the site's sitemap,
+    // including any private/odd hosts it lists, is never used for discovery.
+    sitemap: "skip",
     ignoreQueryParameters: true,
     deduplicateSimilarURLs: true,
     regexOnFullURL: false,
+    zeroDataRetention: false,
     scrapeOptions: { ...SCRAPE_OPTIONS },
   };
   if (excludes.length > 0) req.excludePaths = excludes.map(excludeRegex);
@@ -103,50 +115,54 @@ export function buildCrawlRequest(limit: number, excludes: string[]): CrawlOptio
 export function buildMapRequest(): MapOptions {
   return {
     limit: LIMITS.maxMapLinks,
-    sitemap: "include",
+    sitemap: "skip",
     includeSubdomains: false,
     ignoreQueryParameters: true,
     timeout: 30_000,
-    threatProtection: { mode: "off" },
   };
 }
 
-// Standard estimate: documented base prices only, assuming no account-level
-// surcharges. This is NOT a credit ceiling.
+// Standard estimate: documented base prices only ((map ? 1 : 0) + limit x 1).
+// NOT a worst case and NOT a ceiling: team threat-protection scans, redirects
+// re-checked by such scans, and any server-side behaviour outside the pinned
+// options are not bounded by it.
 export function standardEstimate(limit: number, useMap: boolean): number {
   return (useMap ? CREDITS_PER_MAP_CALL : 0) + limit * MAX_CREDITS_PER_PAGE;
 }
 
-// Whether a strict, provider-enforced credit ceiling exists for this crawl
-// route. It does not today, so bounded-budget crawls fail closed:
-//  - no crawl-level credit cap is documented (SDK 4.52's only maxCredits is in
-//    the agent API); `limit` caps pages, not credits;
-//  - teams with enforced threat protection "may raise the mode per request but
-//    never lower it" (SDK typings) -> +2 credits per URL despite mode "off";
-//  - pay-as-you-go top-ups at zero balance, or concurrent use of the account,
-//    can create new charges that no client-side check can rule out;
-//  - whether GET /team/credit-usage itself bills is undocumented.
-// Change only when a documented, enforceable provider ceiling is available.
-export const STRICT_CREDIT_CEILING_SUPPORTED: boolean = false;
+// Operator-supplied account prerequisites. The CLI makes NO account/balance
+// API call and verifies none of this; the operator must have obtained and
+// checked the balance themselves (raw, at the origin) before affirming.
+export interface OperatorAffirmation {
+  // Accepted-risk budget in credits: compared against creditsUsed telemetry
+  // (best-effort cancel). Not a provider-enforced ceiling.
+  maxCredits?: number;
+  // Recent remaining-credit balance as reported by the operator (unverified).
+  reportedBalance?: number;
+  confirmExistingCredits?: boolean;
+  confirmNoTopup?: boolean;
+}
 
-export const STRICT_CEILING_UNSUPPORTED_MESSAGE =
-  "Refusing before any Firecrawl request: a strict credit ceiling cannot be guaranteed for crawls. " +
-  "Firecrawl documents no enforceable crawl credit cap; enforced threat protection can add +2 credits per URL; " +
-  "pay-as-you-go top-ups or concurrent account usage can create new charges; and billing of the balance endpoint is undocumented.";
-
-// Bounded-budget gate. --max-credits is required; while a strict ceiling is
-// unsupported this always refuses (after reporting the estimate in the error).
-export function assertCreditBudget(limit: number, useMap: boolean, maxCredits: number | undefined): number {
+// Refuses before any Firecrawl request unless every operator input is present
+// and consistent. Returns the standard estimate.
+export function assertOperatorPrerequisites(limit: number, useMap: boolean, a: OperatorAffirmation): number {
   const estimate = standardEstimate(limit, useMap);
-  if (maxCredits === undefined) {
-    throw new CrawlPolicyError(`Refusing: --max-credits is required for a live crawl (standard estimate ${estimate}, not a guarantee)`);
-  }
+  const { maxCredits, reportedBalance } = a;
+  if (maxCredits === undefined) throw new CrawlPolicyError(`Refusing: --max-credits (accepted-risk budget) is required (standard estimate ${estimate}, not a guarantee)`);
   if (!Number.isInteger(maxCredits) || maxCredits < 1) throw new CrawlPolicyError("--max-credits must be a positive integer");
-  if (estimate > maxCredits) {
-    throw new CrawlPolicyError(`Refusing: standard estimate ${estimate} credits already exceeds --max-credits ${maxCredits}`);
+  if (estimate > maxCredits) throw new CrawlPolicyError(`Refusing: standard estimate ${estimate} credits already exceeds --max-credits ${maxCredits}`);
+  if (reportedBalance === undefined) {
+    throw new CrawlPolicyError("Refusing: --operator-reported-balance N is required (a recent remaining-credit balance the operator obtained and verified; this CLI does not check it)");
   }
-  if (!STRICT_CREDIT_CEILING_SUPPORTED) {
-    throw new CrawlPolicyError(`${STRICT_CEILING_UNSUPPORTED_MESSAGE} (Standard estimate, not a guarantee: ${estimate} credits; requested ceiling: ${maxCredits}.)`);
+  if (!Number.isInteger(reportedBalance) || reportedBalance < 0) throw new CrawlPolicyError("--operator-reported-balance must be a non-negative integer");
+  if (reportedBalance < maxCredits) {
+    throw new CrawlPolicyError(`Refusing: operator-reported balance ${reportedBalance} is below the accepted-risk budget ${maxCredits}`);
+  }
+  if (a.confirmExistingCredits !== true || a.confirmNoTopup !== true) {
+    throw new CrawlPolicyError(
+      "Refusing: the operator must affirm both --confirm-existing-credits (existing credits cover the accepted-risk budget) and " +
+        "--confirm-no-topup (no top-up or purchase is authorized for this run). This CLI does not verify either.",
+    );
   }
   return estimate;
 }

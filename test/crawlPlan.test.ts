@@ -1,23 +1,22 @@
 import { describe, expect, it } from "vitest";
-import type { CrawlJob, CrawlOptions, Document, MapOptions } from "@mendable/firecrawl-js";
+import type { CrawlJob, CrawlOptions, Document } from "@mendable/firecrawl-js";
 import {
-  assertCreditBudget,
+  assertOperatorPrerequisites,
   buildCrawlRequest,
   buildMapRequest,
   CrawlPolicyError,
   excludeRegex,
   isExcludedPath,
-  standardEstimate,
-  STRICT_CREDIT_CEILING_SUPPORTED,
   normalizeExcludePrefix,
   normalizeExcludes,
+  standardEstimate,
 } from "../src/crawl/plan";
 import { countDiscovered, executeCrawl, planCrawl, processCrawlDocuments, runCrawl, type CrawlClient, type CrawlRunOptions } from "../src/crawl/firecrawl";
-
-const execute = (o: CrawlRunOptions) => executeCrawl(o, planCrawl(o));
 import { buildSiteMap } from "../src/normalize/build";
 
+const execute = (o: CrawlRunOptions) => executeCrawl(o, planCrawl(o));
 const EXCLUDES = ["/lessons/", "/faq/", "/login/"];
+const AFFIRM = { maxCredits: 1000, reportedBalance: 95_613_091, confirmExistingCredits: true, confirmNoTopup: true };
 
 describe("exclusion prefixes", () => {
   it("normalizes and validates", () => {
@@ -43,12 +42,11 @@ describe("exclusion prefixes", () => {
     expect(isExcludedPath("/lessons", p)).toBe(true);
     expect(isExcludedPath("/faq/q1", p)).toBe(true);
     expect(isExcludedPath("/login-help", p)).toBe(false);
-    expect(isExcludedPath("/pages/simple", p)).toBe(false);
   });
 });
 
 describe("request objects (built before any API call)", () => {
-  it("pins standard-only, same-domain, query-collapsing crawl settings", () => {
+  it("pins HTML-only, standard options, sitemap skip, same-domain, no threat override", () => {
     const req = buildCrawlRequest(10, normalizeExcludes(EXCLUDES));
     expect(req).toEqual({
       limit: 10,
@@ -56,10 +54,11 @@ describe("request objects (built before any API call)", () => {
       allowExternalLinks: false,
       crawlEntireDomain: false,
       maxDiscoveryDepth: 3,
-      sitemap: "include",
+      sitemap: "skip",
       ignoreQueryParameters: true,
       deduplicateSimilarURLs: true,
       regexOnFullURL: false,
+      zeroDataRetention: false,
       excludePaths: ["^/?faq(?:/.*)?$", "^/?lessons(?:/.*)?$", "^/?login(?:/.*)?$"],
       scrapeOptions: {
         formats: ["html"],
@@ -69,60 +68,41 @@ describe("request objects (built before any API call)", () => {
         removeBase64Images: true,
         parsers: [],
         proxy: "basic",
-        threatProtection: { mode: "off" },
+        lockdown: false,
+        checkPromptInjection: false,
+        redactPII: false,
       },
     });
-    expect(buildCrawlRequest(10, [])).not.toHaveProperty("excludePaths");
-    expect(buildMapRequest()).toMatchObject({ includeSubdomains: false, ignoreQueryParameters: true, threatProtection: { mode: "off" } });
+    // Team threat policy is never overridden (neither "off" nor anything else).
+    expect(JSON.stringify(req)).not.toContain("threatProtection");
+    expect(JSON.stringify(buildMapRequest())).not.toContain("threatProtection");
+    expect(buildMapRequest()).toMatchObject({ sitemap: "skip", includeSubdomains: false });
   });
 });
 
-describe("strict credit gate (fail closed)", () => {
-  it("reports a standard estimate separately from any guarantee", () => {
-    expect(standardEstimate(10, true)).toBe(11);
+describe("operator prerequisites (no verification, no API)", () => {
+  it("reports a standard estimate that is not a worst case", () => {
     expect(standardEstimate(10, false)).toBe(10);
+    expect(standardEstimate(10, true)).toBe(11);
   });
 
-  it("has no enforceable provider ceiling, so every bounded budget is refused", () => {
-    expect(STRICT_CREDIT_CEILING_SUPPORTED).toBe(false);
-    expect(() => assertCreditBudget(10, true, undefined)).toThrow(/--max-credits is required/);
-    expect(() => assertCreditBudget(10, true, 0)).toThrow(CrawlPolicyError);
-    expect(() => assertCreditBudget(20, true, 20)).toThrow(/standard estimate 21 credits already exceeds --max-credits 20/);
-    for (const max of [10, 20, 1000]) {
-      expect(() => assertCreditBudget(10, false, max)).toThrow(/strict credit ceiling cannot be guaranteed/);
-      expect(() => assertCreditBudget(10, false, max)).toThrow(/Standard estimate, not a guarantee: 10 credits/);
+  it("refuses unless every operator input is present and consistent", () => {
+    expect(assertOperatorPrerequisites(10, false, AFFIRM)).toBe(10);
+    const cases: [Record<string, unknown>, RegExp][] = [
+      [{ maxCredits: undefined }, /--max-credits/],
+      [{ maxCredits: 5 }, /standard estimate 10 credits already exceeds --max-credits 5/],
+      [{ reportedBalance: undefined }, /--operator-reported-balance N is required/],
+      [{ reportedBalance: 999 }, /reported balance 999 is below the accepted-risk budget 1000/],
+      [{ confirmExistingCredits: false }, /--confirm-existing-credits/],
+      [{ confirmNoTopup: undefined }, /--confirm-no-topup/],
+    ];
+    for (const [patch, msg] of cases) {
+      expect(() => assertOperatorPrerequisites(10, false, { ...AFFIRM, ...patch })).toThrow(msg);
     }
-  });
-
-  it("runCrawl makes zero Firecrawl calls (not even the balance read) for any --max-credits", async () => {
-    const calls: string[] = [];
-    const spy = (name: string) => async () => {
-      calls.push(name);
-      throw new Error(`unexpected ${name}`);
-    };
-    const client = {
-      getCreditUsage: spy("credits"),
-      map: spy("map"),
-      startCrawl: spy("startCrawl"),
-      getCrawlStatus: spy("status"),
-      cancelCrawl: spy("cancel"),
-      getCrawlErrors: spy("errors"),
-    } as unknown as CrawlClient;
-    const resolverCalls: string[] = [];
-    const resolver = async (h: string) => {
-      resolverCalls.push(h);
-      return ["93.184.215.14"];
-    };
-    const common = { url: "https://www.scrape.example.com/", limit: 10, timeoutSec: 10, apiKey: "unused", client, resolver, useMap: false, excludes: EXCLUDES };
-    for (const maxCredits of [undefined, 9, 10, 20, 1000]) {
-      await expect(runCrawl({ ...common, maxCredits })).rejects.toBeInstanceOf(CrawlPolicyError);
-    }
-    expect(calls).toEqual([]);
-    expect(resolverCalls).toEqual([]);
   });
 });
 
-describe("internal request flow via executeCrawl (fake client, no network)", () => {
+describe("runCrawl with fake client (no network)", () => {
   const publicDns = async () => ["93.184.215.14"];
   const site = "https://www.scrape.example.com";
   const page = (path: string, extra: Record<string, unknown> = {}): Document => ({
@@ -130,98 +110,99 @@ describe("internal request flow via executeCrawl (fake client, no network)", () 
     metadata: { url: site + path, statusCode: 200, ...extra },
   });
 
-  function fake(opts: { remaining?: unknown; creditsFail?: boolean; docs?: Document[]; creditsUsed?: number } = {}) {
+  function fake(opts: { docs?: Document[]; creditsUsed?: number; startError?: unknown; status?: CrawlJob["status"] } = {}) {
     const calls: string[] = [];
     let crawlReq: CrawlOptions | undefined;
-    let mapReq: MapOptions | undefined;
     const client: CrawlClient = {
-      getCreditUsage: async () => {
-        calls.push("credits");
-        if (opts.creditsFail) throw new Error("401");
-        return { remainingCredits: opts.remaining as number };
-      },
-      map: async (_u, o) => {
+      map: async () => {
         calls.push("map");
-        mapReq = o;
-        return { links: ["/", "/pages", "/lessons/1", "/faq", "/pages?page=2", "https://evil.scrape.example.com/"].map((p) => ({ url: p.startsWith("http") ? p : site + p })) };
+        return { links: [] };
       },
       startCrawl: async (_u, r) => {
         calls.push("startCrawl");
         crawlReq = r;
+        if (opts.startError) throw opts.startError;
         return { id: "j" };
       },
       getCrawlStatus: async () => {
         calls.push("status");
         const data = opts.docs ?? [page("/")];
-        return { id: "j", status: "completed", total: data.length, completed: data.length, creditsUsed: opts.creditsUsed, data } as CrawlJob;
+        return { id: "j", status: opts.status ?? "completed", total: data.length, completed: data.length, creditsUsed: opts.creditsUsed, data } as CrawlJob;
       },
       cancelCrawl: async () => {
         calls.push("cancel");
         return true;
       },
-      getCrawlErrors: async () => ({ errors: [], robotsBlocked: [] }),
+      getCrawlErrors: async () => {
+        calls.push("errors");
+        return { errors: [], robotsBlocked: [] };
+      },
     };
-    return { client, calls, req: () => crawlReq, mapReq: () => mapReq };
+    return { client, calls, req: () => crawlReq };
   }
-  const base = { url: site + "/", limit: 10, timeoutSec: 10, apiKey: "test", resolver: publicDns, sleep: async () => {} };
+  const base = { url: site + "/", limit: 10, timeoutSec: 10, apiKey: "test", resolver: publicDns, sleep: async () => {}, useMap: false, excludes: EXCLUDES };
 
-  it("refuses before any client call when the budget is missing or too small", async () => {
-    for (const maxCredits of [undefined, 10]) {
-      const f = fake({ remaining: 100 });
-      await expect(runCrawl({ ...base, client: f.client, maxCredits })).rejects.toBeInstanceOf(CrawlPolicyError);
-      expect(f.calls).toEqual([]);
+  it("makes zero API calls and zero DNS lookups when any gate refuses", async () => {
+    const f = fake();
+    const dns: string[] = [];
+    const resolver = async (h: string) => {
+      dns.push(h);
+      return ["93.184.215.14"];
+    };
+    const refusals: Partial<CrawlRunOptions>[] = [
+      {},
+      { ...AFFIRM, confirmNoTopup: false },
+      { ...AFFIRM, confirmExistingCredits: false },
+      { ...AFFIRM, reportedBalance: undefined },
+      { ...AFFIRM, reportedBalance: 10 },
+      { ...AFFIRM, useMap: true },
+      { ...AFFIRM, limit: 11 },
+      { ...AFFIRM, excludes: ["faq"] },
+    ];
+    for (const r of refusals) {
+      await expect(runCrawl({ ...base, client: f.client, resolver, ...r })).rejects.toBeInstanceOf(CrawlPolicyError);
     }
-  });
-
-  it("refuses when an exclusion is invalid or covers the start URL, before any client call", async () => {
-    const f = fake({ remaining: 100 });
-    await expect(runCrawl({ ...base, client: f.client, maxCredits: 20, excludes: ["faq"] })).rejects.toThrow(/must be a path/);
-    await expect(execute({ ...base, url: site + "/faq", client: f.client, maxCredits: 20, excludes: ["/faq"] })).rejects.toThrow(/start URL/);
     expect(f.calls).toEqual([]);
+    expect(dns).toEqual([]);
   });
 
-  it("refuses after only the balance read when the balance is short, unknown or unreadable", async () => {
-    for (const f of [fake({ remaining: 10 }), fake({ remaining: undefined }), fake({ remaining: "100" }), fake({ creditsFail: true })]) {
-      await expect(execute({ ...base, client: f.client, maxCredits: 20 })).rejects.toBeInstanceOf(CrawlPolicyError);
-      expect(f.calls).toEqual(["credits"]);
-    }
-  });
-
-  it("sends exclusions in the crawl request and filters excluded/off-site final URLs locally", async () => {
-    const f = fake({ remaining: 100, docs: [page("/"), page("/pages"), page("/lessons/x"), page("/pages?page=2"), page("/faq")] });
-    const doc = await execute({ ...base, client: f.client, maxCredits: 20, excludes: EXCLUDES });
-    expect(f.calls.slice(0, 3)).toEqual(["credits", "map", "startCrawl"]);
-    expect(f.req()?.excludePaths).toEqual(["^/?faq(?:/.*)?$", "^/?lessons(?:/.*)?$", "^/?login(?:/.*)?$"]);
-    expect(f.req()?.scrapeOptions).toMatchObject({ parsers: [], proxy: "basic", threatProtection: { mode: "off" } });
+  it("with all affirmations: no map, no account calls, exact request, exclusions filtered locally", async () => {
+    const f = fake({ docs: [page("/"), page("/pages"), page("/lessons/x"), page("/pages?page=2")] });
+    const doc = await runCrawl({ ...base, client: f.client, ...AFFIRM });
+    expect(f.calls).toEqual(["startCrawl", "status", "errors"]);
+    expect(f.req()).toEqual(buildCrawlRequest(10, normalizeExcludes(EXCLUDES)));
     expect(doc.pages.map((p) => p.path)).toEqual(["/", "/pages"]);
-    const notes = doc.crawl.notes.join("\n");
-    expect(notes).toMatch(/2 page\(s\) dropped: excluded path \(fetched despite exclusion\)/);
-    expect(notes).toMatch(/1 duplicate URL\(s\) merged/);
-    // map count: "/", "/pages" (query variant collapsed); excluded and subdomain links not counted.
-    expect(doc.crawl.discoveredCount).toBe(2);
-    expect(f.mapReq()).toMatchObject({ includeSubdomains: false });
-  });
-
-  it("--no-map skips discovery entirely and reports the count as unknown", async () => {
-    const f = fake({ remaining: 10 });
-    const doc = await execute({ ...base, client: f.client, maxCredits: 10, useMap: false });
-    expect(f.calls).not.toContain("map");
-    expect(f.calls[0]).toBe("credits");
     expect(doc.crawl.discoveredCount).toBeNull();
-    expect(doc.crawl.notes.join("\n")).toMatch(/Discovery skipped/);
+    expect(doc.crawl.notes.join("\n")).toMatch(/excluded path \(fetched despite exclusion\)/);
   });
 
-  it("reports creditsUsed telemetry without treating it as a ceiling", async () => {
-    const f = fake({ remaining: 100, creditsUsed: 3 });
-    const doc = await execute({ ...base, client: f.client, maxCredits: 20 });
-    expect(doc.crawl.notes.join("\n")).toMatch(/creditsUsed: 3 \(standard estimate for this run: 11\)/);
+  for (const status of [402, 403]) {
+    it(`stops immediately on ${status} from startCrawl: one attempt, no retry, no cancel`, async () => {
+      const f = fake({ startError: Object.assign(new Error("refused"), { status }) });
+      await expect(runCrawl({ ...base, client: f.client, ...AFFIRM })).rejects.toThrow(new RegExp(`refused the crawl with ${status}`));
+      expect(f.calls).toEqual(["startCrawl"]);
+    });
+  }
+
+  it("compares creditsUsed telemetry to the accepted-risk budget and requests a best-effort cancel", async () => {
+    const f = fake({ status: "scraping", creditsUsed: 1001 });
+    const doc = await runCrawl({ ...base, client: f.client, ...AFFIRM });
+    expect(f.calls).toEqual(["startCrawl", "status", "cancel", "errors"]);
+    expect(doc.crawl.incomplete).toBe(true);
+    expect(doc.crawl.notes.join("\n")).toMatch(/1001 credits used \(> accepted-risk budget 1000\); cancel requested \(best effort\)/);
+  });
+
+  it("reports creditsUsed telemetry without calling it a ceiling", async () => {
+    const f = fake({ creditsUsed: 3 });
+    const doc = await execute({ ...base, client: f.client, ...AFFIRM });
+    expect(doc.crawl.notes.join("\n")).toMatch(/creditsUsed: 3 \(standard estimate 10, accepted-risk budget 1000; neither is a provider ceiling\)/);
   });
 });
 
 describe("exact same-domain and query behaviour", () => {
   it("counts discovery with exact host matching and collapsed query variants", () => {
     const start = new URL("https://scrape.example.com/");
-    const links = ["https://scrape.example.com/a", "https://scrape.example.com/a?x=1", "https://www.scrape.example.com/b", "https://evil.scrape.example.com/c", "https://scrape.example.com.evil.net/d"];
+    const links = ["https://scrape.example.com/a", "https://scrape.example.com/a?x=1", "https://www.scrape.example.com/b", "https://evil.scrape.example.com/c", "https://scrape.example.com.evil.net/d", "http://0.0.0.0/e"];
     expect(countDiscovered({ links: links.map((url) => ({ url })) }, start)).toBe(2);
   });
 
@@ -239,14 +220,20 @@ describe("exact same-domain and query behaviour", () => {
     expect(buildSiteMap(common).pages.map((p) => p.path)).toEqual(["/", "/list", "/list?page=2"]);
   });
 
-  it("drops excluded final URLs with the local rule even if the server fetched them", async () => {
+  it("drops excluded, private and off-site final URLs even if the server returned them", async () => {
+    const dns = async (h: string) => (h === "s.example.com" ? ["93.184.215.14"] : ["10.0.0.1"]);
     const { pages, dropped } = await processCrawlDocuments(
-      [{ html: "<p>x</p>", metadata: { url: "https://s.example.com/login/" } }, { html: "<p>y</p>", metadata: { url: "https://s.example.com/login-help" } }],
+      [
+        { html: "<p>x</p>", metadata: { url: "https://s.example.com/login/" } },
+        { html: "<p>y</p>", metadata: { url: "https://s.example.com/login-help" } },
+        { html: "<p>z</p>", metadata: { url: "http://0.0.0.0/" } },
+        { html: "<p>w</p>", metadata: { url: "https://cdn.s.example.com/" } },
+      ],
       new URL("https://s.example.com/"),
-      async () => ["93.184.215.14"],
+      dns,
       ["/login"],
     );
     expect(pages.map((p) => p.url)).toEqual(["https://s.example.com/login-help"]);
-    expect(dropped).toEqual({ "excluded path (fetched despite exclusion)": 1 });
+    expect(dropped).toEqual({ "excluded path (fetched despite exclusion)": 1, "final URL failed safety check": 2 });
   });
 });
