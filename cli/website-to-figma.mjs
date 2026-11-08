@@ -9923,7 +9923,7 @@ function convertCapture(input) {
       height = refDims.h;
     }
     const clips = containers.map((c) => ({ x: c.x, y: c.y, w: c.w, h: c.h, name: `Overflow clip / ${c.tag}` }));
-    const clipOf = (src2, r) => src2 ? memberOf(src2, r, containers, facts) : innermost(r, containers);
+    const clipOf2 = (src2, r) => src2 ? memberOf(src2, r, containers, facts) : innermost(r, containers);
     if (clips.length) notes.push(`${clips.length} measured container(s) clip horizontally overflowing content (static; not scrollable)`);
     const maxH = LIMITS.hifiMaxPageHeight * LIMITS.hifiMaxPageSegments;
     if (height > maxH) {
@@ -9943,7 +9943,7 @@ function convertCapture(input) {
     let unparsedColors = 0;
     let src = null;
     const withClip = (n) => {
-      const c = clipOf(src, n);
+      const c = clipOf2(src, n);
       return c >= 0 ? { ...n, clip: c } : n;
     };
     const inferredText = (r, text, s, name3, align) => {
@@ -41900,53 +41900,80 @@ var init_acquire = __esm({
 });
 
 // plugin/src/render/renderer.ts
-var buttonLabelOf;
+function nodeName(nodes, n, i, prefix, imageFilled, label) {
+  if (n.kind === "box") {
+    if (n.role === "button") return { name: buttonName(label ? label(i) : buttonLabelOf(nodes, i), i, prefix), type: "FRAME" };
+    return { name: `${prefix}${n.name}`, type: "RECTANGLE" };
+  }
+  if (n.kind === "text") return { name: `${prefix}${n.name}`, type: "TEXT" };
+  if (n.kind === "image") return { name: imageFilled === false ? `${prefix}${n.assetId ? "IMAGE PLACEHOLDER (fill unavailable)" : "MISSING IMAGE"} / ${n.name}` : `${prefix}${n.name}`, type: "RECTANGLE" };
+  if (n.kind === "shape") return { name: `${prefix}${n.name}`, type: n.shape === "ellipse" ? "ELLIPSE" : "VECTOR" };
+  return { name: `${prefix}${n.name}`, type: "FRAME" };
+}
+function fontLines(nodes, fonts) {
+  const subs = /* @__PURE__ */ new Map();
+  for (const n of nodes) {
+    if (n.kind !== "text") continue;
+    const f = fonts.get(n);
+    if (f?.fallback) {
+      const k = `"${n.fontStack.join(", ") || "(none)"}" ${n.weight >= 600 ? "bold" : "regular"}${n.italic ? " italic" : ""} -> ${f.family} ${f.style}${f.reason.startsWith("operator font map") ? " (operator font map)" : ""}`;
+      subs.set(k, (subs.get(k) ?? 0) + 1);
+    }
+  }
+  const lines = [...subs].slice(0, 8).map(([k, count]) => `Font fallback (${count} run${count === 1 ? "" : "s"}): ${k}`);
+  if (subs.size > 8) lines.push(`Font fallback: ${subs.size - 8} more substitution(s) not listed`);
+  return lines;
+}
+function stateLines(page) {
+  const out = [];
+  if (page.states) out.push(`States: ${page.states.variants.map((v) => `${v.name} (${v.provenance})`).join(", ")}. Synthetic = DOM modification, not an observed original state; manual = operator screenshot only.`);
+  if (page.freeze) out.push(`Freeze: applied ${page.freeze.applied.map((a) => `${a.name} ${a.count}`).join(", ") || "none"}; unavailable ${page.freeze.unavailable.join(", ") || "none"}; NOT frozen: ${page.freeze.notFrozen.join(", ")}`);
+  for (const m of page.freeze?.modifications ?? []) out.push(`Freeze modification: ${m}`);
+  if (page.motion) out.push(`Motion (static notes, not animated): ${page.motion.rules.length} transition/animation/hover rule(s); ${page.motion.inaccessibleSheets} unreadable stylesheet(s)`);
+  if (page.media?.length) out.push(`Media: ${page.media.length} placeholder(s) (video/canvas/lottie/iframe do not play in Figma)`);
+  return out;
+}
+function componentChildNames(doc) {
+  const out = /* @__PURE__ */ new Map();
+  for (const c of doc.components ?? []) {
+    const m = /* @__PURE__ */ new Map();
+    c.nodes.forEach((n, i) => m.set(i, nodeName(c.nodes, n, i, `#${i} `, null)));
+    out.set(c.id, m);
+  }
+  return out;
+}
+function pageNotes(c, page) {
+  return [
+    `${page.title} \u2014 ${page.url}`,
+    `Measured absolute desktop snapshot (${page.width}\xD7${page.height}px). Editable, not responsive, not pixel-perfect.`,
+    ...page.truncated ? ["TRUNCATED: see warnings below."] : [],
+    ...(page.notes ?? []).map((n) => `Note: ${n}`),
+    ...page.warnings.map((w) => `Warning: ${w}`),
+    ...fontLines(page.nodes, c.fonts),
+    ...c.failedLoads.map((f) => `Font load failure: ${f}`),
+    ...page.instances?.length ? [`Shared components: ${page.instances.length} instance(s) (${page.instances.map((i) => `${i.component}${i.overrides.length ? ` with ${i.overrides.length} override(s)` : ""}`).join(", ")})`] : [],
+    ...page.segment ? [`Segment ${page.segment.index + 1}/${page.segment.count} of a ${Math.round(page.segment.sourceHeight)}px document (offset y ${page.segment.offsetY}).`] : [],
+    ...stateLines(page),
+    ...page.branding ? [`Branding (page-level, not per-element): ${Object.entries(page.branding.colors).map(([k, v]) => `${k} ${v}`).join(", ")}${page.branding.fonts.length ? `; fonts ${page.branding.fonts.join(", ")}` : ""}`] : []
+  ];
+}
+var newStats, buttonName, buttonLabelOf, notesName;
 var init_renderer = __esm({
   "plugin/src/render/renderer.ts"() {
     "use strict";
     init_svgSanitize();
     init_fonts();
+    newStats = (doc) => ({ pages: 0, nodes: 0, images: 0, placeholders: 0, fontFallbacks: 0, fitted: 0, unfitted: 0, shapes: 0, svgs: 0, components: 0, instances: 0, edges: 0, variantSets: 0, variants: 0, reactions: 0, media: 0, warnings: [...doc.warnings] });
+    buttonName = (label, i, prefix) => `${prefix}Button / ${label ?? "untitled"} [b${i}]`;
     buttonLabelOf = (nodes, i) => nodes.find((t) => t.kind === "text" && t.button === i)?.text.trim() ?? null;
+    notesName = (page) => `Notes / ${page.path}${page.segment ? ` (part ${page.segment.index + 1}/${page.segment.count})` : ""}`;
   }
 });
 
 // src/connector/jobs.ts
 import { createHash as createHash6 } from "node:crypto";
-function prune(doc, pages, keepComponents) {
-  const used = /* @__PURE__ */ new Set();
-  const nodeAssets = (nodes) => {
-    for (const n of nodes) if (n.kind === "image" && n.assetId) used.add(n.assetId);
-  };
-  if (keepComponents) for (const c of doc.components ?? []) nodeAssets(c.nodes);
-  for (const p of pages) {
-    nodeAssets(p.nodes);
-    for (const v of p.states?.variants ?? []) nodeAssets(v.nodes);
-    for (const m of p.media ?? []) if (m.stillAssetId) used.add(m.stillAssetId);
-    if (p.referenceAssetId) used.add(p.referenceAssetId);
-    for (const t of p.referenceTiles?.tiles ?? []) used.add(t.assetId);
-    for (const v of p.states?.variants ?? []) if (v.referenceAssetId) used.add(v.referenceAssetId);
-  }
-  return {
-    ...doc,
-    assets: doc.assets.filter((a) => used.has(a.id)).map((a) => ({ ...a, dataBase64: "" })),
-    pages,
-    ...keepComponents && doc.components ? { components: doc.components } : { components: void 0 }
-  };
-}
 function docKey(doc) {
   return sha2(JSON.stringify({ ...doc, assets: doc.assets.map((a) => a.sha256) })).slice(0, 12);
-}
-function phaseIndices(page) {
-  const clipOf = (n) => n.clip !== void 0 && n.clip >= 0 ? n.clip : -1;
-  const un = [];
-  const cl = [];
-  const tx = [];
-  page.nodes.forEach((n, i) => (n.kind === "text" ? tx : clipOf(n) >= 0 ? cl : un).push(i));
-  return [
-    { phase: "unclipped", indices: un },
-    { phase: "clipped", indices: cl },
-    { phase: "text", indices: tx }
-  ];
 }
 function parseImageHashMap(json) {
   const o = json;
@@ -41962,81 +41989,178 @@ function parseImageHashMap(json) {
 }
 function planConnectorJobs(doc, bundle, opts = {}) {
   const max = opts.maxJobChars ?? DEFAULT_MAX_JOB_CHARS;
+  if (bundle.length + 2e3 > max) throw new JobPlanError(`--max-job-chars ${max} leaves no room: the renderer bundle alone is ${bundle.length} chars`);
   const key = docKey(doc);
   const rootName = `website-to-figma \xB7 Hi-fi (measured) \xB7 ${doc.site.host} [w2f ${key}]`;
+  const bySha = opts.imageHashesBySha ?? {};
   const jobs = [];
-  const mk = (input, note2) => {
-    const bySha = opts.imageHashesBySha ?? {};
+  const base = { schema: "website-to-figma/connector-job", schemaVersion: 1, rootName, originX: opts.originX ?? 0 };
+  const mini = (pages, components, assetIds) => ({
+    ...doc,
+    warnings: [],
+    provenance: { ...doc.provenance, notes: [] },
+    assets: doc.assets.filter((a) => assetIds.has(a.id)).map((a) => ({ ...a, dataBase64: "" })),
+    pages,
+    components: components && components.length ? components : void 0
+  });
+  const make = (input, note2) => {
     const mapped = {};
     for (const a of input.doc.assets) if (bySha[a.sha256]) mapped[a.id] = bySha[a.sha256];
-    if (Object.keys(mapped).length) input = { ...input, imageHashes: mapped };
+    const full = Object.keys(mapped).length ? { ...input, imageHashes: mapped } : input;
     const script = `${bundle}
-return await W2F.runJob(${JSON.stringify(input)}, $fig, figma);
+return await W2F.runJob(${JSON.stringify(full)}, $fig, figma);
 `;
-    const n = jobs.length + 1;
-    const file = `job-${String(n).padStart(3, "0")}-${input.kind}${input.pageId ? `-${input.pageId}` : ""}${input.batch ? `-${input.batch.phase}` : ""}.js`;
+    const file = `job-${String(jobs.length + 1).padStart(3, "0")}-${input.kind}${input.pageId ? `-${input.pageId}` : ""}.js`;
     return { file, kind: input.kind, pageId: input.pageId ?? null, chars: script.length, sha256: sha2(script), script, note: note2 };
   };
-  const base = { schema: "website-to-figma/connector-job", schemaVersion: 1, rootName, originX: opts.originX ?? 0 };
   const push = (j) => {
-    if (j.chars > max) throw new Error(`${j.file}: ${j.chars} chars exceeds --max-job-chars ${max} (the renderer bundle alone is ${bundle.length})`);
+    if (j.chars > max) throw new JobPlanError(`${j.file} (${j.note}) needs ${j.chars} chars, over --max-job-chars ${max} (renderer bundle ${bundle.length}); nothing was written`);
     jobs.push(j);
   };
-  push(mk({ ...base, kind: "root", doc: prune(doc, [], true) }, "root frame, intro, shared components"));
+  const shellPage = (p) => ({ ...p, nodes: [], warnings: [], notes: [], states: void 0, branding: null });
+  const labels = (lines, o, note2) => {
+    let chunk2 = [];
+    let part = 0;
+    const emit = () => {
+      if (!chunk2.length) return;
+      push(make({ ...base, kind: "label", doc: mini([], void 0, /* @__PURE__ */ new Set()), label: { ...o, text: chunk2.join("\n"), name: part ? `${o.name} (cont. ${part})` : o.name, gap: part ? 4 : o.gap } }, `${note2}${part ? ` (cont. ${part})` : ""}`));
+      part++;
+      chunk2 = [];
+    };
+    for (const line of lines) {
+      const probe = make({ ...base, kind: "label", doc: mini([], void 0, /* @__PURE__ */ new Set()), label: { ...o, text: [...chunk2, line].join("\n"), name: o.name, gap: o.gap } }, note2);
+      if (probe.chars > max && chunk2.length) emit();
+      chunk2.push(line);
+    }
+    emit();
+  };
+  const nodeBatches = (all3, target, page, componentsMeta, firstDescription, label) => {
+    let description2 = firstDescription;
+    const phases = [
+      { phase: "unclipped", idx: [] },
+      { phase: "clipped", idx: [] },
+      { phase: "text", idx: [] }
+    ];
+    all3.forEach((n, i) => phases[n.kind === "text" ? 2 : clipOf(n) >= 0 ? 1 : 0].idx.push(i));
+    const hasClips = (page?.clips?.length ?? 0) > 0 && target.type === "page";
+    let clipsCreated = false;
+    const build = (phase, orig) => {
+      const nodes = orig.map((i) => all3[i]);
+      const buttonLabels = {};
+      const buttonBoxes = {};
+      const assets = /* @__PURE__ */ new Set();
+      nodes.forEach((n, k) => {
+        if (n.kind === "box" && n.role === "button") buttonLabels[String(orig[k])] = buttonLabelOf(all3, orig[k]);
+        if (n.kind === "text" && n.button >= 0) {
+          buttonLabels[String(n.button)] = buttonLabelOf(all3, n.button);
+          buttonBoxes[String(n.button)] = { x: all3[n.button].x, y: all3[n.button].y };
+        }
+        if (n.kind === "image" && n.assetId) assets.add(n.assetId);
+      });
+      const createClips = phase === "clipped" && hasClips && !clipsCreated;
+      return make(
+        { ...base, kind: "nodes", pageId: page?.id, target, doc: mini(page ? [shellPage(page)] : [], componentsMeta, assets), batch: { phase, orig, createClips, buttonLabels, buttonBoxes, nodes, ...description2 !== void 0 ? { description: description2 } : {} } },
+        `${label} ${phase} nodes ${orig[0] ?? "-"}..${orig[orig.length - 1] ?? "-"}`
+      );
+    };
+    for (const ph of phases) {
+      if (ph.phase === "clipped" && hasClips && ph.idx.length === 0) {
+        push(build("clipped", []));
+        clipsCreated = true;
+        continue;
+      }
+      let start = 0;
+      while (start < ph.idx.length) {
+        let end = Math.min(ph.idx.length, start + 200);
+        let job = build(ph.phase, ph.idx.slice(start, end));
+        while (job.chars > max && end - start > 1) {
+          end = start + Math.max(1, Math.floor((end - start) / 2));
+          job = build(ph.phase, ph.idx.slice(start, end));
+        }
+        if (job.chars > max) {
+          const n = all3[ph.idx[start]];
+          throw new JobPlanError(`${label}: node ${ph.idx[start]} (${n.kind} "${n.name}") alone needs ${job.chars} chars, over --max-job-chars ${max}; raise the limit (nothing was written)`);
+        }
+        push(job);
+        description2 = void 0;
+        if (ph.phase === "clipped") clipsCreated = true;
+        start = end;
+      }
+    }
+    if (description2 !== void 0) push(build("text", []));
+  };
+  push(make({ ...base, kind: "root", doc: mini([], void 0, /* @__PURE__ */ new Set()) }, "root frame and title"));
+  const intro = [
+    `Source: ${doc.source.label} (${doc.source.mode}). ${doc.provenance.notes.join(" ")}`,
+    ...doc.fontMap?.length ? [`Operator font map: ${doc.fontMap.map((f) => `${f.match} -> ${f.use}`).join(", ")}`] : [],
+    ...doc.warnings.map((w) => `Warning: ${w}`),
+    "Not affiliated with Figma or the site owner. Not pixel-perfect."
+  ];
+  labels(intro, { size: 14, bold: false, width: 1200, name: "Intro", gap: 8 }, "intro");
+  const compMeta = (doc.components ?? []).map((c) => ({ ...c, nodes: [] }));
+  if (doc.components?.length) {
+    labels(["Shared components (identical structure on 2+ pages; per-page paint differences are instance overrides)"], { size: 14, bold: true, name: "Shared components", gap: 60 }, "components heading");
+    for (const cm of doc.components) {
+      push(make({ ...base, kind: "component", componentId: cm.id, doc: mini([], [{ ...cm, nodes: [] }], /* @__PURE__ */ new Set()) }, `component ${cm.name}`));
+      nodeBatches(cm.nodes, { type: "component", componentId: cm.id }, null, [{ ...cm, nodes: [] }], void 0, `component ${cm.name}`);
+    }
+  }
+  const allChildNames = componentChildNames(doc);
+  const notesCtx = { host: null, doc, fonts: /* @__PURE__ */ new Map(), failedLoads: [], stats: newStats(doc) };
   for (const page of doc.pages) {
-    const d = prune(doc, [page], true);
-    const whole = mk({ ...base, kind: "page", pageId: page.id, withNodes: true, doc: d }, `page ${page.path}${page.segment ? ` part ${page.segment.index + 1}` : ""} (shell, nodes, states)`);
+    const tag = `page ${page.path}${page.segment ? ` part ${page.segment.index + 1}` : ""}`;
+    labels(pageNotes(notesCtx, page), { size: 14, bold: false, width: Math.max(600, page.width), name: notesName(page), gap: 120 }, `${tag} notes`);
+    const used = /* @__PURE__ */ new Set();
+    if (page.referenceAssetId) used.add(page.referenceAssetId);
+    for (const t of page.referenceTiles?.tiles ?? []) used.add(t.assetId);
+    for (const m of page.media ?? []) if (m.stillAssetId) used.add(m.stillAssetId);
+    const comps = (page.instances ?? []).map((i) => compMeta.find((c) => c.id === i.component)).filter(Boolean);
+    const childNames = {};
+    for (const ins of page.instances ?? []) for (const o of ins.overrides) {
+      const n = allChildNames.get(ins.component)?.get(o.index);
+      if (n) (childNames[ins.component] ??= {})[String(o.index)] = n;
+    }
+    const shellIn = (withNodes, part) => {
+      const p = withNodes ? { ...page, warnings: [], notes: [] } : part === "shell" ? { ...shellPage(page), instances: void 0, media: void 0 } : shellPage(page);
+      const assets = new Set(used);
+      if (withNodes) {
+        for (const n of page.nodes) if (n.kind === "image" && n.assetId) assets.add(n.assetId);
+        for (const v of page.states?.variants ?? []) {
+          if (v.referenceAssetId) assets.add(v.referenceAssetId);
+          for (const n of v.nodes) if (n.kind === "image" && n.assetId) assets.add(n.assetId);
+        }
+      }
+      return { ...base, kind: "page", pageId: page.id, withNodes, ...part ? { part } : {}, doc: mini([p], part === "shell" ? void 0 : comps, assets), ...part === "shell" ? {} : { childNames } };
+    };
+    const whole = make(shellIn(true), `${tag} (frame, nodes, states)`);
     if (whole.chars <= max) {
       push(whole);
       continue;
     }
-    const shellPage = { ...page, nodes: [] };
-    push(mk({ ...base, kind: "page", pageId: page.id, withNodes: false, doc: prune(doc, [shellPage], true) }, `page ${page.path} shell`));
-    let firstClipped = true;
-    for (const ph of phaseIndices(page)) {
-      if (ph.phase === "clipped" && ph.indices.length === 0 && (page.clips?.length ?? 0) > 0) {
-        push(mk({ ...base, kind: "nodes", pageId: page.id, doc: prune(doc, [{ ...page, nodes: [], states: void 0, instances: void 0, media: void 0 }], false), batch: { phase: "clipped", orig: [], createClips: true, buttonLabels: {}, buttonBoxes: {} } }, `page ${page.path} clip frames`));
-        firstClipped = false;
-        continue;
-      }
-      let start = 0;
-      while (start < ph.indices.length) {
-        let end = Math.min(ph.indices.length, start + 400);
-        let job;
-        for (; ; ) {
-          const orig = ph.indices.slice(start, end);
-          const sub = orig.map((i) => page.nodes[i]);
-          const buttonLabels = {};
-          const buttonBoxes = {};
-          for (const [k, n] of sub.entries()) {
-            if (n.kind === "box" && n.role === "button") buttonLabels[String(orig[k])] = buttonLabelOf(page.nodes, orig[k]);
-            if (n.kind === "text" && n.button >= 0) {
-              const box3 = page.nodes[n.button];
-              buttonLabels[String(n.button)] = buttonLabelOf(page.nodes, n.button);
-              buttonBoxes[String(n.button)] = { x: box3.x, y: box3.y };
-            }
-          }
-          const batchPage = { ...page, nodes: sub, states: void 0, instances: void 0, media: void 0 };
-          job = mk({ ...base, kind: "nodes", pageId: page.id, doc: prune(doc, [batchPage], false), batch: { phase: ph.phase, orig, createClips: ph.phase === "clipped" && firstClipped, buttonLabels, buttonBoxes } }, `page ${page.path} ${ph.phase} nodes ${start}-${end - 1}`);
-          if (job.chars <= max || end - start <= 1) break;
-          end = start + Math.max(1, Math.floor((end - start) / 2));
-        }
-        push(job);
-        if (ph.phase === "clipped") firstClipped = false;
-        start = end;
-      }
+    push(make(shellIn(false, "shell"), `${tag} shell (frame, references)`));
+    nodeBatches(page.nodes, { type: "page", pageId: page.id }, page, void 0, void 0, tag);
+    if (page.instances?.length || page.media?.length) push(make(shellIn(false, "finish"), `${tag} instances and media (above nodes)`));
+    if (page.states) {
+      const st3 = page.states;
+      const refs = new Set(st3.variants.map((v) => v.referenceAssetId).filter((x) => !!x));
+      const statesPage = { ...shellPage(page), states: { ...st3, variants: st3.variants.map((v) => ({ ...v, nodes: [], notes: [] })) } };
+      push(make({ ...base, kind: "states", pageId: page.id, doc: mini([statesPage], void 0, refs) }, `${tag} states (variants, grid, reactions)`));
+      for (const v of st3.variants) nodeBatches(v.nodes, { type: "variant", pageId: page.id, variant: v.name }, page, void 0, v.notes.join("\n"), `${tag} State=${v.name}`);
     }
   }
-  push(mk({ ...base, kind: "edges", doc: prune(doc, doc.pages.map((p) => ({ ...p, nodes: [], states: void 0 })), false) }, "sitemap edges and final root size"));
+  push(make({ ...base, kind: "edges", doc: mini(doc.pages.map((p) => ({ ...shellPage(p), instances: void 0, media: void 0, clips: void 0, referenceTiles: void 0, referenceAssetId: null })), void 0, /* @__PURE__ */ new Set()) }, "sitemap edges and final root size"));
   return { jobs, rootName, key };
 }
-var DEFAULT_MAX_JOB_CHARS, sha2;
+var DEFAULT_MAX_JOB_CHARS, JobPlanError, sha2, clipOf;
 var init_jobs = __esm({
   "src/connector/jobs.ts"() {
     "use strict";
     init_renderer();
-    DEFAULT_MAX_JOB_CHARS = 5e4;
+    DEFAULT_MAX_JOB_CHARS = 4e4;
+    JobPlanError = class extends Error {
+    };
     sha2 = (s) => createHash6("sha256").update(s).digest("hex");
+    clipOf = (n) => n.clip !== void 0 && n.clip >= 0 ? n.clip : -1;
   }
 });
 
@@ -42864,7 +42988,7 @@ var init_cli = __esm({
       init --prior-credits N --note TEXT | resolve --id ID --credits N|unknown --note TEXT
       | record --credits N --note TEXT (other attributable project spend)
   website-to-figma fig-plan --doc site-v2.json --renderer connector-dist/w2f-connector-renderer.js
-        [--renderer-sha256 HEX] [--max-job-chars N] [--image-hashes MAP.json] --out DIR
+        [--renderer-sha256 HEX] [--max-job-chars N (default 40000)] [--image-hashes MAP.json] --out DIR
       Offline: write ordered Figma-connector job scripts ($fig plan constructors only) that embed the
       SAME shared renderer as the native plugin. Makes NO Figma calls; run the jobs yourself, in order.
   website-to-figma validate <FILE>
@@ -42874,7 +42998,7 @@ var init_cli = __esm({
     main2(process.argv.slice(2)).then(
       (code) => process.exit(code),
       (err) => {
-        if (err instanceof CrawlPolicyError || err instanceof StatePlanError || err instanceof StateRunPolicyError || err instanceof LedgerError || err instanceof OutputError) {
+        if (err instanceof CrawlPolicyError || err instanceof StatePlanError || err instanceof StateRunPolicyError || err instanceof LedgerError || err instanceof OutputError || err instanceof JobPlanError) {
           console.error(err.message);
           process.exit(3);
         }

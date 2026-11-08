@@ -186,6 +186,10 @@ export class PlannedHost implements Host<FigWrapper> {
     this.unsupported.add("image fills without an origin-supplied image-hash mapping (labelled placeholders created instead; the connector does not create image hashes)");
     return false;
   }
+  describe(n: FigWrapper, text: string) {
+    n.set({ description: text });
+    this.markSet();
+  }
   hide(n: FigWrapper) {
     n.set({ visible: false, locked: true });
     this.markSet();

@@ -86,7 +86,7 @@ export function allNodeLists(doc: HifiDoc): HifiNode[][] {
   return [...doc.pages.map((p) => p.nodes), ...doc.pages.flatMap((p) => (p.states?.variants ?? []).map((v) => v.nodes)), ...(doc.components ?? []).map((c) => c.nodes)];
 }
 
-async function label<N>(c: Ctx<N>, parent: N, chars: string, size: number, bold: boolean, x: number, y: number, width?: number, name?: string): Promise<{ node: N; height: number }> {
+export async function label<N>(c: Ctx<N>, parent: N, chars: string, size: number, bold: boolean, x: number, y: number, width?: number, name?: string): Promise<{ node: N; height: number }> {
   const node = c.host.text(parent, { name: name ?? chars.split("\n")[0]!.slice(0, 80), x, y, characters: chars, font: bold ? LABEL_BOLD : LABEL, size, color: null, width });
   await c.host.flush();
   return { node, height: c.host.height(node) };
@@ -296,6 +296,12 @@ export async function renderIntro<N>(c: Ctx<N>, root: N): Promise<number> {
   return 40 + title.height + 8 + info.height + 60;
 }
 
+export async function renderComponentShell<N>(c: Ctx<N>, root: N, cm: { name: string; w: number; h: number }, y: number): Promise<N> {
+  const comp = c.host.component(root, { name: cm.name, x: X0, y, w: Math.max(1, cm.w), h: Math.max(1, cm.h), fill: null, clipsContent: false });
+  c.stats.components++;
+  return comp;
+}
+
 export async function renderComponents<N>(c: Ctx<N>, root: N, y0: number): Promise<{ y: number; right: number; components: Map<string, N> }> {
   const components = new Map<string, N>();
   let y = y0;
@@ -316,10 +322,9 @@ export async function renderComponents<N>(c: Ctx<N>, root: N, y0: number): Promi
 
 // Page shell: notes, page frame, (optionally all nodes), instances, media,
 // references, states. Returns the frame and the bottom edge.
-export async function renderPage<N>(c: Ctx<N>, root: N, page: HifiPage, y: number, components: Map<string, N>, opts: { nodes: boolean } = { nodes: true }): Promise<{ bottom: number; top: number; frame: N; notes: N }> {
-  const { host, doc } = c;
-  const ref = page.referenceAssetId ? doc.assets.find((a) => a.id === page.referenceAssetId) : undefined;
-  const notes = [
+// Notes lines for a page (also used by connector label jobs).
+export function pageNotes<N>(c: Ctx<N>, page: HifiPage): string[] {
+  return [
     `${page.title} — ${page.url}`,
     `Measured absolute desktop snapshot (${page.width}×${page.height}px). Editable, not responsive, not pixel-perfect.`,
     ...(page.truncated ? ["TRUNCATED: see warnings below."] : []),
@@ -332,13 +337,13 @@ export async function renderPage<N>(c: Ctx<N>, root: N, page: HifiPage, y: numbe
     ...stateLines(page),
     ...(page.branding ? [`Branding (page-level, not per-element): ${Object.entries(page.branding.colors).map(([k, v]) => `${k} ${v}`).join(", ")}${page.branding.fonts.length ? `; fonts ${page.branding.fonts.join(", ")}` : ""}`] : []),
   ];
-  const head = await label(c, root, notes.join("\n"), 14, false, X0, y, Math.max(600, page.width), `Notes / ${page.path}${page.segment ? ` (part ${page.segment.index + 1}/${page.segment.count})` : ""}`);
-  const top = y + head.height + 24;
-  const frame = host.frame(root, { name: pageFrameName(page), x: X0, y: top, w: page.width, h: page.height, fill: null, clipsContent: true });
-  host.meta(frame, { url: page.url, truncated: page.truncated });
-  let unfitted = 0;
-  if (opts.nodes) unfitted = await renderNodes(c, frame, page.nodes, page.clips ?? [], () => "");
-  const childNames = componentChildNames(doc);
+}
+export const notesName = (page: HifiPage) => `Notes / ${page.path}${page.segment ? ` (part ${page.segment.index + 1}/${page.segment.count})` : ""}`;
+
+// Instances (with paint overrides) and media placeholders: rendered above the
+// page's nodes (native z-order); a separate connector job when nodes are batched.
+export async function renderPageDecorations<N>(c: Ctx<N>, frame: N, page: HifiPage, components: Map<string, N>, childNames: Map<string, Map<number, { name: string; type: string }>>): Promise<void> {
+  const { host } = c;
   for (const ins of page.instances ?? []) {
     const comp = components.get(ins.component);
     if (!comp) continue;
@@ -358,7 +363,22 @@ export async function renderPage<N>(c: Ctx<N>, root: N, page: HifiPage, y: numbe
     host.meta(r, { media: m.kind, still: m.still, poster: m.poster, src: m.src, webgl: m.webgl });
     c.stats.media++;
   }
-  if (unfitted) {
+}
+
+// opts.notes false: the caller already placed the notes (connector label jobs);
+// opts.states false: states are rendered by separate jobs.
+export async function renderPage<N>(c: Ctx<N>, root: N, page: HifiPage, y: number, components: Map<string, N>, opts: { nodes?: boolean; notes?: boolean; states?: boolean; decorations?: boolean; childNames?: Map<string, Map<number, { name: string; type: string }>> } = {}): Promise<{ bottom: number; top: number; frame: N; notes: N | null }> {
+  const { host, doc } = c;
+  const ref = page.referenceAssetId ? doc.assets.find((a) => a.id === page.referenceAssetId) : undefined;
+  const notes = pageNotes(c, page);
+  const head = opts.notes === false ? null : await label(c, root, notes.join("\n"), 14, false, X0, y, Math.max(600, page.width), notesName(page));
+  const top = head ? y + head.height + 24 : y;
+  const frame = host.frame(root, { name: pageFrameName(page), x: X0, y: top, w: page.width, h: page.height, fill: null, clipsContent: true });
+  host.meta(frame, { url: page.url, truncated: page.truncated });
+  let unfitted = 0;
+  if (opts.nodes !== false) unfitted = await renderNodes(c, frame, page.nodes, page.clips ?? [], () => "");
+  if (opts.decorations !== false) await renderPageDecorations(c, frame, page, components, opts.childNames ?? componentChildNames(doc));
+  if (unfitted && head) {
     host.setCharacters(head.node, notes.join("\n") + `\nWidth fit skipped for ${unfitted} measured text run(s) (difference too large); natural width kept.`);
     c.stats.unfitted += unfitted;
   }
@@ -383,12 +403,15 @@ export async function renderPage<N>(c: Ctx<N>, root: N, page: HifiPage, y: numbe
     }
     bottom = Math.max(bottom, top + rt.sourceHeight);
   }
-  if (page.states) bottom = await renderStates(c, root, page, bottom + 80);
+  if (page.states && opts.states !== false) bottom = await renderStates(c, root, page, bottom + 80);
   c.stats.pages++;
-  return { bottom, top, frame, notes: head.node };
+  return { bottom, top, frame, notes: head ? head.node : null };
 }
 
-export async function renderStates<N>(c: Ctx<N>, root: N, page: HifiPage, y: number): Promise<number> {
+// opts.nodes false: components are created empty (no description) and their
+// nodes/descriptions are added by later connector jobs into the same components.
+export const statesSetName = (page: HifiPage) => `States / ${page.path}`;
+export async function renderStates<N>(c: Ctx<N>, root: N, page: HifiPage, y: number, opts: { nodes?: boolean } = {}): Promise<number> {
   const { host, doc } = c;
   const st = page.states!;
   const head = await label(c, root, `States / ${page.path}: native component variants (${st.variants.map((v) => `${v.name}: ${v.provenance}`).join(", ")}). Synthetic states are DOM modifications, not observed original states; scroll-triggered = observed page reaction to scrolling; page-api = the page's own Swiper advanced via its API (not a user event).${st.reactions === "click-cycle" && st.variants.length > 1 ? " Prototype: ON_CLICK -> CHANGE_TO next variant." : ""}`, 14, true, X0, y, 1200);
@@ -396,7 +419,7 @@ export async function renderStates<N>(c: Ctx<N>, root: N, page: HifiPage, y: num
   const comps: N[] = [];
   let x = 0;
   for (const v of st.variants) {
-    const comp = host.component(root, { name: `State=${v.name}`, x: X0 + x, y: top, w: Math.max(1, v.frame.w), h: Math.max(1, v.frame.h), fill: null, clipsContent: true, description: v.notes.join("\n") });
+    const comp = host.component(root, { name: `State=${v.name}`, x: X0 + x, y: top, w: Math.max(1, v.frame.w), h: Math.max(1, v.frame.h), fill: null, clipsContent: true, ...(opts.nodes === false ? {} : { description: v.notes.join("\n") }) });
     host.meta(comp, { state: v.name, provenance: v.provenance, frame: v.frame, screenshot: v.screenshot });
     const ref = v.referenceAssetId ? doc.assets.find((a) => a.id === v.referenceAssetId) : undefined;
     if (ref && v.screenshot && v.screenshot.scrollY !== null) {
@@ -405,12 +428,12 @@ export async function renderStates<N>(c: Ctx<N>, root: N, page: HifiPage, y: num
       const r = host.rect(comp, { name: ok ? name : `${name} (IMAGE PLACEHOLDER)`, x: -v.frame.x, y: v.screenshot.scrollY - v.frame.y, w: ref.width, h: ref.height, fill: null, ...(ok ? { image: { assetId: ref.id, mode: "FILL" as const } } : { placeholder: "missing" as const }) });
       host.hide(r);
     }
-    await renderNodes(c, comp, v.nodes, [], () => "");
+    if (opts.nodes !== false) await renderNodes(c, comp, v.nodes, [], () => "");
     comps.push(comp);
     x += v.frame.w + 40;
     c.stats.variants++;
   }
-  await host.variants(root, comps, { name: `States / ${page.path}`, x: X0, y: top, gap: 40 });
+  await host.variants(root, comps, { name: statesSetName(page), x: X0, y: top, gap: 40 });
   c.stats.variantSets++;
   if (st.reactions === "click-cycle" && comps.length > 1) {
     await host.flush();

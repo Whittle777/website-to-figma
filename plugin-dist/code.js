@@ -1515,10 +1515,8 @@
     }
     return { y: y + 60, right, components };
   }
-  async function renderPage(c, root, page, y, components, opts = { nodes: true }) {
-    const { host, doc } = c;
-    const ref = page.referenceAssetId ? doc.assets.find((a) => a.id === page.referenceAssetId) : void 0;
-    const notes = [
+  function pageNotes(c, page) {
+    return [
       `${page.title} \u2014 ${page.url}`,
       `Measured absolute desktop snapshot (${page.width}\xD7${page.height}px). Editable, not responsive, not pixel-perfect.`,
       ...page.truncated ? ["TRUNCATED: see warnings below."] : [],
@@ -1531,13 +1529,10 @@
       ...stateLines(page),
       ...page.branding ? [`Branding (page-level, not per-element): ${Object.entries(page.branding.colors).map(([k, v]) => `${k} ${v}`).join(", ")}${page.branding.fonts.length ? `; fonts ${page.branding.fonts.join(", ")}` : ""}`] : []
     ];
-    const head = await label(c, root, notes.join("\n"), 14, false, X0, y, Math.max(600, page.width), `Notes / ${page.path}${page.segment ? ` (part ${page.segment.index + 1}/${page.segment.count})` : ""}`);
-    const top = y + head.height + 24;
-    const frame = host.frame(root, { name: pageFrameName(page), x: X0, y: top, w: page.width, h: page.height, fill: null, clipsContent: true });
-    host.meta(frame, { url: page.url, truncated: page.truncated });
-    let unfitted = 0;
-    if (opts.nodes) unfitted = await renderNodes(c, frame, page.nodes, page.clips ?? [], () => "");
-    const childNames = componentChildNames(doc);
+  }
+  var notesName = (page) => `Notes / ${page.path}${page.segment ? ` (part ${page.segment.index + 1}/${page.segment.count})` : ""}`;
+  async function renderPageDecorations(c, frame, page, components, childNames) {
+    const { host } = c;
     for (const ins of page.instances ?? []) {
       const comp = components.get(ins.component);
       if (!comp) continue;
@@ -1557,7 +1552,19 @@
       host.meta(r, { media: m.kind, still: m.still, poster: m.poster, src: m.src, webgl: m.webgl });
       c.stats.media++;
     }
-    if (unfitted) {
+  }
+  async function renderPage(c, root, page, y, components, opts = {}) {
+    const { host, doc } = c;
+    const ref = page.referenceAssetId ? doc.assets.find((a) => a.id === page.referenceAssetId) : void 0;
+    const notes = pageNotes(c, page);
+    const head = opts.notes === false ? null : await label(c, root, notes.join("\n"), 14, false, X0, y, Math.max(600, page.width), notesName(page));
+    const top = head ? y + head.height + 24 : y;
+    const frame = host.frame(root, { name: pageFrameName(page), x: X0, y: top, w: page.width, h: page.height, fill: null, clipsContent: true });
+    host.meta(frame, { url: page.url, truncated: page.truncated });
+    let unfitted = 0;
+    if (opts.nodes !== false) unfitted = await renderNodes(c, frame, page.nodes, page.clips ?? [], () => "");
+    if (opts.decorations !== false) await renderPageDecorations(c, frame, page, components, opts.childNames ?? componentChildNames(doc));
+    if (unfitted && head) {
       host.setCharacters(head.node, notes.join("\n") + `
 Width fit skipped for ${unfitted} measured text run(s) (difference too large); natural width kept.`);
       c.stats.unfitted += unfitted;
@@ -1583,11 +1590,12 @@ Width fit skipped for ${unfitted} measured text run(s) (difference too large); n
       }
       bottom = Math.max(bottom, top + rt.sourceHeight);
     }
-    if (page.states) bottom = await renderStates(c, root, page, bottom + 80);
+    if (page.states && opts.states !== false) bottom = await renderStates(c, root, page, bottom + 80);
     c.stats.pages++;
-    return { bottom, top, frame, notes: head.node };
+    return { bottom, top, frame, notes: head ? head.node : null };
   }
-  async function renderStates(c, root, page, y) {
+  var statesSetName = (page) => `States / ${page.path}`;
+  async function renderStates(c, root, page, y, opts = {}) {
     const { host, doc } = c;
     const st = page.states;
     const head = await label(c, root, `States / ${page.path}: native component variants (${st.variants.map((v) => `${v.name}: ${v.provenance}`).join(", ")}). Synthetic states are DOM modifications, not observed original states; scroll-triggered = observed page reaction to scrolling; page-api = the page's own Swiper advanced via its API (not a user event).${st.reactions === "click-cycle" && st.variants.length > 1 ? " Prototype: ON_CLICK -> CHANGE_TO next variant." : ""}`, 14, true, X0, y, 1200);
@@ -1595,7 +1603,7 @@ Width fit skipped for ${unfitted} measured text run(s) (difference too large); n
     const comps = [];
     let x = 0;
     for (const v of st.variants) {
-      const comp = host.component(root, { name: `State=${v.name}`, x: X0 + x, y: top, w: Math.max(1, v.frame.w), h: Math.max(1, v.frame.h), fill: null, clipsContent: true, description: v.notes.join("\n") });
+      const comp = host.component(root, { name: `State=${v.name}`, x: X0 + x, y: top, w: Math.max(1, v.frame.w), h: Math.max(1, v.frame.h), fill: null, clipsContent: true, ...opts.nodes === false ? {} : { description: v.notes.join("\n") } });
       host.meta(comp, { state: v.name, provenance: v.provenance, frame: v.frame, screenshot: v.screenshot });
       const ref = v.referenceAssetId ? doc.assets.find((a) => a.id === v.referenceAssetId) : void 0;
       if (ref && v.screenshot && v.screenshot.scrollY !== null) {
@@ -1604,12 +1612,12 @@ Width fit skipped for ${unfitted} measured text run(s) (difference too large); n
         const r = host.rect(comp, { name: ok ? name : `${name} (IMAGE PLACEHOLDER)`, x: -v.frame.x, y: v.screenshot.scrollY - v.frame.y, w: ref.width, h: ref.height, fill: null, ...ok ? { image: { assetId: ref.id, mode: "FILL" } } : { placeholder: "missing" } });
         host.hide(r);
       }
-      await renderNodes(c, comp, v.nodes, [], () => "");
+      if (opts.nodes !== false) await renderNodes(c, comp, v.nodes, [], () => "");
       comps.push(comp);
       x += v.frame.w + 40;
       c.stats.variants++;
     }
-    await host.variants(root, comps, { name: `States / ${page.path}`, x: X0, y: top, gap: 40 });
+    await host.variants(root, comps, { name: statesSetName(page), x: X0, y: top, gap: 40 });
     c.stats.variantSets++;
     if (st.reactions === "click-cycle" && comps.length > 1) {
       await host.flush();

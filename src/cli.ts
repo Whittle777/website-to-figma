@@ -23,7 +23,7 @@ import { initLedger, ledgerSummary, LedgerError, readLedger, recordManual, resol
 import { createExclusiveDir, OutputError, writeExclusive } from "./states/runFiles";
 import { acquireImage, httpsTransport } from "./states/acquire";
 import { createHash } from "node:crypto";
-import { planConnectorJobs, parseImageHashMap, DEFAULT_MAX_JOB_CHARS } from "./connector/jobs";
+import { planConnectorJobs, parseImageHashMap, DEFAULT_MAX_JOB_CHARS, JobPlanError } from "./connector/jobs";
 import { adaptTaggedReturns } from "./states/adapt";
 import { assertLimit } from "./normalize/build";
 import { MAX_TIMEOUT_SEC, planCrawl, runCrawl } from "./crawl/firecrawl";
@@ -77,7 +77,7 @@ const USAGE = `Usage:
       init --prior-credits N --note TEXT | resolve --id ID --credits N|unknown --note TEXT
       | record --credits N --note TEXT (other attributable project spend)
   website-to-figma fig-plan --doc site-v2.json --renderer connector-dist/w2f-connector-renderer.js
-        [--renderer-sha256 HEX] [--max-job-chars N] [--image-hashes MAP.json] --out DIR
+        [--renderer-sha256 HEX] [--max-job-chars N (default 40000)] [--image-hashes MAP.json] --out DIR
       Offline: write ordered Figma-connector job scripts ($fig plan constructors only) that embed the
       SAME shared renderer as the native plugin. Makes NO Figma calls; run the jobs yourself, in order.
   website-to-figma validate <FILE>
@@ -508,7 +508,7 @@ async function main(argv: string[]): Promise<number> {
 main(process.argv.slice(2)).then(
   (code) => process.exit(code),
   (err: unknown) => {
-    if (err instanceof CrawlPolicyError || err instanceof StatePlanError || err instanceof StateRunPolicyError || err instanceof LedgerError || err instanceof OutputError) {
+    if (err instanceof CrawlPolicyError || err instanceof StatePlanError || err instanceof StateRunPolicyError || err instanceof LedgerError || err instanceof OutputError || err instanceof JobPlanError) {
       console.error(err.message);
       process.exit(3);
     }

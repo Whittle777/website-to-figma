@@ -543,12 +543,23 @@ hosts differ only in how nodes are made:
 
 ```sh
 website-to-figma fig-plan --doc site-v2.json --renderer connector-dist/w2f-connector-renderer.js \
-  --renderer-sha256 <pinned sha256> [--max-job-chars 50000] [--image-hashes map.json] --out fig-jobs
+  --renderer-sha256 <pinned sha256> [--max-job-chars 40000] [--image-hashes map.json] --out fig-jobs
 ```
 
 `fig-plan` writes ordered job scripts and a `jobs.json` manifest, and makes **no Figma calls**:
-- **Jobs.** Each job embeds the pinned renderer bundle verbatim plus one bounded job input. The
-  jobs are root, page, phase-ordered node batches and edges.
+- **Jobs.** Each job embeds the pinned renderer bundle verbatim plus one small job input. Every
+  job is checked against `--max-job-chars` (default 40,000) while planning. If any job cannot fit
+  (for example, a single SVG node that is too large), planning stops with a clear error and
+  **nothing is written**. Job kinds:
+  - `root`, then intro and notes `label` chunks
+  - one empty `component` per shared component, then its node batches
+  - per page: `page` shell (frame and references), node batches in phase order (unclipped, clip
+    frames, clipped, text), then instances and media above them
+  - `states`: empty components, `$fig.variants({ name }, children)`, the grid and reactions
+  - per-variant node batches, which also set the description
+  - `edges`
+
+  Small pages still render in a single `page` job.
 - **Order.** Run them yourself through the connector, in order. Later jobs find earlier frames by
   deterministic unique names (`[bN]` and `[cN]` keys, plus `[w2f <docKey>]` on the root).
 - **Images.** Image fills are applied only when you supply `--image-hashes`. It maps asset sha256

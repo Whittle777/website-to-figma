@@ -10,7 +10,50 @@ import { planConnectorJobs, parseImageHashMap } from "../src/connector/jobs";
 import { PlannedHost } from "../src/connector/plannedHost";
 import { NativeHost } from "../plugin/src/render/nativeHost";
 import { renderDocument, pageFrameName } from "../plugin/src/render/renderer";
-import type { HifiDoc } from "../src/shared/hifiSchema";
+import { validateHifiDoc, type HifiDoc, type HifiNode } from "../src/shared/hifiSchema";
+
+// SYNTHETIC large document (no real site content): many base nodes, buttons,
+// a clip group, long warnings/notes, 30/30/15-node variants, a 60-node shared
+// component with instance overrides.
+function largeDoc(o: { hugeSvg?: boolean } = {}): HifiDoc {
+  const base = buildStatesFixture({ reactions: "click-cycle" });
+  const page = base.pages[0]!;
+  const paint = { hex: "#212121", alpha: 1 };
+  const text = (i: number, x: number, y: number, button = -1, clip?: number): HifiNode => ({ kind: "text", name: `p / synthetic run ${i}`, text: `Synthetic text run number ${i} with some length to it`, graphemes: 50, fontStack: ["-apple-system", "BlinkMacSystemFont", "Segoe UI", "Roboto", "sans-serif"], generic: "sans", weight: 400, italic: false, size: 16, lineHeight: 24, color: paint, decoration: "none", button, prov: "measured", x, y, w: 380, h: 24, ...(clip !== undefined ? { clip } : {}) });
+  const box = (i: number, x: number, y: number, role: "block" | "button" = "block", clip?: number): HifiNode => ({ kind: "box", name: `div / synthetic block ${i}`, role, x, y, w: 300, h: 40, fill: { hex: "#f5f7ff", alpha: 1 }, border: { weight: 1, color: { hex: "#898ea4", alpha: 1 } }, radius: [4, 4, 4, 4], opacity: 1, prov: "measured", ...(clip !== undefined ? { clip } : {}) });
+  const nodes: HifiNode[] = [];
+  for (let i = 0; i < 140; i++) nodes.push(box(i, 20 + (i % 3) * 320, 20 + Math.floor(i / 3) * 60));
+  for (let i = 0; i < 20; i++) nodes.push(box(1000 + i, 20, 3000 + i * 50, "button"));
+  for (let i = 0; i < 20; i++) nodes.push(text(2000 + i, 30, 3010 + i * 50, 140 + i));
+  for (let i = 0; i < 10; i++) nodes.push(box(3000 + i, 10, 4000 + i * 30, "block", 0));
+  for (let i = 0; i < 10; i++) nodes.push(text(4000 + i, 10, 4005 + i * 30, -1, 0));
+  for (let i = 0; i < 220; i++) nodes.push(text(i, 20 + (i % 2) * 400, 20 + Math.floor(i / 2) * 26));
+  if (o.hugeSvg) {
+    const d = "M0 0 " + Array.from({ length: 2600 }, (_, k) => `L${k % 16} ${(k * 7) % 16}`).join(" ");
+    nodes.push({ kind: "svg", name: "svg / huge", x: 0, y: 0, w: 16, h: 16, markup: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16"><path d="${d}"/></svg>`, prov: "measured" });
+  }
+  const variantNodes = (n: number, tag: string): HifiNode[] => Array.from({ length: n }, (_, i) => (i % 2 ? text(5000 + i, 10, 10 + i * 20) : box(5000 + i, 10, 10 + i * 20)) as HifiNode).map((x) => ({ ...x, name: `${x.name} ${tag}` }));
+  const warn = Array.from({ length: 50 }, (_, i) => `Synthetic warning ${i}: ${"lorem ipsum dolor sit amet ".repeat(6).slice(0, 170)}`);
+  const navNodes: HifiNode[] = Array.from({ length: 60 }, (_, i) => (i % 2 ? text(6000 + i, 10 + i * 10, 20) : box(6000 + i, 10 + i * 10, 10)) as HifiNode);
+  const states = page.states!;
+  return {
+    ...base,
+    warnings: warn.slice(0, 50),
+    components: [{ id: "c0", kind: "nav", name: "Shared / nav (big)", w: 800, h: 60, nodes: navNodes }],
+    pages: [
+      {
+        ...page,
+        height: 5000,
+        nodes,
+        clips: [{ x: 0, y: 3990, w: 300, h: 320, name: "Overflow clip / pre" }],
+        warnings: warn,
+        notes: warn.slice(0, 20),
+        instances: [{ component: "c0", x: 0, y: 0, overrides: [{ index: 1, color: { hex: "#0d47a1", alpha: 1 } }, { index: 2, fill: null }] }],
+        states: { ...states, variants: states.variants.map((v, i) => ({ ...v, nodes: variantNodes([30, 30, 15][i]!, v.name), notes: Array.from({ length: 10 }, (_, k) => `Synthetic variant note ${k}: ${"x".repeat(150)}`) })) },
+      },
+    ],
+  } as HifiDoc;
+}
 
 const bundle = buildSync({ entryPoints: ["src/connector/entry.ts"], bundle: true, minify: true, platform: "neutral", format: "iife", globalName: "W2F", target: "es2020", charset: "ascii", legalComments: "none", write: false }).outputFiles[0]!.text;
 
@@ -212,8 +255,9 @@ describe("connector adapter: same renderer, planned $fig host (fake connector)",
   it("runs the bundled renderer with $fig only; never touches figma.create*", async () => {
     const doc = buildStatesFixture();
     const { env, plan, results } = await runAll(doc);
-    expect(plan.jobs.map((j) => j.kind)).toEqual(["root", "page", "edges"]);
-    expect(plan.jobs.every((j) => j.chars <= 50_000 && j.script.startsWith(bundle))).toBe(true);
+    expect(plan.jobs[0]!.kind).toBe("root");
+    expect(plan.jobs.at(-1)!.kind).toBe("edges");
+    expect(plan.jobs.every((j) => j.chars <= 40_000 && j.script.startsWith(bundle))).toBe(true);
     expect(results[0].rootId).toMatch(/:1$/);
     const root = env.page.children.find((n) => n.name === plan.rootName)!;
     expect(root.type).toBe("FRAME");
@@ -255,7 +299,7 @@ describe("connector adapter: same renderer, planned $fig host (fake connector)",
 
   it("batches large pages into phase-ordered jobs with identical results", async () => {
     const doc = buildHifiFixture();
-    const whole = await runAll(doc);
+    const whole = await runAll(doc, 400_000);
     const small = await runAll(doc, bundle.length + 7_000);
     expect(small.plan.jobs.length).toBeGreaterThan(whole.plan.jobs.length);
     expect(small.plan.jobs.some((j) => j.kind === "nodes")).toBe(true);
@@ -296,6 +340,43 @@ describe("connector adapter: same renderer, planned $fig host (fake connector)",
     await expect(env.run(`const c = $fig.component({ name: "A", width: 1, height: 1 }); $fig.variants([c], { name: "X" });`)).rejects.toThrow(/expected \(options, children\)/);
     await env.run(`const c = $fig.component({ name: "A", width: 1, height: 1 }); $fig.variants({ name: "X" }, [c]); await $fig.done();`);
     expect(env.log).toContain("variants:X:1");
+  });
+
+  it("a large synthetic document: every job fits 40000 (and 50000), structure equals native, variants and descriptions intact", async () => {
+    const doc = largeDoc();
+    expect(validateHifiDoc(doc).ok).toBe(true);
+    const native = await nativeRender(doc);
+    for (const max of [40_000, 50_000]) {
+      const { env, plan, results } = await runAll(doc, max);
+      expect(plan.jobs.every((j) => j.chars <= max)).toBe(true);
+      expect(plan.jobs.filter((j) => j.kind === "nodes").length).toBeGreaterThan(5);
+      expect(plan.jobs.some((j) => j.kind === "states")).toBe(true);
+      expect(results.every((r) => r.rootId === results[0].rootId)).toBe(true);
+      const croot = env.page.children.find((n) => n.name === plan.rootName)!;
+      const p0 = doc.pages[0]!;
+      // exact z-order and geometry inside the page frame
+      expect(signature(findName(croot, pageFrameName(p0)))).toEqual(signature(findName(native.root as any, pageFrameName(p0))));
+      // variants: same children subtrees, official signature, descriptions applied by batches
+      const cset = findName(croot, "States / /");
+      const nset = findName(native.root as any, "States / /");
+      expect(cset.children.map((c: any) => c.name)).toEqual(nset.children.map((c: any) => c.name));
+      for (const [i, v] of cset.children.entries()) {
+        expect(signature(v)).toEqual(signature(nset.children[i]));
+        expect(v.props.description).toBe(doc.pages[0]!.states!.variants[i]!.notes.join("\n"));
+      }
+      expect(env.log).toContain("variants:States / /:3");
+      // shared component nodes and instance overrides
+      const nav = findName(croot, "Shared / nav (big)");
+      expect(nav.children.length).toBe(60);
+      expect(env.log.filter((l) => l.startsWith("override:")).every((l) => l.endsWith(":hit"))).toBe(true);
+    }
+  });
+
+  it("refuses to plan when one node cannot fit; nothing is written", () => {
+    const doc = largeDoc({ hugeSvg: true });
+    expect(() => planConnectorJobs(doc, bundle, { maxJobChars: 40_000 })).toThrow(/alone needs \d+ chars, over --max-job-chars 40000/);
+    expect(() => planConnectorJobs(doc, bundle, { maxJobChars: bundle.length + 100 })).toThrow(/leaves no room/);
+    expect(planConnectorJobs(doc, bundle, { maxJobChars: 80_000 }).jobs.length).toBeGreaterThan(3);
   });
 
   it("refuses duplicate roots and reads before flush", async () => {

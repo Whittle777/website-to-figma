@@ -1,14 +1,15 @@
 // Offline connector job planner (CLI side; makes NO Figma calls). Turns a
 // validated schemaVersion 2 document into ordered, size-bounded connector
-// scripts that each embed the pinned renderer bundle verbatim plus one job
-// input. Image bytes are never embedded (the connector host cannot fill
-// images); asset metadata (size, sha256) is kept for placeholders.
+// scripts that each embed the pinned renderer bundle verbatim plus ONE small
+// job input. Every job is checked against the limit while planning; if any
+// job cannot fit, planning throws and nothing is written. Image bytes are
+// never embedded (asset metadata only; fills only via an origin hash map).
 import { createHash } from "node:crypto";
 import type { HifiDoc, HifiNode, HifiPage } from "../shared/hifiSchema";
-import { buttonLabelOf } from "../../plugin/src/render/renderer";
-import type { JobInput } from "./entry";
+import type { JobInput, NodesTarget } from "./entry";
+import { buttonLabelOf, componentChildNames, notesName, pageNotes, newStats } from "../../plugin/src/render/renderer";
 
-export const DEFAULT_MAX_JOB_CHARS = 50_000;
+export const DEFAULT_MAX_JOB_CHARS = 40_000;
 
 export interface PlannedJob {
   file: string;
@@ -20,46 +21,12 @@ export interface PlannedJob {
   note: string;
 }
 
-const sha = (s: string) => createHash("sha256").update(s).digest("hex");
+export class JobPlanError extends Error {}
 
-function prune(doc: HifiDoc, pages: HifiPage[], keepComponents: boolean): HifiDoc {
-  const used = new Set<string>();
-  const nodeAssets = (nodes: HifiNode[]) => {
-    for (const n of nodes) if (n.kind === "image" && n.assetId) used.add(n.assetId);
-  };
-  if (keepComponents) for (const c of doc.components ?? []) nodeAssets(c.nodes);
-  for (const p of pages) {
-    nodeAssets(p.nodes);
-    for (const v of p.states?.variants ?? []) nodeAssets(v.nodes);
-    for (const m of p.media ?? []) if (m.stillAssetId) used.add(m.stillAssetId);
-    if (p.referenceAssetId) used.add(p.referenceAssetId);
-    for (const t of p.referenceTiles?.tiles ?? []) used.add(t.assetId);
-    for (const v of p.states?.variants ?? []) if (v.referenceAssetId) used.add(v.referenceAssetId);
-  }
-  return {
-    ...doc,
-    assets: doc.assets.filter((a) => used.has(a.id)).map((a) => ({ ...a, dataBase64: "" })),
-    pages,
-    ...(keepComponents && doc.components ? { components: doc.components } : { components: undefined }),
-  };
-}
+const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 
 export function docKey(doc: HifiDoc): string {
   return sha(JSON.stringify({ ...doc, assets: doc.assets.map((a) => a.sha256) })).slice(0, 12);
-}
-
-// Phase order keeps the native z-order: unclipped non-text, clipped non-text, text.
-function phaseIndices(page: HifiPage): { phase: "unclipped" | "clipped" | "text"; indices: number[] }[] {
-  const clipOf = (n: HifiNode) => (n.clip !== undefined && n.clip >= 0 ? n.clip : -1);
-  const un: number[] = [];
-  const cl: number[] = [];
-  const tx: number[] = [];
-  page.nodes.forEach((n, i) => (n.kind === "text" ? tx : clipOf(n) >= 0 ? cl : un).push(i));
-  return [
-    { phase: "unclipped" as const, indices: un },
-    { phase: "clipped" as const, indices: cl },
-    { phase: "text" as const, indices: tx },
-  ];
 }
 
 // Origin-supplied mapping: asset sha256 -> EXISTING Figma image hash.
@@ -76,76 +43,181 @@ export function parseImageHashMap(json: unknown): Record<string, string> {
   return out;
 }
 
+const clipOf = (n: HifiNode) => (n.clip !== undefined && n.clip >= 0 ? n.clip : -1);
+
 export function planConnectorJobs(doc: HifiDoc, bundle: string, opts: { maxJobChars?: number; originX?: number; imageHashesBySha?: Record<string, string> } = {}): { jobs: PlannedJob[]; rootName: string; key: string } {
   const max = opts.maxJobChars ?? DEFAULT_MAX_JOB_CHARS;
+  if (bundle.length + 2_000 > max) throw new JobPlanError(`--max-job-chars ${max} leaves no room: the renderer bundle alone is ${bundle.length} chars`);
   const key = docKey(doc);
   const rootName = `website-to-figma · Hi-fi (measured) · ${doc.site.host} [w2f ${key}]`;
+  const bySha = opts.imageHashesBySha ?? {};
   const jobs: PlannedJob[] = [];
-  const mk = (input: JobInput, note: string): PlannedJob => {
-    const bySha = opts.imageHashesBySha ?? {};
+  const base = { schema: "website-to-figma/connector-job" as const, schemaVersion: 1 as const, rootName, originX: opts.originX ?? 0 };
+  // A minimal document: only what one job renders (no warnings, no image bytes).
+  const mini = (pages: HifiPage[], components: HifiDoc["components"], assetIds: Set<string>): HifiDoc => ({
+    ...doc,
+    warnings: [],
+    provenance: { ...doc.provenance, notes: [] },
+    assets: doc.assets.filter((a) => assetIds.has(a.id)).map((a) => ({ ...a, dataBase64: "" })),
+    pages,
+    components: components && components.length ? components : undefined,
+  });
+  const make = (input: JobInput, note: string): PlannedJob => {
     const mapped: Record<string, string> = {};
     for (const a of input.doc.assets) if (bySha[a.sha256]) mapped[a.id] = bySha[a.sha256]!;
-    if (Object.keys(mapped).length) input = { ...input, imageHashes: mapped };
-    const script = `${bundle}\nreturn await W2F.runJob(${JSON.stringify(input)}, $fig, figma);\n`;
-    const n = jobs.length + 1;
-    const file = `job-${String(n).padStart(3, "0")}-${input.kind}${input.pageId ? `-${input.pageId}` : ""}${input.batch ? `-${input.batch.phase}` : ""}.js`;
+    const full: JobInput = Object.keys(mapped).length ? { ...input, imageHashes: mapped } : input;
+    const script = `${bundle}\nreturn await W2F.runJob(${JSON.stringify(full)}, $fig, figma);\n`;
+    const file = `job-${String(jobs.length + 1).padStart(3, "0")}-${input.kind}${input.pageId ? `-${input.pageId}` : ""}.js`;
     return { file, kind: input.kind, pageId: input.pageId ?? null, chars: script.length, sha256: sha(script), script, note };
   };
-  const base = { schema: "website-to-figma/connector-job" as const, schemaVersion: 1 as const, rootName, originX: opts.originX ?? 0 };
   const push = (j: PlannedJob) => {
-    if (j.chars > max) throw new Error(`${j.file}: ${j.chars} chars exceeds --max-job-chars ${max} (the renderer bundle alone is ${bundle.length})`);
+    if (j.chars > max) throw new JobPlanError(`${j.file} (${j.note}) needs ${j.chars} chars, over --max-job-chars ${max} (renderer bundle ${bundle.length}); nothing was written`);
     jobs.push(j);
   };
-  push(mk({ ...base, kind: "root", doc: prune(doc, [], true) }, "root frame, intro, shared components"));
+  const shellPage = (p: HifiPage): HifiPage => ({ ...p, nodes: [], warnings: [], notes: [], states: undefined, branding: null });
+
+  // Text blocks: greedily packed lines, one label job per chunk.
+  const labels = (lines: string[], o: { size: number; bold: boolean; width?: number; name: string; gap: number }, note: string) => {
+    let chunk: string[] = [];
+    let part = 0;
+    const emit = () => {
+      if (!chunk.length) return;
+      push(make({ ...base, kind: "label", doc: mini([], undefined, new Set()), label: { ...o, text: chunk.join("\n"), name: part ? `${o.name} (cont. ${part})` : o.name, gap: part ? 4 : o.gap } }, `${note}${part ? ` (cont. ${part})` : ""}`));
+      part++;
+      chunk = [];
+    };
+    for (const line of lines) {
+      const probe = make({ ...base, kind: "label", doc: mini([], undefined, new Set()), label: { ...o, text: [...chunk, line].join("\n"), name: o.name, gap: o.gap } }, note);
+      if (probe.chars > max && chunk.length) emit();
+      chunk.push(line);
+    }
+    emit();
+  };
+
+  // Node batches for one target, phase-ordered to keep z-order; each batch
+  // halves until it fits. A single node that cannot fit is a clear error.
+  const nodeBatches = (all: HifiNode[], target: NodesTarget, page: HifiPage | null, componentsMeta: HifiDoc["components"], firstDescription: string | undefined, label: string) => {
+    let description = firstDescription;
+    const phases: { phase: "unclipped" | "clipped" | "text"; idx: number[] }[] = [
+      { phase: "unclipped", idx: [] },
+      { phase: "clipped", idx: [] },
+      { phase: "text", idx: [] },
+    ];
+    all.forEach((n, i) => phases[n.kind === "text" ? 2 : clipOf(n) >= 0 ? 1 : 0]!.idx.push(i));
+    const hasClips = (page?.clips?.length ?? 0) > 0 && target.type === "page";
+    let clipsCreated = false;
+    const build = (phase: "unclipped" | "clipped" | "text", orig: number[]) => {
+      const nodes = orig.map((i) => all[i]!);
+      const buttonLabels: Record<string, string | null> = {};
+      const buttonBoxes: Record<string, { x: number; y: number }> = {};
+      const assets = new Set<string>();
+      nodes.forEach((n, k) => {
+        if (n.kind === "box" && n.role === "button") buttonLabels[String(orig[k])] = buttonLabelOf(all, orig[k]!);
+        if (n.kind === "text" && n.button >= 0) {
+          buttonLabels[String(n.button)] = buttonLabelOf(all, n.button);
+          buttonBoxes[String(n.button)] = { x: all[n.button]!.x, y: all[n.button]!.y };
+        }
+        if (n.kind === "image" && n.assetId) assets.add(n.assetId);
+      });
+      const createClips = phase === "clipped" && hasClips && !clipsCreated;
+      return make(
+        { ...base, kind: "nodes", pageId: page?.id, target, doc: mini(page ? [shellPage(page)] : [], componentsMeta, assets), batch: { phase, orig, createClips, buttonLabels, buttonBoxes, nodes, ...(description !== undefined ? { description } : {}) } },
+        `${label} ${phase} nodes ${orig[0] ?? "-"}..${orig[orig.length - 1] ?? "-"}`,
+      );
+    };
+    for (const ph of phases) {
+      if (ph.phase === "clipped" && hasClips && ph.idx.length === 0) {
+        push(build("clipped", []));
+        clipsCreated = true;
+        continue;
+      }
+      let start = 0;
+      while (start < ph.idx.length) {
+        let end = Math.min(ph.idx.length, start + 200);
+        let job = build(ph.phase, ph.idx.slice(start, end));
+        while (job.chars > max && end - start > 1) {
+          end = start + Math.max(1, Math.floor((end - start) / 2));
+          job = build(ph.phase, ph.idx.slice(start, end));
+        }
+        if (job.chars > max) {
+          const n = all[ph.idx[start]!]!;
+          throw new JobPlanError(`${label}: node ${ph.idx[start]} (${n.kind} "${n.name}") alone needs ${job.chars} chars, over --max-job-chars ${max}; raise the limit (nothing was written)`);
+        }
+        push(job);
+        description = undefined;
+        if (ph.phase === "clipped") clipsCreated = true;
+        start = end;
+      }
+    }
+    if (description !== undefined) push(build("text", [])); // description only (no nodes)
+  };
+
+  // 1) root + intro
+  push(make({ ...base, kind: "root", doc: mini([], undefined, new Set()) }, "root frame and title"));
+  const intro = [
+    `Source: ${doc.source.label} (${doc.source.mode}). ${doc.provenance.notes.join(" ")}`,
+    ...(doc.fontMap?.length ? [`Operator font map: ${doc.fontMap.map((f) => `${f.match} -> ${f.use}`).join(", ")}`] : []),
+    ...doc.warnings.map((w) => `Warning: ${w}`),
+    "Not affiliated with Figma or the site owner. Not pixel-perfect.",
+  ];
+  labels(intro, { size: 14, bold: false, width: 1200, name: "Intro", gap: 8 }, "intro");
+
+  // 2) shared components: empty shells, then their nodes
+  const compMeta = (doc.components ?? []).map((c) => ({ ...c, nodes: [] as HifiNode[] }));
+  if (doc.components?.length) {
+    labels(["Shared components (identical structure on 2+ pages; per-page paint differences are instance overrides)"], { size: 14, bold: true, name: "Shared components", gap: 60 }, "components heading");
+    for (const cm of doc.components) {
+      push(make({ ...base, kind: "component", componentId: cm.id, doc: mini([], [{ ...cm, nodes: [] }], new Set()) }, `component ${cm.name}`));
+      nodeBatches(cm.nodes, { type: "component", componentId: cm.id }, null, [{ ...cm, nodes: [] }], undefined, `component ${cm.name}`);
+    }
+  }
+  const allChildNames = componentChildNames(doc);
+
+  // 3) pages: notes labels, shell, node batches, states, variant nodes
+  const notesCtx = { host: null as never, doc, fonts: new Map(), failedLoads: [], stats: newStats(doc) };
   for (const page of doc.pages) {
-    const d = prune(doc, [page], true);
-    const whole = mk({ ...base, kind: "page", pageId: page.id, withNodes: true, doc: d }, `page ${page.path}${page.segment ? ` part ${page.segment.index + 1}` : ""} (shell, nodes, states)`);
+    const tag = `page ${page.path}${page.segment ? ` part ${page.segment.index + 1}` : ""}`;
+    labels(pageNotes(notesCtx, page), { size: 14, bold: false, width: Math.max(600, page.width), name: notesName(page), gap: 120 }, `${tag} notes`);
+    const used = new Set<string>();
+    if (page.referenceAssetId) used.add(page.referenceAssetId);
+    for (const t of page.referenceTiles?.tiles ?? []) used.add(t.assetId);
+    for (const m of page.media ?? []) if (m.stillAssetId) used.add(m.stillAssetId);
+    const comps = (page.instances ?? []).map((i) => compMeta.find((c) => c.id === i.component)!).filter(Boolean);
+    const childNames: Record<string, Record<string, { name: string; type: string }>> = {};
+    for (const ins of page.instances ?? []) for (const o of ins.overrides) {
+      const n = allChildNames.get(ins.component)?.get(o.index);
+      if (n) (childNames[ins.component] ??= {})[String(o.index)] = n;
+    }
+    const shellIn = (withNodes: boolean, part?: "shell" | "finish"): JobInput => {
+      const p = withNodes ? { ...page, warnings: [], notes: [] } : part === "shell" ? { ...shellPage(page), instances: undefined, media: undefined } : shellPage(page);
+      const assets = new Set(used);
+      if (withNodes) {
+        for (const n of page.nodes) if (n.kind === "image" && n.assetId) assets.add(n.assetId);
+        for (const v of page.states?.variants ?? []) {
+          if (v.referenceAssetId) assets.add(v.referenceAssetId);
+          for (const n of v.nodes) if (n.kind === "image" && n.assetId) assets.add(n.assetId);
+        }
+      }
+      return { ...base, kind: "page", pageId: page.id, withNodes, ...(part ? { part } : {}), doc: mini([p], part === "shell" ? undefined : comps, assets), ...(part === "shell" ? {} : { childNames }) };
+    };
+    const whole = make(shellIn(true), `${tag} (frame, nodes, states)`);
     if (whole.chars <= max) {
       push(whole);
       continue;
     }
-    // Shell (notes, frame, instances, media, references, states) then node batches.
-    // the shell carries no nodes (font fallback lines for this page are then omitted from its notes)
-    const shellPage = { ...page, nodes: [] as HifiNode[] };
-    push(mk({ ...base, kind: "page", pageId: page.id, withNodes: false, doc: prune(doc, [shellPage], true) }, `page ${page.path} shell`));
-    let firstClipped = true;
-    for (const ph of phaseIndices(page)) {
-      // clip frames are created by the first clipped batch: emit one even when
-      // only text is clipped
-      if (ph.phase === "clipped" && ph.indices.length === 0 && (page.clips?.length ?? 0) > 0) {
-        push(mk({ ...base, kind: "nodes", pageId: page.id, doc: prune(doc, [{ ...page, nodes: [], states: undefined, instances: undefined, media: undefined }], false), batch: { phase: "clipped", orig: [], createClips: true, buttonLabels: {}, buttonBoxes: {} } }, `page ${page.path} clip frames`));
-        firstClipped = false;
-        continue;
-      }
-      let start = 0;
-      while (start < ph.indices.length) {
-        // grow the batch while it fits
-        let end = Math.min(ph.indices.length, start + 400);
-        let job: PlannedJob;
-        for (;;) {
-          const orig = ph.indices.slice(start, end);
-          const sub = orig.map((i) => page.nodes[i]!);
-          const buttonLabels: Record<string, string | null> = {};
-          const buttonBoxes: Record<string, { x: number; y: number }> = {};
-          for (const [k, n] of sub.entries()) {
-            if (n.kind === "box" && n.role === "button") buttonLabels[String(orig[k])] = buttonLabelOf(page.nodes, orig[k]!);
-            if (n.kind === "text" && n.button >= 0) {
-              const box = page.nodes[n.button]!;
-              buttonLabels[String(n.button)] = buttonLabelOf(page.nodes, n.button);
-              buttonBoxes[String(n.button)] = { x: box.x, y: box.y };
-            }
-          }
-          const batchPage = { ...page, nodes: sub, states: undefined, instances: undefined, media: undefined };
-          job = mk({ ...base, kind: "nodes", pageId: page.id, doc: prune(doc, [batchPage], false), batch: { phase: ph.phase, orig, createClips: ph.phase === "clipped" && firstClipped, buttonLabels, buttonBoxes } }, `page ${page.path} ${ph.phase} nodes ${start}-${end - 1}`);
-          if (job.chars <= max || end - start <= 1) break;
-          end = start + Math.max(1, Math.floor((end - start) / 2));
-        }
-        push(job);
-        if (ph.phase === "clipped") firstClipped = false;
-        start = end;
-      }
+    push(make(shellIn(false, "shell"), `${tag} shell (frame, references)`));
+    nodeBatches(page.nodes, { type: "page", pageId: page.id }, page, undefined, undefined, tag);
+    if (page.instances?.length || page.media?.length) push(make(shellIn(false, "finish"), `${tag} instances and media (above nodes)`));
+    if (page.states) {
+      const st = page.states;
+      const refs = new Set(st.variants.map((v) => v.referenceAssetId).filter((x): x is string => !!x));
+      const statesPage: HifiPage = { ...shellPage(page), states: { ...st, variants: st.variants.map((v) => ({ ...v, nodes: [], notes: [] })) } };
+      push(make({ ...base, kind: "states", pageId: page.id, doc: mini([statesPage], undefined, refs) }, `${tag} states (variants, grid, reactions)`));
+      for (const v of st.variants) nodeBatches(v.nodes, { type: "variant", pageId: page.id, variant: v.name }, page, undefined, v.notes.join("\n"), `${tag} State=${v.name}`);
     }
   }
-  push(mk({ ...base, kind: "edges", doc: prune(doc, doc.pages.map((p) => ({ ...p, nodes: [], states: undefined })), false) }, "sitemap edges and final root size"));
+
+  // 4) edges + final size
+  push(make({ ...base, kind: "edges", doc: mini(doc.pages.map((p) => ({ ...shellPage(p), instances: undefined, media: undefined, clips: undefined, referenceTiles: undefined, referenceAssetId: null })), undefined, new Set()) }, "sitemap edges and final root size"));
   return { jobs, rootName, key };
 }
