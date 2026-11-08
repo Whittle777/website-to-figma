@@ -144,6 +144,17 @@ export interface ConvertInput {
   // Explicit operator opt-in to INFERRED geometry normalization against the
   // reference screenshot size. Default (undefined): measured geometry kept.
   normalizeReference?: "centered-dpr1";
+  // Tall reference PNGs tiled offline (see tileReference.ts).
+  referenceTiles?: TiledReference[];
+}
+
+export interface TiledReference {
+  operatorId: string;
+  pageUrl: string | null;
+  sourceSha256: string;
+  width: number;
+  height: number;
+  tiles: { asset: LoadedAsset; y: number; h: number }[];
 }
 
 export function convertCapture(input: ConvertInput): HifiDoc {
@@ -212,8 +223,9 @@ export function convertCapture(input: ConvertInput): HifiDoc {
     const refId = str(rp.referenceAssetId, 64);
     const refAsset = refId ? byOperatorId.get(refId) : input.assets.find((a) => a.kind === "reference" && a.pageUrl && canonicalizeUrl(a.pageUrl) === canonical);
     const refRejected = (input.rejectedReferences ?? []).find((r) => (refId ? r.operatorId === refId : !!r.pageUrl && canonicalizeUrl(r.pageUrl) === canonical));
-    const refDims = refAsset && refAsset.kind === "reference" ? { w: refAsset.width, h: refAsset.height } : refRejected ? { w: refRejected.width, h: refRejected.height } : null;
-    if (refRejected && !(refAsset && refAsset.kind === "reference")) {
+    const refTiled = (input.referenceTiles ?? []).find((r) => (refId ? r.operatorId === refId : !!r.pageUrl && canonicalizeUrl(r.pageUrl) === canonical));
+    const refDims = refTiled ? { w: refTiled.width, h: refTiled.height } : refAsset && refAsset.kind === "reference" ? { w: refAsset.width, h: refAsset.height } : refRejected ? { w: refRejected.width, h: refRejected.height } : null;
+    if (refRejected && !refTiled && !(refAsset && refAsset.kind === "reference")) {
       warn(warnings, `Reference screenshot (${refRejected.width}x${refRejected.height}px) not imported: ${refRejected.reason}; its size is still used as evidence`);
     }
 
@@ -550,7 +562,11 @@ export function convertCapture(input: ConvertInput): HifiDoc {
     totalNodes += nodes.length;
 
     let referenceAssetId: string | null = null;
-    if (refAsset && refAsset.kind === "reference") referenceAssetId = assetIdFor(refAsset);
+    let referenceTiles: HifiPage["referenceTiles"];
+    if (refTiled) {
+      referenceTiles = { sourceSha256: refTiled.sourceSha256, sourceWidth: refTiled.width, sourceHeight: refTiled.height, tiles: refTiled.tiles.map((t) => ({ assetId: assetIdFor(t.asset), y: t.y, h: t.h })) };
+      notes.push(`Reference ${refTiled.width}x${refTiled.height}px tiled offline into ${refTiled.tiles.length} PNG tile(s) of <=${LIMITS.refTileHeight}px (source sha256 ${refTiled.sourceSha256.slice(0, 16)}...)`);
+    } else if (refAsset && refAsset.kind === "reference") referenceAssetId = assetIdFor(refAsset);
     else if (refId && !refRejected) warn(warnings, `Reference screenshot "${refId}" not available (missing or rejected asset; see document warnings)`);
     else if (!refId && !refRejected) warn(warnings, "No reference screenshot supplied for this page");
 
@@ -572,6 +588,7 @@ export function convertCapture(input: ConvertInput): HifiDoc {
       warnings,
       notes: notes.slice(0, LIMITS.hifiMaxWarnings).map((n) => cleanText(n, LIMITS.maxNoteChars)),
       ...(clips.length ? { clips } : {}),
+      ...(referenceTiles ? { referenceTiles } : {}),
       ...(wm || gf.fix
         ? { normalization: { mode: "centered-dpr1" as const, measuredWidth, measuredHeight, offsetX: wm ? round(-wm.offset) : 0, gutterPx: gf.fix ? gf.fix.k : 0, gutters: gf.fix ? containers.length : 0 } }
         : {}),

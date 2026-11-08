@@ -13,7 +13,7 @@ function escapeControls(file) {
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
 await build({
-  entryPoints: ["src/cli.ts", "src/normalize/buildWorker.ts"],
+  entryPoints: ["src/cli.ts", "src/normalize/buildWorker.ts", "src/hifi/tileWorker.ts"],
   outdir: "dist",
   entryNames: "[name]",
   bundle: true,

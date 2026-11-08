@@ -15,7 +15,16 @@ import { readBoundedFile, readBoundedJson } from "./files";
 
 const MAX_MANIFEST_BYTES = 1_000_000;
 
-export function loadAssetManifest(manifestPath: string): { assets: LoadedAsset[]; warnings: string[]; rejectedReferences: RejectedReference[] } {
+export interface TallReference {
+  operatorId: string;
+  pageUrl: string | null;
+  width: number;
+  height: number;
+  sha256: string;
+  bytes: Uint8Array;
+}
+
+export function loadAssetManifest(manifestPath: string): { assets: LoadedAsset[]; warnings: string[]; rejectedReferences: RejectedReference[]; tallReferences: TallReference[] } {
   const m = readBoundedJson(manifestPath, MAX_MANIFEST_BYTES, "asset manifest");
   const o = m as { schema?: unknown; schemaVersion?: unknown; assets?: unknown };
   if (o?.schema !== "website-to-figma/asset-manifest" || o.schemaVersion !== 1 || !Array.isArray(o.assets)) {
@@ -26,6 +35,7 @@ export function loadAssetManifest(manifestPath: string): { assets: LoadedAsset[]
   const assets: LoadedAsset[] = [];
   const warnings: string[] = [];
   const rejectedReferences: RejectedReference[] = [];
+  const tallReferences: TallReference[] = [];
   let total = 0;
   let pixels = 0;
   const ids = new Set<string>();
@@ -90,8 +100,13 @@ export function loadAssetManifest(manifestPath: string): { assets: LoadedAsset[]
       reject("not a PNG, JPEG or GIF");
       continue;
     }
+    // Tall REFERENCE PNGs (not body images) are tiled offline by the caller.
+    if (a.kind === "reference" && info.mime === "image/png" && info.width >= 1 && info.width <= LIMITS.hifiMaxImageDim && info.height > LIMITS.hifiMaxImageDim && info.height <= LIMITS.refTileMaxSourceHeight) {
+      tallReferences.push({ operatorId: id, pageUrl, width: info.width, height: info.height, sha256: actual, bytes });
+      continue;
+    }
     if (info.width < 1 || info.height < 1 || info.width > LIMITS.hifiMaxImageDim || info.height > LIMITS.hifiMaxImageDim) {
-      const why = `${info.width}x${info.height}px exceeds Figma's ${LIMITS.hifiMaxImageDim}px image limit (tiling would need an approved PNG codec dependency)`;
+      const why = `${info.width}x${info.height}px exceeds Figma's ${LIMITS.hifiMaxImageDim}px image limit${a.kind === "reference" ? " (only PNG references up to " + LIMITS.hifiMaxImageDim + "px wide and " + LIMITS.refTileMaxSourceHeight + "px tall can be tiled)" : ""}`;
       reject(why);
       // Hash-verified header size is still evidence for width/height reconciliation.
       if (a.kind === "reference" && info.width >= 1 && info.height >= 1 && info.width <= 100_000 && info.height <= 1_000_000) {
@@ -107,5 +122,5 @@ export function loadAssetManifest(manifestPath: string): { assets: LoadedAsset[]
     pixels += info.width * info.height;
     assets.push({ operatorId: id, kind: a.kind, mime: info.mime, width: info.width, height: info.height, sha256: actual, sourceUrl, pageUrl, bytes });
   }
-  return { assets, warnings, rejectedReferences };
+  return { assets, warnings, rejectedReferences, tallReferences };
 }

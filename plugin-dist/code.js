@@ -48,6 +48,16 @@
     hifiMaxImageDim: 4096,
     // Aggregate decoded-pixel budget across all assets (Figma decodes them).
     hifiMaxTotalPixels: 1e8,
+    // Tall REFERENCE PNGs only (body images keep the 4096px rule): decoded in a
+    // bounded worker and re-encoded as <=4096px tiles.
+    refTileHeight: 4096,
+    refTileMaxSourceHeight: 65536,
+    refTileMaxSourcePixels: 4e7,
+    // <= 160 MB RGBA after decode
+    refTileMaxTiles: 16,
+    refTileMaxChunks: 1e4,
+    refTileTimeoutMs: 6e4,
+    refTileWorkerHeapMb: 512,
     hifiMaxPageWidth: 4096,
     hifiMaxPageHeight: 3e4,
     hifiMaxTextChars: 2e3,
@@ -611,6 +621,7 @@
     }
     c.labels(d.warnings, "$.warnings", LIMITS.hifiMaxWarnings);
     const assetIds = /* @__PURE__ */ new Set();
+    const assetsById = /* @__PURE__ */ new Map();
     let assetBytes = 0;
     let assetPixels = 0;
     if (c.arr(d.assets, "$.assets", LIMITS.hifiMaxAssets)) {
@@ -619,7 +630,10 @@
         if (!c.obj(a, p, ["id", "kind", "mime", "width", "height", "bytes", "sha256", "sourceUrl", "dataBase64"])) return;
         if (typeof a.id !== "string" || !/^a[0-9]{1,3}$/.test(a.id)) c.fail(`${p}.id`, 'expected "a<index>"');
         else if (assetIds.has(a.id)) c.fail(`${p}.id`, "duplicate id");
-        else assetIds.add(a.id);
+        else {
+          assetIds.add(a.id);
+          assetsById.set(a.id, { kind: a.kind, width: a.width, height: a.height });
+        }
         c.oneOf(a.kind, `${p}.kind`, ["image", "reference"]);
         c.oneOf(a.mime, `${p}.mime`, ["image/png", "image/jpeg", "image/gif"]);
         if (c.int(a.width, `${p}.width`, 1, LIMITS.hifiMaxImageDim) && c.int(a.height, `${p}.height`, 1, LIMITS.hifiMaxImageDim)) {
@@ -661,7 +675,30 @@
       const ids = /* @__PURE__ */ new Set();
       d.pages.forEach((pg, i) => {
         const p = `$.pages[${i}]`;
-        if (!c.obj(pg, p, ["id", "url", "path", "title", "width", "height", "truncated", "referenceAssetId", "branding", "nodes", "warnings"], ["notes", "parentId", "clips", "instances", "normalization"])) return;
+        if (!c.obj(pg, p, ["id", "url", "path", "title", "width", "height", "truncated", "referenceAssetId", "branding", "nodes", "warnings"], ["notes", "parentId", "clips", "instances", "normalization", "referenceTiles"])) return;
+        if (pg.referenceTiles !== void 0 && c.obj(pg.referenceTiles, `${p}.referenceTiles`, ["sourceSha256", "sourceWidth", "sourceHeight", "tiles"])) {
+          const rt = pg.referenceTiles;
+          const q = `${p}.referenceTiles`;
+          if (pg.referenceAssetId !== null) c.fail(q, "referenceAssetId must be null when tiles are used");
+          if (typeof rt.sourceSha256 !== "string" || !SHA.test(rt.sourceSha256)) c.fail(`${q}.sourceSha256`, "expected lowercase hex sha256");
+          const okW = c.int(rt.sourceWidth, `${q}.sourceWidth`, 1, LIMITS.hifiMaxImageDim);
+          const okH = c.int(rt.sourceHeight, `${q}.sourceHeight`, 1, LIMITS.refTileMaxSourceHeight);
+          if (c.arr(rt.tiles, `${q}.tiles`, LIMITS.refTileMaxTiles)) {
+            if (rt.tiles.length < 2) c.fail(`${q}.tiles`, "expected at least 2 tiles");
+            let next = 0;
+            rt.tiles.forEach((t, j) => {
+              const r = `${q}.tiles[${j}]`;
+              if (!c.obj(t, r, ["assetId", "y", "h"])) return;
+              if (!c.int(t.y, `${r}.y`, 0, LIMITS.refTileMaxSourceHeight) || !c.int(t.h, `${r}.h`, 1, LIMITS.refTileHeight)) return;
+              if (t.y !== next) c.fail(`${r}.y`, "tiles must be contiguous from 0");
+              next = t.y + t.h;
+              const a = typeof t.assetId === "string" ? assetsById.get(t.assetId) : void 0;
+              if (!a || a.kind !== "reference") c.fail(`${r}.assetId`, "unknown reference asset");
+              else if (okW && (a.width !== rt.sourceWidth || a.height !== t.h)) c.fail(`${r}.assetId`, "tile asset size does not match its rect");
+            });
+            if (okH && next !== rt.sourceHeight) c.fail(`${q}.tiles`, "tile heights must sum to sourceHeight");
+          }
+        }
         if (pg.normalization !== void 0 && c.obj(pg.normalization, `${p}.normalization`, ["mode", "measuredWidth", "measuredHeight", "offsetX", "gutterPx", "gutters"])) {
           const nz = pg.normalization;
           c.oneOf(nz.mode, `${p}.normalization.mode`, ["centered-dpr1"]);
@@ -1281,6 +1318,31 @@ Width fit skipped for ${unfitted} measured text run(s) (difference too large); n
       r.fills = [{ type: "IMAGE", imageHash: hashes.get(ref.id), scaleMode: "FILL" }];
       r.setPluginData("w2f", JSON.stringify({ reference: true, sha256: ref.sha256 }));
       bottom = Math.max(bottom, top + ref.height);
+    } else if (page.referenceTiles) {
+      const rt = page.referenceTiles;
+      const rx = x0 + page.width + 80;
+      label(track2, section, `Reference screenshot (image, not editable; ${rt.sourceWidth}\xD7${rt.sourceHeight}px at 1:1, ${rt.tiles.length} tiles)`, 14, true, rx, top - 24);
+      const holder = track2(figma.createFrame());
+      section.appendChild(holder);
+      holder.name = `Reference / ${page.path} (${rt.tiles.length} tiles)`;
+      holder.x = rx;
+      holder.y = top;
+      holder.resize(rt.sourceWidth, rt.sourceHeight);
+      holder.fills = [];
+      holder.clipsContent = true;
+      holder.setPluginData("w2f", JSON.stringify({ reference: true, tiled: true, sourceSha256: rt.sourceSha256 }));
+      for (const [i, t] of rt.tiles.entries()) {
+        const asset = doc.assets.find((a) => a.id === t.assetId);
+        const r = track2(figma.createRectangle());
+        holder.appendChild(r);
+        r.name = `Reference tile ${i + 1}/${rt.tiles.length} (y ${t.y})`;
+        r.x = 0;
+        r.y = t.y;
+        r.resize(rt.sourceWidth, t.h);
+        r.fills = [{ type: "IMAGE", imageHash: hashes.get(asset.id), scaleMode: "FILL" }];
+        r.setPluginData("w2f", JSON.stringify({ referenceTile: i, y: t.y, h: t.h, tileSha256: asset.sha256, sourceSha256: rt.sourceSha256 }));
+      }
+      bottom = Math.max(bottom, top + rt.sourceHeight);
     }
     return { bottom, frame };
   }
@@ -1357,7 +1419,7 @@ Width fit skipped for ${unfitted} measured text run(s) (difference too large); n
       frames.set(page.id, r.frame);
       y = r.bottom + 120;
       const ref = page.referenceAssetId ? doc.assets.find((a) => a.id === page.referenceAssetId) : void 0;
-      maxRight = Math.max(maxRight, 80 + page.width + 80 + (ref ? ref.width : 0) + 80);
+      maxRight = Math.max(maxRight, 80 + page.width + 80 + (ref ? ref.width : page.referenceTiles ? page.referenceTiles.sourceWidth : 0) + 80);
       stats.pages++;
     }
     const edges = [];

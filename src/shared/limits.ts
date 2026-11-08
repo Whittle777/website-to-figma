@@ -43,6 +43,15 @@ export const LIMITS = {
   hifiMaxImageDim: 4096,
   // Aggregate decoded-pixel budget across all assets (Figma decodes them).
   hifiMaxTotalPixels: 100_000_000,
+  // Tall REFERENCE PNGs only (body images keep the 4096px rule): decoded in a
+  // bounded worker and re-encoded as <=4096px tiles.
+  refTileHeight: 4096,
+  refTileMaxSourceHeight: 65_536,
+  refTileMaxSourcePixels: 40_000_000, // <= 160 MB RGBA after decode
+  refTileMaxTiles: 16,
+  refTileMaxChunks: 10_000,
+  refTileTimeoutMs: 60_000,
+  refTileWorkerHeapMb: 512,
   hifiMaxPageWidth: 4096,
   hifiMaxPageHeight: 30_000,
   hifiMaxTextChars: 2_000,

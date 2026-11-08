@@ -10,7 +10,8 @@ import { LIMITS } from "./shared/limits";
 import { utf8Length, type SiteMapDoc } from "./shared/schema";
 import { parseImportJson, type HifiDoc } from "./shared/hifiSchema";
 import { buildHifiFixture } from "./fixtures/hifiSynthetic";
-import { CaptureError, convertCapture } from "./hifi/convert";
+import { CaptureError, convertCapture, type TiledReference } from "./hifi/convert";
+import { tileReference } from "./hifi/tileReference";
 import { loadAssetManifest } from "./hifi/assets";
 import { readBoundedFile, readBoundedJson } from "./hifi/files";
 import { captureFromScrapeResponses } from "./hifi/adapter";
@@ -153,7 +154,26 @@ async function main(argv: string[]): Promise<number> {
     const out = flags.get("out");
     if (typeof capturePath !== "string" || typeof out !== "string") throw new UsageError("hifi needs --capture FILE and --out FILE");
     const capture = readBoundedJson(capturePath, LIMITS.hifiMaxJsonBytes, "capture");
-    const loaded = typeof manifestPath === "string" ? loadAssetManifest(manifestPath) : { assets: [], warnings: [], rejectedReferences: [] };
+    const loaded = typeof manifestPath === "string" ? loadAssetManifest(manifestPath) : { assets: [], warnings: [], rejectedReferences: [], tallReferences: [] };
+    // Tall reference PNGs: bounded offline tiling (worker); failures keep size evidence only.
+    const referenceTiles: TiledReference[] = [];
+    for (const t of loaded.tallReferences) {
+      try {
+        const r = await tileReference(t.bytes);
+        referenceTiles.push({
+          operatorId: t.operatorId,
+          pageUrl: t.pageUrl,
+          sourceSha256: r.sourceSha256,
+          width: r.width,
+          height: r.height,
+          tiles: r.tiles.map((tile, i) => ({ y: tile.y, h: tile.h, asset: { operatorId: `${t.operatorId}#tile${i}`, kind: "reference", mime: "image/png", width: r.width, height: tile.h, sha256: tile.sha256, sourceUrl: null, pageUrl: null, bytes: tile.bytes } })),
+        });
+      } catch (err) {
+        const reason = `tiling failed: ${err instanceof Error ? err.message : String(err)}`;
+        loaded.warnings.push(`Asset ${t.operatorId} omitted: ${reason}`);
+        loaded.rejectedReferences.push({ operatorId: t.operatorId, pageUrl: t.pageUrl, width: t.width, height: t.height, reason });
+      }
+    }
     const fontMap = fontMaps.map((f) => {
       const m = /^([^=]{1,100})=([^=]{1,100})$/.exec(f);
       if (!m) throw new UsageError(`--font-map must be MATCH=Figma Family (got ${JSON.stringify(f)})`);
@@ -162,7 +182,7 @@ async function main(argv: string[]): Promise<number> {
     if (fontMap.length > 16) throw new UsageError("at most 16 --font-map entries");
     const norm = flags.get("normalize-reference");
     if (norm !== undefined && norm !== "centered-dpr1") throw new UsageError('--normalize-reference accepts only "centered-dpr1"');
-    const doc = convertCapture({ capture, assets: loaded.assets, assetWarnings: loaded.warnings, rejectedReferences: loaded.rejectedReferences, fontMap, normalizeReference: norm === "centered-dpr1" ? "centered-dpr1" : undefined });
+    const doc = convertCapture({ capture, assets: loaded.assets, assetWarnings: loaded.warnings, rejectedReferences: loaded.rejectedReferences, referenceTiles, fontMap, normalizeReference: norm === "centered-dpr1" ? "centered-dpr1" : undefined });
     console.log(hifiSummary(doc, writeHifi(doc, out)));
     return 0;
   }

@@ -384,6 +384,32 @@ async function buildPage(track: Track, section: SectionNode, page: HifiPage, y: 
     r.fills = [{ type: "IMAGE", imageHash: hashes.get(ref.id)!, scaleMode: "FILL" }];
     r.setPluginData("w2f", JSON.stringify({ reference: true, sha256: ref.sha256 }));
     bottom = Math.max(bottom, top + ref.height);
+  } else if (page.referenceTiles) {
+    // Tall reference reassembled from verified <=4096px tiles at original offsets.
+    const rt = page.referenceTiles;
+    const rx = x0 + page.width + 80;
+    label(track, section, `Reference screenshot (image, not editable; ${rt.sourceWidth}×${rt.sourceHeight}px at 1:1, ${rt.tiles.length} tiles)`, 14, true, rx, top - 24);
+    const holder = track(figma.createFrame());
+    section.appendChild(holder);
+    holder.name = `Reference / ${page.path} (${rt.tiles.length} tiles)`;
+    holder.x = rx;
+    holder.y = top;
+    holder.resize(rt.sourceWidth, rt.sourceHeight);
+    holder.fills = [];
+    holder.clipsContent = true;
+    holder.setPluginData("w2f", JSON.stringify({ reference: true, tiled: true, sourceSha256: rt.sourceSha256 }));
+    for (const [i, t] of rt.tiles.entries()) {
+      const asset = doc.assets.find((a) => a.id === t.assetId)!;
+      const r = track(figma.createRectangle());
+      holder.appendChild(r);
+      r.name = `Reference tile ${i + 1}/${rt.tiles.length} (y ${t.y})`;
+      r.x = 0;
+      r.y = t.y;
+      r.resize(rt.sourceWidth, t.h);
+      r.fills = [{ type: "IMAGE", imageHash: hashes.get(asset.id)!, scaleMode: "FILL" }];
+      r.setPluginData("w2f", JSON.stringify({ referenceTile: i, y: t.y, h: t.h, tileSha256: asset.sha256, sourceSha256: rt.sourceSha256 }));
+    }
+    bottom = Math.max(bottom, top + rt.sourceHeight);
   }
   return { bottom, frame };
 }
@@ -468,7 +494,7 @@ export async function buildHifiDoc(doc: HifiDoc, track: Track, created: SceneNod
     frames.set(page.id, r.frame);
     y = r.bottom + 120;
     const ref = page.referenceAssetId ? doc.assets.find((a) => a.id === page.referenceAssetId) : undefined;
-    maxRight = Math.max(maxRight, 80 + page.width + 80 + (ref ? ref.width : 0) + 80);
+    maxRight = Math.max(maxRight, 80 + page.width + 80 + (ref ? ref.width : page.referenceTiles ? page.referenceTiles.sourceWidth : 0) + 80);
     stats.pages++;
   }
   const edges: VectorNode[] = [];

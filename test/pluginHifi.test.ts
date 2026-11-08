@@ -239,6 +239,31 @@ describe("native hi-fi renderer (fake figma)", () => {
     expect(notes.characters).toMatch(/Warning: No reference screenshot supplied for this page/);
   });
 
+  it("reassembles a tiled tall reference at its original offsets with tile provenance", { timeout: 60_000 }, async () => {
+    const { tileReference } = await import("../src/hifi/tileReference");
+    const { convertCapture } = await import("../src/hifi/convert");
+    const { loadedFromBytes, syntheticPng } = await import("../src/fixtures/hifiSynthetic");
+    const r = await tileReference(syntheticPng(200, 5000, [1, 1, 1], [9, 9, 9]));
+    const doc = convertCapture({
+      capture: { schema: "website-to-figma/capture", schemaVersion: 1, label: "SYNTHETIC", pages: [{ url: "https://example.com/", measured: { viewport: { width: 200 }, elements: [{ tag: "body", x: 0, y: 0, w: 200, h: 5000, style: {} }], texts: [], images: [] } }] },
+      assets: [],
+      assetWarnings: [],
+      referenceTiles: [{ operatorId: "ref", pageUrl: "https://example.com/", sourceSha256: r.sourceSha256, width: r.width, height: r.height, tiles: r.tiles.map((t, i) => ({ y: t.y, h: t.h, asset: loadedFromBytes(`ref#tile${i}`, "reference", t.bytes, null) })) }],
+    });
+    tracked.length = 0;
+    const sections: FakeNode[] = [];
+    await buildHifiDoc(doc, track as never, sections as never, 0);
+    const holder = sections[0]!.children.find((c) => c.name === "Reference / / (2 tiles)")!;
+    expect(holder).toMatchObject({ type: "FRAME", width: 200, height: 5000, clipsContent: true });
+    expect(holder.children.map((c) => [c.y, c.height, (c.fills as { imageHash: string }[])[0]!.imageHash])).toEqual([
+      [0, 4096, expect.stringMatching(/^img-/)],
+      [4096, 904, expect.stringMatching(/^img-/)],
+    ]);
+    expect(holder.children.map((c) => JSON.parse(c.data.w2f!).tileSha256)).toEqual(r.tiles.map((t) => t.sha256));
+    expect(JSON.parse(holder.data.w2f!)).toMatchObject({ tiled: true, sourceSha256: r.sourceSha256 });
+    expect(created.filter((n) => !tracked.includes(n))).toEqual([]);
+  });
+
   it("tracks every node created before a mid-build failure, so the caller can roll back", async () => {
     tracked.length = 0;
     failOnText = 6;

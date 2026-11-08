@@ -229,6 +229,26 @@ translated or guessed.
     browser's resolved OS font is never claimed. `--font-map monospace="Roboto Mono"`
     (repeatable, `MATCH=Family`) is an explicit operator choice and is reported as
     "operator font map" on the canvas.
+- **Tall reference tiling (offline, `pngjs` 7.0.0, MIT):** applies only to REFERENCE PNGs up to
+  4096 px wide and 65,536 px tall. Body images keep the 4096 px rule. The steps:
+  1. **Preflight, before any decoder allocation:**
+     - PNG signature, and a 13-byte IHDR first
+     - valid bit depth and colour type, and no interlacing (interlaced data is inflated without an
+       output bound by `pngjs`)
+     - chunk lengths are checked against the file size, at most 10,000 chunks, IDAT present, IEND
+       present
+     - at most 40M source pixels, and the file size bound
+  2. **Worker:** decoding runs in a worker with a 60 s deadline and heap caps. The IDAT stream is
+     first inflated with `maxOutputLength` equal to the exact expected raw size, which stops
+     decompression bombs and short data before `pngjs` decodes, with CRC checking on.
+  3. **Tiles:** the image is sliced into tiles of at most 4096 px (at most 16), each re-encoded as
+     PNG. Each tile is verified for offset, size, PNG header and SHA-256, then embedded like any
+     other asset.
+  4. **Record:** the page records `referenceTiles { sourceSha256, sourceWidth, sourceHeight,
+     tiles[{ assetId, y, h }] }`. The validator requires contiguous tiles that sum to the source
+     height, with tile assets matching their rects.
+  5. **Reassembly:** the plugin places the tiles at their original offsets inside one reference
+     frame, at native 1:1 size.
 - **Reporting:** each page's notes on the canvas list:
   - font substitutions (measured stack → actual Figma font) and font-load failures
   - missing images (dashed `MISSING IMAGE` placeholders)
@@ -242,9 +262,9 @@ translated or guessed.
   - This is an **absolute desktop snapshot**, not responsive auto-layout, and not pixel-perfect.
   - Browser fonts and emoji artwork differ.
   - Static controls aren't interactive.
-  - Reference screenshots taller than 4096 px are rejected with a warning. Their hash-verified
-    size is still used as evidence. Tiling them would need a PNG codec dependency that isn't
-    approved.
+  - Tall reference screenshots are tiled offline (see "Tall reference tiling"). JPEG references,
+    references wider than 4096 px, and any body image over 4096 px are still rejected with a
+    warning. A rejected reference's hash-verified size is still used as evidence.
   - Importing into real Figma has **not** been verified from this repo. The renderer is tested
     against a fake `figma` object only.
 

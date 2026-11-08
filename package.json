@@ -10,11 +10,13 @@
   "dependencies": {
     "@mendable/firecrawl-js": "^4.52.0",
     "ipaddr.js": "^2.5.0",
-    "node-html-parser": "^9.0.7"
+    "node-html-parser": "^9.0.7",
+    "pngjs": "^7.0.0"
   },
   "devDependencies": {
     "@figma/plugin-typings": "^1.142.0",
     "@types/node": "^26.6.6",
+    "@types/pngjs": "^6.0.5",
     "esbuild": "^0.28.2",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",

@@ -67,16 +67,18 @@ describe("G1: measured 1920px viewport vs 1280px reference", () => {
     expect(d.pages[0]!.width).toBe(1920);
     expect(d.pages[0]!.notes!.join("\n")).toMatch(/No reference screenshot size available; measured width 1920px kept/);
   });
-  it("loader reports a too-tall reference's size for evidence (bounded, hash-verified)", () => {
+  it("loader routes a tall PNG reference to offline tiling; tall body images stay rejected", () => {
     const dir = mkdtempSync(join(tmpdir(), "w2f-tall-"));
     try {
       const png = syntheticPng(100, 4097, [0, 0, 0], [1, 1, 1]);
+      const h = createHash("sha256").update(png).digest("hex");
       writeFileSync(join(dir, "tall.png"), png);
-      writeFileSync(join(dir, "m.json"), JSON.stringify({ schema: "website-to-figma/asset-manifest", schemaVersion: 1, assets: [{ id: "tall", kind: "reference", file: "tall.png", sha256: createHash("sha256").update(png).digest("hex"), pageUrl: "https://example.com/" }] }));
+      writeFileSync(join(dir, "m.json"), JSON.stringify({ schema: "website-to-figma/asset-manifest", schemaVersion: 1, assets: [{ id: "tall", kind: "reference", file: "tall.png", sha256: h, pageUrl: "https://example.com/" }, { id: "body", kind: "image", file: "tall.png", sha256: h, sourceUrl: "https://example.com/t.png" }] }));
       const r = loadAssetManifest(join(dir, "m.json"));
       expect(r.assets).toEqual([]);
-      expect(r.rejectedReferences).toEqual([expect.objectContaining({ operatorId: "tall", width: 100, height: 4097, pageUrl: "https://example.com/" })]);
-      expect(r.warnings.join("\n")).toMatch(/tiling would need an approved PNG codec dependency/);
+      expect(r.tallReferences).toEqual([expect.objectContaining({ operatorId: "tall", width: 100, height: 4097, pageUrl: "https://example.com/", sha256: h })]);
+      expect(r.warnings.join("\n")).toMatch(/body omitted: 100x4097px exceeds Figma's 4096px image limit/);
+      expect(r.rejectedReferences).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

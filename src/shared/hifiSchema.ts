@@ -152,6 +152,8 @@ export interface HifiPage {
   // INFERRED normalization applied on operator opt-in; node geometry on this
   // page = measured geometry transformed by this record.
   normalization?: { mode: "centered-dpr1"; measuredWidth: number; measuredHeight: number; offsetX: number; gutterPx: number; gutters: number };
+  // tall reference screenshot reassembled from <=4096px tiles at their offsets
+  referenceTiles?: { sourceSha256: string; sourceWidth: number; sourceHeight: number; tiles: { assetId: string; y: number; h: number }[] };
 }
 
 export interface HifiDoc {
@@ -355,6 +357,7 @@ export function validateHifiDoc(input: unknown): { ok: true; doc: HifiDoc } | { 
   c.labels(d.warnings, "$.warnings", LIMITS.hifiMaxWarnings);
 
   const assetIds = new Set<string>();
+  const assetsById = new Map<string, { kind: unknown; width: unknown; height: unknown }>();
   let assetBytes = 0;
   let assetPixels = 0;
   if (c.arr(d.assets, "$.assets", LIMITS.hifiMaxAssets)) {
@@ -363,7 +366,10 @@ export function validateHifiDoc(input: unknown): { ok: true; doc: HifiDoc } | { 
       if (!c.obj(a, p, ["id", "kind", "mime", "width", "height", "bytes", "sha256", "sourceUrl", "dataBase64"])) return;
       if (typeof a.id !== "string" || !/^a[0-9]{1,3}$/.test(a.id)) c.fail(`${p}.id`, 'expected "a<index>"');
       else if (assetIds.has(a.id)) c.fail(`${p}.id`, "duplicate id");
-      else assetIds.add(a.id);
+      else {
+        assetIds.add(a.id);
+        assetsById.set(a.id, { kind: a.kind, width: a.width, height: a.height });
+      }
       c.oneOf(a.kind, `${p}.kind`, ["image", "reference"]);
       c.oneOf(a.mime, `${p}.mime`, ["image/png", "image/jpeg", "image/gif"]);
       if (c.int(a.width, `${p}.width`, 1, LIMITS.hifiMaxImageDim) && c.int(a.height, `${p}.height`, 1, LIMITS.hifiMaxImageDim)) {
@@ -406,7 +412,30 @@ export function validateHifiDoc(input: unknown): { ok: true; doc: HifiDoc } | { 
     const ids = new Set<string>();
     d.pages.forEach((pg, i) => {
       const p = `$.pages[${i}]`;
-      if (!c.obj(pg, p, ["id", "url", "path", "title", "width", "height", "truncated", "referenceAssetId", "branding", "nodes", "warnings"], ["notes", "parentId", "clips", "instances", "normalization"])) return;
+      if (!c.obj(pg, p, ["id", "url", "path", "title", "width", "height", "truncated", "referenceAssetId", "branding", "nodes", "warnings"], ["notes", "parentId", "clips", "instances", "normalization", "referenceTiles"])) return;
+      if (pg.referenceTiles !== undefined && c.obj(pg.referenceTiles, `${p}.referenceTiles`, ["sourceSha256", "sourceWidth", "sourceHeight", "tiles"])) {
+        const rt = pg.referenceTiles;
+        const q = `${p}.referenceTiles`;
+        if (pg.referenceAssetId !== null) c.fail(q, "referenceAssetId must be null when tiles are used");
+        if (typeof rt.sourceSha256 !== "string" || !SHA.test(rt.sourceSha256)) c.fail(`${q}.sourceSha256`, "expected lowercase hex sha256");
+        const okW = c.int(rt.sourceWidth, `${q}.sourceWidth`, 1, LIMITS.hifiMaxImageDim);
+        const okH = c.int(rt.sourceHeight, `${q}.sourceHeight`, 1, LIMITS.refTileMaxSourceHeight);
+        if (c.arr(rt.tiles, `${q}.tiles`, LIMITS.refTileMaxTiles)) {
+          if (rt.tiles.length < 2) c.fail(`${q}.tiles`, "expected at least 2 tiles");
+          let next = 0;
+          rt.tiles.forEach((t, j) => {
+            const r = `${q}.tiles[${j}]`;
+            if (!c.obj(t, r, ["assetId", "y", "h"])) return;
+            if (!c.int(t.y, `${r}.y`, 0, LIMITS.refTileMaxSourceHeight) || !c.int(t.h, `${r}.h`, 1, LIMITS.refTileHeight)) return;
+            if (t.y !== next) c.fail(`${r}.y`, "tiles must be contiguous from 0");
+            next = (t.y as number) + (t.h as number);
+            const a = typeof t.assetId === "string" ? assetsById.get(t.assetId) : undefined;
+            if (!a || a.kind !== "reference") c.fail(`${r}.assetId`, "unknown reference asset");
+            else if (okW && (a.width !== rt.sourceWidth || a.height !== t.h)) c.fail(`${r}.assetId`, "tile asset size does not match its rect");
+          });
+          if (okH && next !== rt.sourceHeight) c.fail(`${q}.tiles`, "tile heights must sum to sourceHeight");
+        }
+      }
       if (pg.normalization !== undefined && c.obj(pg.normalization, `${p}.normalization`, ["mode", "measuredWidth", "measuredHeight", "offsetX", "gutterPx", "gutters"])) {
         const nz = pg.normalization;
         c.oneOf(nz.mode, `${p}.normalization.mode`, ["centered-dpr1"]);
