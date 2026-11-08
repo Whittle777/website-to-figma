@@ -74,7 +74,12 @@ export function planConnectorJobs(doc: HifiDoc, bundle: string, opts: { maxJobCh
     if (j.chars > max) throw new JobPlanError(`${j.file} (${j.note}) needs ${j.chars} chars, over --max-job-chars ${max} (renderer bundle ${bundle.length}); nothing was written`);
     jobs.push(j);
   };
-  const shellPage = (p: HifiPage): HifiPage => ({ ...p, nodes: [], warnings: [], notes: [], states: undefined, branding: null });
+  // Payload copy of a page for jobs that do NOT render its notes text: notes,
+  // warnings, branding, freeze, motion and normalization are read only when
+  // building notes (sent separately as label jobs), so they are omitted from
+  // job inputs. New objects only; the source document is never mutated.
+  const renderPayload = (p: HifiPage): HifiPage => ({ ...p, warnings: [], notes: [], branding: null, freeze: undefined, motion: undefined, normalization: undefined });
+  const shellPage = (p: HifiPage): HifiPage => ({ ...renderPayload(p), nodes: [], states: undefined });
 
   // Text blocks: greedily packed lines, one label job per chunk.
   const labels = (lines: string[], o: { size: number; bold: boolean; width?: number; name: string; gap: number }, note: string) => {
@@ -121,7 +126,7 @@ export function planConnectorJobs(doc: HifiDoc, bundle: string, opts: { maxJobCh
       });
       const createClips = phase === "clipped" && hasClips && !clipsCreated;
       return make(
-        { ...base, kind: "nodes", pageId: page?.id, target, doc: mini(page ? [shellPage(page)] : [], componentsMeta, assets), batch: { phase, orig, createClips, buttonLabels, buttonBoxes, nodes, ...(description !== undefined ? { description } : {}) } },
+        { ...base, kind: "nodes", pageId: page?.id, target, doc: mini(page ? [{ ...shellPage(page), instances: undefined, media: undefined, referenceAssetId: null, referenceTiles: undefined }] : [], componentsMeta, assets), batch: { phase, orig, createClips, buttonLabels, buttonBoxes, nodes, ...(description !== undefined ? { description } : {}) } },
         `${label} ${phase} nodes ${orig[0] ?? "-"}..${orig[orig.length - 1] ?? "-"}`,
       );
     };
@@ -189,7 +194,8 @@ export function planConnectorJobs(doc: HifiDoc, bundle: string, opts: { maxJobCh
       if (n) (childNames[ins.component] ??= {})[String(o.index)] = n;
     }
     const shellIn = (withNodes: boolean, part?: "shell" | "finish"): JobInput => {
-      const p = withNodes ? { ...page, warnings: [], notes: [] } : part === "shell" ? { ...shellPage(page), instances: undefined, media: undefined } : shellPage(page);
+      // shell: frame + references only; finish: instances + media only (no clips needed by either)
+      const p = withNodes ? renderPayload(page) : part === "shell" ? { ...shellPage(page), instances: undefined, media: undefined, clips: undefined } : { ...shellPage(page), clips: undefined, referenceAssetId: null, referenceTiles: undefined };
       const assets = new Set(used);
       if (withNodes) {
         for (const n of page.nodes) if (n.kind === "image" && n.assetId) assets.add(n.assetId);
@@ -211,7 +217,7 @@ export function planConnectorJobs(doc: HifiDoc, bundle: string, opts: { maxJobCh
     if (page.states) {
       const st = page.states;
       const refs = new Set(st.variants.map((v) => v.referenceAssetId).filter((x): x is string => !!x));
-      const statesPage: HifiPage = { ...shellPage(page), states: { ...st, variants: st.variants.map((v) => ({ ...v, nodes: [], notes: [] })) } };
+      const statesPage: HifiPage = { ...shellPage(page), clips: undefined, instances: undefined, media: undefined, referenceAssetId: null, referenceTiles: undefined, states: { ...st, variants: st.variants.map((v) => ({ ...v, nodes: [], notes: [] })) } };
       push(make({ ...base, kind: "states", pageId: page.id, doc: mini([statesPage], undefined, refs) }, `${tag} states (variants, grid, reactions)`));
       for (const v of st.variants) nodeBatches(v.nodes, { type: "variant", pageId: page.id, variant: v.name }, page, undefined, v.notes.join("\n"), `${tag} State=${v.name}`);
     }

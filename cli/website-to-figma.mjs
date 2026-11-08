@@ -42017,7 +42017,8 @@ return await W2F.runJob(${JSON.stringify(full)}, $fig, figma);
     if (j.chars > max) throw new JobPlanError(`${j.file} (${j.note}) needs ${j.chars} chars, over --max-job-chars ${max} (renderer bundle ${bundle.length}); nothing was written`);
     jobs.push(j);
   };
-  const shellPage = (p) => ({ ...p, nodes: [], warnings: [], notes: [], states: void 0, branding: null });
+  const renderPayload = (p) => ({ ...p, warnings: [], notes: [], branding: null, freeze: void 0, motion: void 0, normalization: void 0 });
+  const shellPage = (p) => ({ ...renderPayload(p), nodes: [], states: void 0 });
   const labels = (lines, o, note2) => {
     let chunk2 = [];
     let part = 0;
@@ -42059,7 +42060,7 @@ return await W2F.runJob(${JSON.stringify(full)}, $fig, figma);
       });
       const createClips = phase === "clipped" && hasClips && !clipsCreated;
       return make(
-        { ...base, kind: "nodes", pageId: page?.id, target, doc: mini(page ? [shellPage(page)] : [], componentsMeta, assets), batch: { phase, orig, createClips, buttonLabels, buttonBoxes, nodes, ...description2 !== void 0 ? { description: description2 } : {} } },
+        { ...base, kind: "nodes", pageId: page?.id, target, doc: mini(page ? [{ ...shellPage(page), instances: void 0, media: void 0, referenceAssetId: null, referenceTiles: void 0 }] : [], componentsMeta, assets), batch: { phase, orig, createClips, buttonLabels, buttonBoxes, nodes, ...description2 !== void 0 ? { description: description2 } : {} } },
         `${label} ${phase} nodes ${orig[0] ?? "-"}..${orig[orig.length - 1] ?? "-"}`
       );
     };
@@ -42121,7 +42122,7 @@ return await W2F.runJob(${JSON.stringify(full)}, $fig, figma);
       if (n) (childNames[ins.component] ??= {})[String(o.index)] = n;
     }
     const shellIn = (withNodes, part) => {
-      const p = withNodes ? { ...page, warnings: [], notes: [] } : part === "shell" ? { ...shellPage(page), instances: void 0, media: void 0 } : shellPage(page);
+      const p = withNodes ? renderPayload(page) : part === "shell" ? { ...shellPage(page), instances: void 0, media: void 0, clips: void 0 } : { ...shellPage(page), clips: void 0, referenceAssetId: null, referenceTiles: void 0 };
       const assets = new Set(used);
       if (withNodes) {
         for (const n of page.nodes) if (n.kind === "image" && n.assetId) assets.add(n.assetId);
@@ -42143,7 +42144,7 @@ return await W2F.runJob(${JSON.stringify(full)}, $fig, figma);
     if (page.states) {
       const st3 = page.states;
       const refs = new Set(st3.variants.map((v) => v.referenceAssetId).filter((x) => !!x));
-      const statesPage = { ...shellPage(page), states: { ...st3, variants: st3.variants.map((v) => ({ ...v, nodes: [], notes: [] })) } };
+      const statesPage = { ...shellPage(page), clips: void 0, instances: void 0, media: void 0, referenceAssetId: null, referenceTiles: void 0, states: { ...st3, variants: st3.variants.map((v) => ({ ...v, nodes: [], notes: [] })) } };
       push(make({ ...base, kind: "states", pageId: page.id, doc: mini([statesPage], void 0, refs) }, `${tag} states (variants, grid, reactions)`));
       for (const v of st3.variants) nodeBatches(v.nodes, { type: "variant", pageId: page.id, variant: v.name }, page, void 0, v.notes.join("\n"), `${tag} State=${v.name}`);
     }

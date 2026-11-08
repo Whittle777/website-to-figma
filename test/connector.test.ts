@@ -15,7 +15,7 @@ import { validateHifiDoc, type HifiDoc, type HifiNode } from "../src/shared/hifi
 // SYNTHETIC large document (no real site content): many base nodes, buttons,
 // a clip group, long warnings/notes, 30/30/15-node variants, a 60-node shared
 // component with instance overrides.
-function largeDoc(o: { hugeSvg?: boolean } = {}): HifiDoc {
+function largeDoc(o: { hugeSvg?: boolean; heavyMeta?: boolean } = {}): HifiDoc {
   const base = buildStatesFixture({ reactions: "click-cycle" });
   const page = base.pages[0]!;
   const paint = { hex: "#212121", alpha: 1 };
@@ -36,6 +36,15 @@ function largeDoc(o: { hugeSvg?: boolean } = {}): HifiDoc {
   const warn = Array.from({ length: 50 }, (_, i) => `Synthetic warning ${i}: ${"lorem ipsum dolor sit amet ".repeat(6).slice(0, 170)}`);
   const navNodes: HifiNode[] = Array.from({ length: 60 }, (_, i) => (i % 2 ? text(6000 + i, 10 + i * 10, 20) : box(6000 + i, 10 + i * 10, 10)) as HifiNode);
   const states = page.states!;
+  // long UNRENDERED page metadata (only notes text reads it): 155 motion rules, long freeze, branding, normalization
+  const heavy = o.heavyMeta
+    ? {
+        motion: { rules: Array.from({ length: 155 }, (_, i) => ({ selector: `.synthetic-${i} ${"x".repeat(180)}`.slice(0, 200), kind: (["transition", "animation", "hover"] as const)[i % 3], detail: `opacity ${i}ms ease ${"y".repeat(180)}`.slice(0, 200) })), inaccessibleSheets: 3 },
+        freeze: { attempted: ["css-animations-transitions", "web-animations", "video-pause", "swiper-autoplay-stop", "force-aos-visible"], applied: [{ name: "css-animations-transitions", count: 1 }, { name: "web-animations", count: 40 }], unavailable: [], modifications: Array.from({ length: 10 }, (_, i) => `synthetic modification ${i} ${"z".repeat(160)}`), notFrozen: ["JS timers", "requestAnimationFrame loops", "WebGL/canvas rendering"] },
+        branding: { colors: Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`c${i}`, "#123456"])), fonts: ["Synthetic Sans", "Synthetic Mono"] },
+        normalization: { mode: "centered-dpr1" as const, measuredWidth: 1920, measuredHeight: 5000, offsetX: -320, gutterPx: 0, gutters: 0 },
+      }
+    : {};
   return {
     ...base,
     warnings: warn.slice(0, 50),
@@ -48,6 +57,7 @@ function largeDoc(o: { hugeSvg?: boolean } = {}): HifiDoc {
         clips: [{ x: 0, y: 3990, w: 300, h: 320, name: "Overflow clip / pre" }],
         warnings: warn,
         notes: warn.slice(0, 20),
+        ...heavy,
         instances: [{ component: "c0", x: 0, y: 0, overrides: [{ index: 1, color: { hex: "#0d47a1", alpha: 1 } }, { index: 2, fill: null }] }],
         states: { ...states, variants: states.variants.map((v, i) => ({ ...v, nodes: variantNodes([30, 30, 15][i]!, v.name), notes: Array.from({ length: 10 }, (_, k) => `Synthetic variant note ${k}: ${"x".repeat(150)}`) })) },
       },
@@ -370,6 +380,24 @@ describe("connector adapter: same renderer, planned $fig host (fake connector)",
       expect(nav.children.length).toBe(60);
       expect(env.log.filter((l) => l.startsWith("override:")).every((l) => l.endsWith(":hit"))).toBe(true);
     }
+  });
+
+  it("long unrendered metadata (155 motion rules, freeze, branding) still fits 40000; source doc untouched; provenance kept in notes", async () => {
+    const doc = largeDoc({ heavyMeta: true });
+    expect(validateHifiDoc(doc).ok).toBe(true);
+    expect(JSON.stringify(doc.pages[0]!.motion).length).toBeGreaterThan(50_000);
+    const before = JSON.stringify(doc);
+    const { env, plan } = await runAll(doc, 40_000);
+    expect(JSON.stringify(doc)).toBe(before); // no mutation of the source document
+    expect(plan.jobs.every((j) => j.chars <= 40_000)).toBe(true);
+    // only label jobs (notes text) carry the motion/freeze provenance lines
+    const notesText = plan.jobs.filter((j) => j.kind === "label").map((j) => j.script).join("\n");
+    expect(notesText).toMatch(/Motion \(static notes, not animated\): 155 transition\/animation\/hover rule\(s\); 3 unreadable stylesheet\(s\)/);
+    expect(notesText).toMatch(/Freeze modification: synthetic modification 9/);
+    for (const j of plan.jobs.filter((x) => x.kind !== "label")) expect(j.script).not.toMatch(/synthetic-154|synthetic modification 9/);
+    const native = await nativeRender(doc);
+    const croot = env.page.children.find((n) => n.name === plan.rootName)!;
+    expect(signature(findName(croot, pageFrameName(doc.pages[0]!)))).toEqual(signature(findName(native.root as any, pageFrameName(doc.pages[0]!))));
   });
 
   it("refuses to plan when one node cannot fit; nothing is written", () => {
