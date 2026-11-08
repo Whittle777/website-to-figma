@@ -307,9 +307,15 @@ translated or guessed.
 > - **Freeze is partial.** CSS animations and transitions, Web Animations, `<video>` and Swiper
 >   autoplay are paused where present. JS timers, `requestAnimationFrame` loops and WebGL/canvas
 >   rendering are **not** frozen.
-> - **Undocumented runtime semantics.** Firecrawl's docs do not say whether `executeJavascript`
->   awaits promises, and the lazy and state scripts are async. If returns are missing or out of
->   order, the run stops as *ambiguous*. It is never retried.
+> - **No async JavaScript.** Firecrawl's docs and the open-source code do not say whether
+>   `executeJavascript` awaits promises; that happens inside the closed fire-engine. So every
+>   script is a **synchronous** IIFE, the same form as Firecrawl's own branding script, and every
+>   delay is a documented provider `wait` action. States are measured synchronously after the
+>   modification, so page JS that reacts asynchronously is **not** awaited. Readiness (fonts,
+>   incomplete images) is observed and recorded, not waited for. If returns are missing or out of
+>   order, the run stops as *ambiguous* and is never retried.
+> - **Not run live.** The source-verified behaviour above comes from reading the code, the docs
+>   and loopback transport tests of the installed SDK. No real hosted capture has been executed.
 > - **Bounds.**
 >   - 1 site, ≤ 3 pages, and ≤ 3 states per page *including* the baseline and manual states.
 >   - ≤ 50 actions per request (default budget 20). Every wait, freeze, lazy/visibility-settle,
@@ -317,22 +323,67 @@ translated or guessed.
 >   - Combined waits ≤ 60 s (default 30 s), including in-script sleeps and the visibility settle.
 >   - Each state's measurement is ≤ 6,000,000 chars, and screenshots are viewport-only.
 
+### Supported and unsupported interactions
+
+The real multi-state UI goal is **unfinished**. Baseline and synthetic states are a partial
+substitute.
+
+| Interaction | Status |
+| --- | --- |
+| Baseline (unmodified page) after a fixed wait, freeze and lazy scroll | Supported (observed) |
+| `<details open>`, an allowlisted `aria-*` / `hidden` / `data-state` attribute, or a CSS class on declared elements | Supported as **synthetic** DOM modification; no handler side-effect guarantee |
+| Forced AOS visibility | Supported as a recorded modification |
+| Click, hover, focus, keyboard, typing, form submit, login, purchase, outbound link, navigation, arbitrary JS | **Unsupported** (refused); operator-captured `manual` screenshots only |
+| JS-driven menus, tabs, modals or carousels that need their own event handlers | **Unsupported**. Supporting them would need a separate security decision on executing page handlers, which has not been made. |
+| Async page reactions after a modification; timers, `requestAnimationFrame`, WebGL | Not awaited, not frozen; reported |
+
 ### 1. Plan and review (offline)
 
 ```sh
 website-to-figma states-plan --plan samples/state-plan.bootslander.json --out preview.json
 ```
 
-The preview is the exact `/v2/scrape` body for each page:
-- `formats` is exactly `["rawHtml"]`; no JSON or LLM formats.
-- `proxy` is `basic`, and every documented surcharge option is off.
-- There is no `threatProtection` override, so the team's vendor default applies.
-- Actions run in this order:
-  1. `wait`
-  2. freeze
-  3. lazy scroll + visibility settle (fonts ready, images complete; bounded)
-  4. for each state: state apply + measure, viewport `screenshot`, `scrape`, then a revert for
-     synthetic states
+**Request shape.** The preview is the exact `POST /v2/scrape` body for each page. Its keys are
+exactly `url`, `formats: ["rawHtml"]`, `onlyMainContent: false`, `proxy: "basic"`, `timeout` and
+`actions`. The SDK adds its own `origin` attribution tag.
+
+**Omitted options.** No vendor or account safety option is sent: `threatProtection`,
+`checkPromptInjection`, `redactPII`, `lockdown`, `blockAds`, `removeBase64Images`, `parsers`,
+`mobile` and `waitFor` are omitted, so provider and team defaults apply unchanged. Firecrawl's
+schema defaults are listed in `apps/api/src/controllers/v2/types.ts:861-872`. `proxy: "basic"` is
+a cost and routing choice: the schema default `auto` may escalate.
+
+**Actions.** In order:
+1. `wait` (page settle)
+2. freeze (sync)
+3. *n* × (sync `scrollTo` step, then `wait`); the last `wait` is the visibility settle
+4. for each state: sync apply + measure, `screenshot` (viewport), `scrape`, then a sync revert for
+   synthetic states
+
+**Timing.** The combined wait is exactly the provider's accounting: the sum of
+`wait.milliseconds`, with in-script sleep always 0. Firecrawl source
+`apps/api/src/controllers/v2/types.ts:251-268,347-356` sets `MAX_ACTIONS = 50` and a 60 s total
+wait.
+- **`timeout`:** `min(120000, 20000 + 2 × waits + 10000 × states)`. Waits never exceed half of it.
+- **SDK HTTP timeout:** `timeout + 5000`, because `autoResume` is `false` (SDK
+  `dist/index.js:564`).
+- **Wall clock:** `timeout + 30000`.
+
+**Result mapping.** Firecrawl source `fire-engine/index.ts:617-648,687-693` maps the response like
+this:
+
+| Response field | Contents | Used for |
+| --- | --- | --- |
+| `actions.javascriptReturns[i] = {type, value}` | The *i*-th `executeJavascript`, in order: freeze, each scroll, then per state the state and its revert | Tagged `value.w2f` provenance |
+| `actions.screenshots[j]` | URL for state *j* | Viewport screenshot |
+| `actions.scrapes[j] = {url, html}` | HTML for state *j* | Per-state rawHtml |
+| `metadata.url` | Final URL | URL guard (no redirects accepted) |
+| `metadata.statusCode`, `metadata.contentType` | Page status and type | 2xx HTML check |
+| `metadata.creditsUsed` | Request-specific credits | Ledger record (missing means ambiguous) |
+
+The provider returns screenshots as URLs only. Inline screenshot bytes are not supported:
+`rawBase64` is the page file and cannot be combined with other formats (`types.ts:493,836`). So
+images come from the bounded local download or manual input.
 
 ### 2. Execute (paid, gated; one request per page)
 
@@ -353,10 +404,19 @@ website-to-figma states-run --plan PLAN --preview preview.json --out private-run
 5. The hosted URL guard runs. The exact `simplecss.org` and `bootstrapmade.com` DNS exceptions
    still apply, along with every structural rule.
 
-**One attempt.** The SDK is called with `maxRetries: 1` (total attempts in 4.52) and
-`autoResume: false`. That disables the SDK's automatic re-POST on `408 processing_continues`.
-There is no fallback to one request per state, and no retry or duplicate after a partial or
-ambiguous response.
+**One attempt.** This is source-verified in the installed `@mendable/firecrawl-js` 4.52.0
+`dist/index.js`, and proven by loopback transport tests of the real SDK
+(`test/sdkTransport.test.ts`):
+- **Retries.** `HttpClient.request` loops `for (attempt = 0; attempt < maxRetries; …)` (`:85`),
+  and its only retry is HTTP 502 while `attempt < maxRetries - 1` (`:103,:111`). `maxRetries: 1`
+  therefore means exactly one POST.
+- **Resume.** `scrape()` re-POSTs on `408 SCRAPE_TIMEOUT processing_continues` only when
+  `autoResume !== false` (`:584-585`). `autoResume` is SDK-only and never sent (`:560`).
+- **Endpoint.** The endpoint is pinned to `https://api.firecrawl.dev`, because the SDK otherwise
+  falls back to `FIRECRAWL_API_URL` (`:2467`). The crawl client gets the same pin; no other crawl
+  setting changed.
+- **No fallbacks.** There is no one-request-per-state fallback, and no retry or duplicate after a
+  partial or ambiguous response.
 
 **Ledger.** The paid attempt is written *before* sending and the result *after*. A crash leaves an
 `attempting` entry that blocks every later paid request until `ledger resolve`.

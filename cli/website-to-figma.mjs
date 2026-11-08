@@ -10346,11 +10346,11 @@ var init_hifiSynthetic = __esm({
 });
 
 // src/states/scripts.ts
-var FREEZE_JS, LAZY_JS, STATE_JS, REVERT_JS;
+var FREEZE_JS, SCROLL_JS, STATE_JS, REVERT_JS;
 var init_scripts = __esm({
   "src/states/scripts.ts"() {
     "use strict";
-    FREEZE_JS = String.raw`(() => {
+    FREEZE_JS = String.raw`(function w2fFreeze() {
   const r = { w2f: "freeze", attempted: [], applied: {}, unavailable: [], modifications: [], notFrozen: ["JS timers", "requestAnimationFrame loops", "WebGL/canvas rendering"] };
   const note = (k, n) => { r.attempted.push(k); if (n === null) r.unavailable.push(k); else r.applied[k] = n; };
   try {
@@ -10371,28 +10371,17 @@ var init_scripts = __esm({
     note("force-aos-visible", n); r.modifications.push("forced .aos-animate on " + n + " element(s) (not the page's original visibility)");
   }
   return r;
-})()`;
-    LAZY_JS = String.raw`(async () => {
-  const maxSteps = __MAX_STEPS__, maxPx = __MAX_PX__, stepWait = __STEP_WAIT_MS__, settleMs = __VISIBILITY_MS__;
-  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
-  let steps = 0, y = 0;
-  const step = Math.max(200, Math.min(window.innerHeight || 800, 2000));
-  while (steps < maxSteps && y < maxPx) {
-    const h = document.documentElement.scrollHeight;
-    if (y + (window.innerHeight || 800) >= h) break;
-    y = Math.min(y + step, maxPx); window.scrollTo(0, y); steps++; await sleep(stepWait);
-  }
-  const reachedBottom = y + (window.innerHeight || 800) >= document.documentElement.scrollHeight;
-  window.scrollTo(0, 0); await sleep(stepWait);
-  const t0 = Date.now();
-  let fontsReady = null;
-  try { if (document.fonts && document.fonts.ready) fontsReady = await Promise.race([document.fonts.ready.then(() => true), sleep(settleMs).then(() => false)]); } catch (e) { fontsReady = false; }
-  const imgs = Array.from(document.images).slice(0, 2000);
-  while (Date.now() - t0 < settleMs && imgs.some((i) => !i.complete)) await sleep(100);
-  const imagesPending = imgs.filter((i) => !i.complete).length;
-  return { w2f: "lazy", steps, scrolledTo: y, reachedBottom, capped: !reachedBottom, settle: { fontsReady, images: imgs.length, imagesPending, waitedMs: Date.now() - t0, settled: fontsReady !== false && imagesPending === 0 } };
-})()`;
-    STATE_JS = String.raw`(async () => {
+})();`;
+    SCROLL_JS = String.raw`(function w2fScroll() {
+  const k = __STEP__, n = __STEPS__, maxPx = __MAX_PX__;
+  const vh = window.innerHeight || 800;
+  const maxY = Math.max(0, Math.min(maxPx, document.documentElement.scrollHeight - vh));
+  const y = Math.round((maxY * k) / n);
+  window.scrollTo(0, y);
+  const gap = Math.round(maxY / n);
+  return { w2f: "scroll", step: k, steps: n, y, scrollHeight: document.documentElement.scrollHeight, viewportHeight: vh, maxGapPx: gap, coverageComplete: gap <= vh, cappedByMaxPx: document.documentElement.scrollHeight - vh > maxPx };
+})();`;
+    STATE_JS = String.raw`(function w2fState() {
   const STATE = __STATE__;
   const MAX = { elements: 20000, texts: 20000, images: 500, svgs: 200, rules: 200, media: 50, fixed: 50, match: 5 };
   const MAX_RETURN_CHARS = __MAX_RETURN_CHARS__;
@@ -10425,7 +10414,8 @@ var init_scripts = __esm({
       out.applied.push({ selector: m.selector, mechanism: m.mechanism });
     }
   }
-  await new Promise((res) => setTimeout(res, __SETTLE_MS__));
+  const imgsAll = Array.from(document.images).slice(0, 5000);
+  const readiness = { readyState: document.readyState, fontsStatus: document.fonts ? document.fonts.status : null, images: imgsAll.length, imagesIncomplete: imgsAll.filter((i) => !i.complete).length, lazyImages: imgsAll.filter((i) => i.loading === "lazy").length };
   const bounds = (e) => { const b = e.getBoundingClientRect(); return { x: b.x + scrollX, y: b.y + scrollY, w: b.width, h: b.height }; };
   const props = ["backgroundColor","color","fontFamily","fontSize","fontWeight","fontStyle","lineHeight","textDecorationLine","borderTopWidth","borderRightWidth","borderBottomWidth","borderLeftWidth","borderTopColor","borderRightColor","borderBottomColor","borderLeftColor","borderRadius","opacity","display","visibility","position","paddingTop","paddingRight","paddingBottom","paddingLeft","objectFit"];
   const styles = (e) => { const c = getComputedStyle(e); const o = {}; for (const k of props) o[k] = c[k]; return o; };
@@ -10476,7 +10466,8 @@ var init_scripts = __esm({
   mediaOf("iframe", "iframe", (e) => ({ src: String(e.src || "").slice(0, 2048) || null }));
   let scope = null, shotY = 0;
   if (STATE.scope) { const s = document.querySelector(STATE.scope); if (s) { scope = bounds(s); window.scrollTo(0, Math.max(0, scope.y - 40)); shotY = window.scrollY || 0; } else out.missing.push(STATE.scope); }
-  const result = { ...out, scope, screenshotScrollY: shotY, viewport: { width: innerWidth, height: innerHeight }, measured: { url: location.href, viewport: { width: innerWidth, height: innerHeight }, title: document.title, elements, texts, images, svgs }, fixed, motion, media, truncated: false };
+  if (!scope) { window.scrollTo(0, 0); shotY = window.scrollY || 0; }
+  const result = { ...out, readiness, scope, screenshotScrollY: shotY, viewport: { width: innerWidth, height: innerHeight }, measured: { url: location.href, viewport: { width: innerWidth, height: innerHeight }, title: document.title, elements, texts, images, svgs }, fixed, motion, media, truncated: false };
   // Byte bound: drop measurement tails (largest first) until the return fits.
   for (const k of ["texts", "elements", "svgs", "images"]) {
     while (JSON.stringify(result).length > MAX_RETURN_CHARS && result.measured[k].length) { result.measured[k].length = Math.floor(result.measured[k].length / 2); result.truncated = true; }
@@ -10487,14 +10478,14 @@ var init_scripts = __esm({
     // Apply/measure failed: revert immediately so later steps see the baseline.
     return { ...out, error: String(e && e.message || e).slice(0, 200), reverted: revertNow() };
   }
-})()`;
-    REVERT_JS = String.raw`(() => {
+})();`;
+    REVERT_JS = String.raw`(function w2fRevert() {
   const list = window.__w2fRevert || []; let n = 0, failed = 0;
   try {
     for (const op of list.reverse()) { try { if (op[0] === "attr") { if (op[3] === null) op[1].removeAttribute(op[2]); else op[1].setAttribute(op[2], op[3]); } else if (op[0] === "class") op[1].classList.remove(op[2]); n++; } catch (e) { failed++; } }
   } finally { window.__w2fRevert = []; try { window.scrollTo(0, 0); } catch (e) {} }
   return { w2f: "revert", seq: __SEQ__, reverted: n, failed };
-})()`;
+})();`;
   }
 });
 
@@ -10559,7 +10550,7 @@ function parseStatePlan(json) {
   const pages = json.pages.map((raw, i) => {
     const p = `pages[${i}]`;
     if (!isObj3(raw)) throw new StatePlanError(`${p}: expected object`);
-    keys(raw, p, ["url", "waitMs", "settleMs", "lazy", "states", "manual"]);
+    keys(raw, p, ["url", "waitMs", "lazy", "states", "manual"]);
     let url2;
     try {
       url2 = parseHttpUrl(String(raw.url));
@@ -10573,9 +10564,9 @@ function parseStatePlan(json) {
     if (!isObj3(lazyRaw)) throw new StatePlanError(`${p}.lazy: expected object`);
     keys(lazyRaw, `${p}.lazy`, ["steps", "maxPx", "stepWaitMs", "visibilityMs"]);
     const lazy = {
-      steps: int(lazyRaw.steps, `${p}.lazy.steps`, 6, 0, STATE_LIMITS.maxLazySteps),
+      steps: int(lazyRaw.steps, `${p}.lazy.steps`, 3, 0, STATE_LIMITS.maxLazySteps),
       maxPx: int(lazyRaw.maxPx, `${p}.lazy.maxPx`, 2e4, 0, STATE_LIMITS.maxLazyPx),
-      stepWaitMs: int(lazyRaw.stepWaitMs, `${p}.lazy.stepWaitMs`, 300, 0, STATE_LIMITS.maxLazyStepWaitMs),
+      stepWaitMs: int(lazyRaw.stepWaitMs, `${p}.lazy.stepWaitMs`, 500, 0, STATE_LIMITS.maxLazyStepWaitMs),
       visibilityMs: int(lazyRaw.visibilityMs, `${p}.lazy.visibilityMs`, 1500, 0, STATE_LIMITS.maxVisibilityMs)
     };
     const rawStates = raw.states === void 0 ? [] : raw.states;
@@ -10608,7 +10599,6 @@ function parseStatePlan(json) {
     return {
       url: url2.href,
       waitMs: int(raw.waitMs, `${p}.waitMs`, 2e3, 0, STATE_LIMITS.maxPageWaitMs),
-      settleMs: int(raw.settleMs, `${p}.settleMs`, 300, 0, STATE_LIMITS.maxSettleMs),
       lazy,
       states,
       manual
@@ -10630,18 +10620,23 @@ function buildStateRequest(plan, page) {
     actions.push(action);
   };
   let waits = 0;
-  if (page.waitMs > 0) {
-    push("wait", { type: "wait", milliseconds: page.waitMs });
-    waits += page.waitMs;
-  }
+  const wait = (ms) => {
+    if (ms <= 0) return;
+    push("wait", { type: "wait", milliseconds: ms });
+    waits += ms;
+  };
+  wait(page.waitMs);
   push("freeze", { type: "executeJavascript", script: fill(FREEZE_JS, { FORCE_AOS: plan.forceAos }) });
-  push("lazy", { type: "executeJavascript", script: fill(LAZY_JS, { MAX_STEPS: page.lazy.steps, MAX_PX: page.lazy.maxPx, STEP_WAIT_MS: page.lazy.stepWaitMs, VISIBILITY_MS: page.lazy.visibilityMs }) });
-  waits += (page.lazy.steps + 1) * page.lazy.stepWaitMs + page.lazy.visibilityMs;
+  const n = page.lazy.steps;
+  for (let k = 1; k <= n; k++) {
+    push("scroll", { type: "executeJavascript", script: fill(SCROLL_JS, { STEP: k, STEPS: n, MAX_PX: page.lazy.maxPx }) });
+    wait(k === n ? Math.max(page.lazy.stepWaitMs, page.lazy.visibilityMs) : page.lazy.stepWaitMs);
+  }
+  if (n === 0) wait(page.lazy.visibilityMs);
   const states = [];
   let shots = 0;
   page.states.forEach((s, seq) => {
-    push("state", { type: "executeJavascript", script: fill(STATE_JS, { STATE: { seq, name: s.name, scope: s.scope, mutations: s.mutations }, SETTLE_MS: page.settleMs, MAX_RETURN_CHARS: STATE_LIMITS.maxStateReturnChars }) }, { state: s.name, seq });
-    waits += page.settleMs;
+    push("state", { type: "executeJavascript", script: fill(STATE_JS, { STATE: { seq, name: s.name, scope: s.scope, mutations: s.mutations }, MAX_RETURN_CHARS: STATE_LIMITS.maxStateReturnChars }) }, { state: s.name, seq });
     push("screenshot", { type: "screenshot", fullPage: false }, { state: s.name, seq });
     push("scrape", { type: "scrape" }, { state: s.name, seq });
     states.push({ seq, name: s.name, provenance: s.mutations.length ? "synthetic" : "baseline", review: s.mutations.length ? SYNTHETIC_REVIEW : null, screenshotIndex: shots, scrapeIndex: shots });
@@ -10650,13 +10645,16 @@ function buildStateRequest(plan, page) {
   });
   if (actions.length > plan.maxActions) throw new StatePlanError(`${page.url}: ${actions.length} actions exceed the plan budget of ${plan.maxActions} (provider maximum ${STATE_LIMITS.providerMaxActions})`);
   if (waits > plan.maxCombinedWaitMs) throw new StatePlanError(`${page.url}: combined waits ${waits} ms exceed the plan budget of ${plan.maxCombinedWaitMs} ms (provider maximum ${STATE_LIMITS.providerMaxCombinedWaitMs} ms)`);
+  const timeout = Math.min(STATE_LIMITS.maxRequestTimeoutMs, STATE_LIMITS.requestTimeoutBaseMs + 2 * waits + STATE_LIMITS.requestTimeoutPerStateMs * page.states.length);
+  if (waits * 2 > timeout) throw new StatePlanError(`${page.url}: combined waits ${waits} ms exceed half of the ${timeout} ms request timeout`);
   return {
     pageUrl: page.url,
     sent: false,
-    body: { url: page.url, formats: ["rawHtml"], timeout: STATE_LIMITS.requestTimeoutMs, actions, ...STATE_SCRAPE_OPTIONS, parsers: [] },
+    body: { url: page.url, formats: ["rawHtml"], timeout, actions, ...STATE_SCRAPE_OPTIONS },
     roles,
     actionCount: actions.length,
     combinedWaitMs: waits,
+    timing: { requestTimeoutMs: timeout, sdkHttpTimeoutMs: timeout + STATE_LIMITS.sdkTimeoutMarginMs, wallClockMs: timeout + STATE_LIMITS.wallClockMarginMs, combinedWaitMs: waits, inScriptSleepMs: 0 },
     states,
     manual: page.manual
   };
@@ -10699,12 +10697,19 @@ var init_plan = __esm({
       maxSelectorChars: 200,
       maxNameChars: 40,
       maxPageWaitMs: 1e4,
-      maxSettleMs: 2e3,
       maxLazySteps: 10,
       maxLazyPx: 3e4,
-      maxLazyStepWaitMs: 1e3,
+      maxLazyStepWaitMs: 2e3,
       maxVisibilityMs: 5e3,
-      requestTimeoutMs: 9e4,
+      // Request timeout = min(max, base + 2 x combined waits + per-state); the
+      // combined wait never exceeds half of it (mirrors the provider's waitFor rule).
+      requestTimeoutBaseMs: 2e4,
+      requestTimeoutPerStateMs: 1e4,
+      maxRequestTimeoutMs: 12e4,
+      // SDK 4.52 with autoResume false uses timeout + 5000 as the HTTP timeout
+      // (dist/index.js:564); our own wall clock adds a further margin.
+      sdkTimeoutMarginMs: 5e3,
+      wallClockMarginMs: 3e4,
       maxStateReturnChars: 6e6
       // per measured state, enforced in-browser and by the adapter
     };
@@ -10724,14 +10729,7 @@ var init_plan = __esm({
     isObj3 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
     STATE_SCRAPE_OPTIONS = {
       onlyMainContent: false,
-      blockAds: true,
-      removeBase64Images: true,
-      parsers: [],
-      proxy: "basic",
-      lockdown: false,
-      checkPromptInjection: false,
-      redactPII: false,
-      mobile: false
+      proxy: "basic"
     };
     SYNTHETIC_REVIEW = "SYNTHETIC modification (not the page's observed original state); NOT executed; operator review required: attribute/class/open changes can run page MutationObservers, toggle listeners or custom-element callbacks - no handler side-effect guarantee";
     PREVIEW_NOTICE = [
@@ -10739,7 +10737,8 @@ var init_plan = __esm({
       "Synthetic states are DOM modifications (not observed original states) for manual operator review; no handler side-effect guarantee.",
       "Provider cost of these requests is UNKNOWN: Firecrawl documents 1 credit per scrape but no per-action/screenshot price; no estimate is given (only the operator's own asserted price is used, to reserve ledger budget).",
       "Screenshot URLs in a provider response expire (documented 24 h) and are never downloaded by this tool.",
-      "Not frozen: JS timers, requestAnimationFrame loops, WebGL/canvas rendering. Cross-origin stylesheets cannot be read (reported as inaccessible)."
+      "Not frozen: JS timers, requestAnimationFrame loops, WebGL/canvas rendering. Cross-origin stylesheets cannot be read (reported as inaccessible).",
+      "All scripts are synchronous (no async/sleep); every delay is a documented provider wait action. States are measured synchronously after the modification: page JS that reacts asynchronously is not awaited. Readiness (fonts, incomplete images) is observed and recorded, not waited for beyond the planned waits."
     ];
   }
 });
@@ -10757,6 +10756,7 @@ function adaptTaggedReturns(data, name3) {
   for (const v of values) {
     if (v.w2f === "freeze" && !out.freeze) out.freeze = v;
     else if (v.w2f === "lazy" && !out.lazy) out.lazy = v;
+    else if (v.w2f === "scroll") out.lazy = { w2f: "lazy", steps: v.steps, finalY: v.y, coverageComplete: v.coverageComplete === true && (out.lazy?.coverageComplete ?? true) !== false };
     else if (v.w2f === "revert" && typeof v.seq === "number") reverts.set(v.seq, v);
     else if (v.w2f === "state" && typeof v.seq === "number" && Number.isInteger(v.seq) && v.seq >= 0 && v.seq < STATE_LIMITS.maxStatesPerPage) {
       if (bySeq.has(v.seq)) {
@@ -10933,6 +10933,7 @@ function syntheticStateResponse(opts = {}) {
     screenshotScrollY: scope ? Math.max(0, scope.y - 40) : 0,
     viewport: { width: 800, height: 600 },
     measured: measured(open),
+    readiness: { readyState: "complete", fontsStatus: "loaded", images: 0, imagesIncomplete: 0, lazyImages: 0 },
     fixed: [],
     motion,
     media,
@@ -10953,7 +10954,7 @@ function syntheticStateResponse(opts = {}) {
       actions: {
         javascriptReturns: [
           { type: "object", value: { w2f: "freeze", attempted: ["css-animations-transitions", "web-animations", "video-pause", "swiper-autoplay-stop", "force-aos-visible"], applied: { "css-animations-transitions": 1, "web-animations": 3, "video-pause": 1, "swiper-autoplay-stop": 0, "force-aos-visible": 2 }, unavailable: [], modifications: ["forced .aos-animate on 2 element(s) (not the page's original visibility)"], notFrozen: ["JS timers", "requestAnimationFrame loops", "WebGL/canvas rendering"] } },
-          { type: "object", value: { w2f: "lazy", steps: 2, scrolledTo: 1200, reachedBottom: true, capped: false } },
+          ...[1, 2, 3].map((k) => ({ type: "object", value: { w2f: "scroll", step: k, steps: 3, y: k * 33, scrollHeight: 700, viewportHeight: 600, maxGapPx: 33, coverageComplete: true, cappedByMaxPx: false } })),
           { type: "object", value: states[0] },
           { type: "object", value: states[1] },
           { type: "object", value: { w2f: "revert", seq: 1, reverted: opts.errorState ? 0 : 1, failed: opts.failRevert ? 1 : 0 } },
@@ -41139,9 +41140,12 @@ var init_dist2 = __esm({
 
 // src/states/execute.ts
 import { createHash as createHash4 } from "node:crypto";
-async function createStateScrapeClient(apiKey) {
+function stateClientOptions(apiKey, apiUrl = FIRECRAWL_API_URL) {
+  return { apiKey, apiUrl, timeoutMs: STATE_LIMITS.maxRequestTimeoutMs + STATE_LIMITS.sdkTimeoutMarginMs, maxRetries: 1 };
+}
+async function createStateScrapeClient(apiKey, apiUrl = FIRECRAWL_API_URL) {
   const { default: Firecrawl2 } = await Promise.resolve().then(() => (init_dist2(), dist_exports));
-  const fc = new Firecrawl2({ apiKey, timeoutMs: STATE_LIMITS.requestTimeoutMs + 1e4, maxRetries: 1 });
+  const fc = new Firecrawl2(stateClientOptions(apiKey, apiUrl));
   return { scrape: (url2, options) => fc.scrape(url2, options) };
 }
 function canonicalJson(v) {
@@ -41168,8 +41172,8 @@ function validateForExecution(planJson, previewJson) {
     };
     for (const k of Object.keys(b)) if (!ALLOWED_BODY_KEYS.includes(k)) fail(`request option "${k}" is not allowed`);
     if (canonicalJson(b.formats) !== '["rawHtml"]') fail('formats must be exactly ["rawHtml"] (JSON/LLM formats are refused)');
-    if (b.proxy !== "basic" || b.checkPromptInjection !== false || b.redactPII !== false || b.lockdown !== false || b.parsers.length !== 0) fail("only standard options are allowed");
-    if (b.timeout !== STATE_LIMITS.requestTimeoutMs) fail("unexpected timeout");
+    if (b.proxy !== "basic" || b.onlyMainContent !== false) fail("only the reviewed options are allowed");
+    if (b.timeout !== r.timing.requestTimeoutMs || b.timeout > STATE_LIMITS.maxRequestTimeoutMs) fail("unexpected timeout");
     if (!isSameSite(parseHttpUrl(String(b.url)), site) || canonicalizeUrl(parseHttpUrl(String(b.url))) !== canonicalizeUrl(parseHttpUrl(r.pageUrl))) fail("request URL is not the planned same-site page");
     const actions = b.actions;
     if (actions.length > plan.maxActions || actions.length > STATE_LIMITS.providerMaxActions) fail("too many actions");
@@ -41177,13 +41181,14 @@ function validateForExecution(planJson, previewJson) {
     for (const a of actions) {
       if (!ALLOWED_ACTIONS.includes(String(a.type))) fail(`action type "${String(a.type)}" is not allowed`);
       if (a.type === "wait") {
-        if (a.selector !== void 0 || typeof a.milliseconds !== "number") fail("only fixed-duration waits are allowed");
+        if (a.selector !== void 0 || typeof a.milliseconds !== "number" || !Number.isInteger(a.milliseconds) || a.milliseconds < 1) fail("only fixed positive-integer waits are allowed");
         waits += a.milliseconds;
       }
       if (a.type === "screenshot" && (a.fullPage !== false || a.viewport !== void 0 || a.quality !== void 0)) fail("only viewport screenshots without overrides are allowed");
       if (a.type === "executeJavascript" && (typeof a.script !== "string" || FORBIDDEN_SCRIPT.test(a.script) || !/w2f/.test(a.script))) fail("script is not one of the reviewed scripts");
     }
-    if (waits > STATE_LIMITS.providerMaxCombinedWaitMs || r.combinedWaitMs > plan.maxCombinedWaitMs) fail("combined waits exceed the budget");
+    if (waits !== r.combinedWaitMs || waits > STATE_LIMITS.providerMaxCombinedWaitMs || waits > plan.maxCombinedWaitMs || waits * 2 > b.timeout) fail("combined waits exceed the budget");
+    if (actions.some((a) => a.type === "executeJavascript" && /\basync\b|\bawait\b|setTimeout|setInterval|Promise/.test(a.script))) fail("scripts must be synchronous");
     if (r.states.length > STATE_LIMITS.maxStatesPerPage) fail("too many states");
     return { preview: r, requestSha256: sha256(canonicalJson(b)), synthetic: r.states.some((s) => s.provenance === "synthetic") };
   });
@@ -41227,7 +41232,7 @@ function classify(err) {
   return "ambiguous";
 }
 async function validateStateResponse(doc, r, resolver) {
-  const out = { freeze: null, lazy: null, states: [], warnings: [] };
+  const out = { freeze: null, lazy: null, readiness: null, states: [], warnings: [] };
   const reject = (status, reason) => ({ status, reason, run: out });
   if (!isObj6(doc)) return reject("ambiguous", "response is not an object");
   if (JSON.stringify(doc).length > LIMITS.hifiMaxJsonBytes) return reject("rejected", "response exceeds the byte bound");
@@ -41249,14 +41254,20 @@ async function validateStateResponse(doc, r, resolver) {
   const returns = actions && Array.isArray(actions.javascriptReturns) ? actions.javascriptReturns : null;
   const shots = actions && Array.isArray(actions.screenshots) ? actions.screenshots : null;
   const scrapes = actions && Array.isArray(actions.scrapes) ? actions.scrapes : null;
-  const jsRoles = r.roles.filter((x) => x.role === "freeze" || x.role === "lazy" || x.role === "state" || x.role === "revert");
+  const jsRoles = r.roles.filter((x) => x.role === "freeze" || x.role === "scroll" || x.role === "state" || x.role === "revert");
+  const scrolls = [];
   if (!returns || returns.length !== jsRoles.length) return reject("ambiguous", `expected ${jsRoles.length} javascriptReturns, got ${returns ? returns.length : "none"} (possibly a partial run or unawaited async script)`);
   for (const [i, role2] of jsRoles.entries()) {
     const v = isObj6(returns[i]) ? returns[i].value : void 0;
     if (!isObj6(v) || v.w2f !== role2.role) return reject("ambiguous", `javascriptReturns[${i}] is not the expected "${role2.role}" result`);
     if ((role2.role === "state" || role2.role === "revert") && v.seq !== role2.seq) return reject("ambiguous", `javascriptReturns[${i}] has seq ${String(v.seq)}, expected ${role2.seq}`);
     if (role2.role === "freeze") out.freeze = v;
-    if (role2.role === "lazy") out.lazy = v;
+    if (role2.role === "scroll") scrolls.push(v);
+  }
+  if (scrolls.length) {
+    const last = scrolls[scrolls.length - 1];
+    out.lazy = { steps: scrolls.length, finalY: last.y ?? null, scrollHeight: last.scrollHeight ?? null, maxGapPx: last.maxGapPx ?? null, coverageComplete: scrolls.every((x) => x.coverageComplete === true), cappedByMaxPx: scrolls.some((x) => x.cappedByMaxPx === true) };
+    if (out.lazy.coverageComplete !== true) out.warnings.push("lazy-load coverage partial: scroll steps were further apart than the viewport");
   }
   if (!shots || shots.length !== r.states.length || !shots.every((s) => typeof s === "string" && s.length <= LIMITS.maxUrlChars)) return reject("ambiguous", `expected ${r.states.length} screenshots`);
   if (!scrapes || scrapes.length !== r.states.length) return reject("ambiguous", `expected ${r.states.length} scrapes`);
@@ -41268,6 +41279,11 @@ async function validateStateResponse(doc, r, resolver) {
     if (v.provenance !== s.provenance) return reject("ambiguous", `state ${s.seq} provenance mismatch`);
     const err = typeof v.error === "string" ? v.error.slice(0, 200) : null;
     out.states.push({ seq: s.seq, name: s.name, provenance: s.provenance, applied: Array.isArray(v.applied) ? v.applied.length : 0, refused: Array.isArray(v.refused) ? v.refused.length : 0, missing: Array.isArray(v.missing) ? v.missing.length : 0, error: err, reverted: rvv && typeof rvv.reverted === "number" ? rvv.reverted : null, revertFailed: rvv && typeof rvv.failed === "number" ? rvv.failed : null });
+    if (s.seq === 0 && isObj6(v.readiness)) {
+      out.readiness = v.readiness;
+      if (typeof v.readiness.imagesIncomplete === "number" && v.readiness.imagesIncomplete > 0) out.warnings.push(`${v.readiness.imagesIncomplete} image(s) still incomplete at baseline measurement`);
+      if (v.readiness.fontsStatus === "loading") out.warnings.push("web fonts still loading at baseline measurement");
+    }
     if (err) out.warnings.push(`state "${s.name}" failed in the browser (${err}); it reverted itself`);
     if (s.provenance === "synthetic" && Array.isArray(v.applied) && v.applied.length === 0) out.warnings.push(`state "${s.name}": no modification applied`);
     if (rvv && rvv.failed !== 0) out.warnings.push(`state "${s.name}": revert reported ${String(rvv.failed)} failure(s)`);
@@ -41305,6 +41321,7 @@ async function executeStateRun(o) {
       checkpoints: [],
       freeze: null,
       lazy: null,
+      readiness: null,
       states: [],
       warnings: []
     };
@@ -41363,7 +41380,7 @@ async function executeStateRun(o) {
     run.attempts = 1;
     try {
       cp("request-sent", "attempt 1 of 1 (no retries, autoResume false)");
-      doc = await withTimeout(client.scrape(String(url2), { ...opts, autoResume: false }), STATE_LIMITS.requestTimeoutMs + 3e4);
+      doc = await withTimeout(client.scrape(String(url2), { ...opts, autoResume: false }), r.timing.wallClockMs);
       cp("response-received");
     } catch (err) {
       outcome = classify(err);
@@ -41404,7 +41421,7 @@ async function executeStateRun(o) {
   }
   return { runId, previewSha256: o.validated.previewSha256, pages, stoppedEarly: stopped };
 }
-var StateRunPolicyError, isObj6, sha256, ALLOWED_BODY_KEYS, ALLOWED_ACTIONS, FORBIDDEN_SCRIPT, STOP_CONDITIONS;
+var StateRunPolicyError, isObj6, FIRECRAWL_API_URL, sha256, ALLOWED_BODY_KEYS, ALLOWED_ACTIONS, FORBIDDEN_SCRIPT, STOP_CONDITIONS;
 var init_execute = __esm({
   "src/states/execute.ts"() {
     "use strict";
@@ -41416,8 +41433,9 @@ var init_execute = __esm({
     StateRunPolicyError = class extends Error {
     };
     isObj6 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+    FIRECRAWL_API_URL = "https://api.firecrawl.dev";
     sha256 = (s) => createHash4("sha256").update(s).digest("hex");
-    ALLOWED_BODY_KEYS = ["url", "formats", "timeout", "actions", "onlyMainContent", "blockAds", "removeBase64Images", "parsers", "proxy", "lockdown", "checkPromptInjection", "redactPII", "mobile"];
+    ALLOWED_BODY_KEYS = ["url", "formats", "timeout", "actions", "onlyMainContent", "proxy"];
     ALLOWED_ACTIONS = ["wait", "executeJavascript", "screenshot", "scrape"];
     FORBIDDEN_SCRIPT = /\.click\s*\(|\.submit\s*\(|requestSubmit|\bfetch\s*\(|XMLHttpRequest|sendBeacon|WebSocket|location\s*(\.\w+\s*)?=|location\.(assign|replace)|window\.open|history\.(push|replace)State|localStorage|sessionStorage|document\.cookie|indexedDB|\.dispatchEvent\s*\(|\.focus\s*\(/;
     STOP_CONDITIONS = [
@@ -41700,7 +41718,7 @@ function withTimeout2(p, ms, label) {
 }
 async function createClient(apiKey) {
   const { default: Firecrawl2 } = await Promise.resolve().then(() => (init_dist2(), dist_exports));
-  return new Firecrawl2({ apiKey, timeoutMs: 3e4, maxRetries: 1 });
+  return new Firecrawl2({ apiKey, apiUrl: "https://api.firecrawl.dev", timeoutMs: 3e4, maxRetries: 1 });
 }
 function underStartPath(u, start) {
   if (start.pathname === "/") return true;

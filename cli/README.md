@@ -27,7 +27,9 @@ State planner + gated hosted executor (see the repository README, "Interactive s
 `states-run --plan P --preview preview.json --out DIR --ledger L --operator-credits-per-request N
 --operator-reported-balance N --confirm-existing-credits --confirm-no-topup
 [--acknowledge-synthetic-modifications] [--yes]`. This makes one request per page with one attempt
-and no retries, and HOLDS without `--yes`. N is your asserted reservation, not a price; provider
+and no retries, and HOLDS without `--yes`. All scripts are synchronous (delays are provider `wait`
+actions). The body is only url/formats ["rawHtml"]/onlyMainContent/proxy "basic"/timeout/actions:
+no vendor or account safety option is sent. N is your asserted reservation, not a price; provider
 cost is unknown. The local ledger is a 1000-credit project budget ceiling, NOT a provider cap.
 `ledger init|show|resolve|record`; `states-screenshots --run DIR --out DIR [--yes]`. No clicks;
 synthetic DOM modifications only, with no handler side-effect guarantee.

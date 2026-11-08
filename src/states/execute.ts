@@ -8,7 +8,8 @@
 //  - Pre-execution semantic validation: the operator's preview file must equal
 //    the preview rebuilt from the plan, byte for byte (canonical JSON), and
 //    every request is re-checked independently (formats exactly ["rawHtml"],
-//    no JSON/LLM options, basic proxy, no threatProtection override, only
+//    no JSON/LLM options, basic proxy, no vendor/account safety setting sent
+//    at all (threatProtection, checkPromptInjection, redactPII, lockdown...), only
 //    wait/executeJavascript/screenshot/scrape actions, known scripts only,
 //    <=50 actions, combined waits <=60 s, <=3 pages, <=3 states per page).
 //  - Paid gates: operator-asserted credits per request (a reservation /
@@ -47,10 +48,26 @@ export interface StateScrapeClient {
   scrape(url: string, options: Obj): Promise<unknown>;
 }
 
-export async function createStateScrapeClient(apiKey: string): Promise<StateScrapeClient> {
+// The SDK falls back to the FIRECRAWL_API_URL environment variable when no
+// apiUrl is given (dist/index.js:2467), which could send the key elsewhere, so
+// the official endpoint is pinned. `apiUrl` is overridable ONLY for the
+// loopback transport tests.
+export const FIRECRAWL_API_URL = "https://api.firecrawl.dev";
+
+// SDK 4.52 semantics (installed dist/index.js):
+//  - HttpClient.request: `for (let attempt = 0; attempt < this.maxRetries; ...)`
+//    (:85) and the only retry is HTTP 502 while `attempt < this.maxRetries - 1`
+//    (:103, :111). maxRetries 1 => exactly one POST.
+//  - scrape(): re-POSTs on 408 SCRAPE_TIMEOUT processing_continues only when
+//    `autoResume !== false` (:584-585); with autoResume false the HTTP timeout
+//    is `timeout + 5000` (:564). autoResume is SDK-only, never sent (:560).
+export function stateClientOptions(apiKey: string, apiUrl: string = FIRECRAWL_API_URL) {
+  return { apiKey, apiUrl, timeoutMs: STATE_LIMITS.maxRequestTimeoutMs + STATE_LIMITS.sdkTimeoutMarginMs, maxRetries: 1 };
+}
+
+export async function createStateScrapeClient(apiKey: string, apiUrl: string = FIRECRAWL_API_URL): Promise<StateScrapeClient> {
   const { default: Firecrawl } = await import("@mendable/firecrawl-js");
-  // maxRetries is the TOTAL attempt count in SDK 4.52 (1 = no retries).
-  const fc = new Firecrawl({ apiKey, timeoutMs: STATE_LIMITS.requestTimeoutMs + 10_000, maxRetries: 1 });
+  const fc = new Firecrawl(stateClientOptions(apiKey, apiUrl));
   return { scrape: (url, options) => fc.scrape(url, options as never) as Promise<unknown> };
 }
 
@@ -68,7 +85,8 @@ export function redact(text: string, secrets: string[]): string {
   return out.replace(/\bfc-[A-Za-z0-9_-]{8,}\b/g, "[REDACTED]").replace(/(authorization|bearer)\s*[:=]?\s*\S+/gi, "$1 [REDACTED]").slice(0, 500);
 }
 
-const ALLOWED_BODY_KEYS = ["url", "formats", "timeout", "actions", "onlyMainContent", "blockAds", "removeBase64Images", "parsers", "proxy", "lockdown", "checkPromptInjection", "redactPII", "mobile"];
+// Exactly these keys: no vendor/account safety setting is ever sent (see plan.ts).
+const ALLOWED_BODY_KEYS = ["url", "formats", "timeout", "actions", "onlyMainContent", "proxy"];
 const ALLOWED_ACTIONS = ["wait", "executeJavascript", "screenshot", "scrape"];
 const FORBIDDEN_SCRIPT = /\.click\s*\(|\.submit\s*\(|requestSubmit|\bfetch\s*\(|XMLHttpRequest|sendBeacon|WebSocket|location\s*(\.\w+\s*)?=|location\.(assign|replace)|window\.open|history\.(push|replace)State|localStorage|sessionStorage|document\.cookie|indexedDB|\.dispatchEvent\s*\(|\.focus\s*\(/;
 
@@ -94,8 +112,8 @@ export function validateForExecution(planJson: unknown, previewJson: unknown): V
     };
     for (const k of Object.keys(b)) if (!ALLOWED_BODY_KEYS.includes(k)) fail(`request option "${k}" is not allowed`);
     if (canonicalJson(b.formats) !== '["rawHtml"]') fail("formats must be exactly [\"rawHtml\"] (JSON/LLM formats are refused)");
-    if (b.proxy !== "basic" || b.checkPromptInjection !== false || b.redactPII !== false || b.lockdown !== false || (b.parsers as unknown[]).length !== 0) fail("only standard options are allowed");
-    if (b.timeout !== STATE_LIMITS.requestTimeoutMs) fail("unexpected timeout");
+    if (b.proxy !== "basic" || b.onlyMainContent !== false) fail("only the reviewed options are allowed");
+    if (b.timeout !== r.timing.requestTimeoutMs || (b.timeout as number) > STATE_LIMITS.maxRequestTimeoutMs) fail("unexpected timeout");
     if (!isSameSite(parseHttpUrl(String(b.url)), site) || canonicalizeUrl(parseHttpUrl(String(b.url))) !== canonicalizeUrl(parseHttpUrl(r.pageUrl))) fail("request URL is not the planned same-site page");
     const actions = b.actions as Obj[];
     if (actions.length > plan.maxActions || actions.length > STATE_LIMITS.providerMaxActions) fail("too many actions");
@@ -103,13 +121,14 @@ export function validateForExecution(planJson: unknown, previewJson: unknown): V
     for (const a of actions) {
       if (!ALLOWED_ACTIONS.includes(String(a.type))) fail(`action type "${String(a.type)}" is not allowed`);
       if (a.type === "wait") {
-        if (a.selector !== undefined || typeof a.milliseconds !== "number") fail("only fixed-duration waits are allowed");
+        if (a.selector !== undefined || typeof a.milliseconds !== "number" || !Number.isInteger(a.milliseconds) || a.milliseconds < 1) fail("only fixed positive-integer waits are allowed");
         waits += a.milliseconds as number;
       }
       if (a.type === "screenshot" && (a.fullPage !== false || a.viewport !== undefined || a.quality !== undefined)) fail("only viewport screenshots without overrides are allowed");
       if (a.type === "executeJavascript" && (typeof a.script !== "string" || FORBIDDEN_SCRIPT.test(a.script as string) || !/w2f/.test(a.script as string))) fail("script is not one of the reviewed scripts");
     }
-    if (waits > STATE_LIMITS.providerMaxCombinedWaitMs || r.combinedWaitMs > plan.maxCombinedWaitMs) fail("combined waits exceed the budget");
+    if (waits !== r.combinedWaitMs || waits > STATE_LIMITS.providerMaxCombinedWaitMs || waits > plan.maxCombinedWaitMs || waits * 2 > (b.timeout as number)) fail("combined waits exceed the budget");
+    if (actions.some((a) => a.type === "executeJavascript" && /\basync\b|\bawait\b|setTimeout|setInterval|Promise/.test(a.script as string))) fail("scripts must be synchronous");
     if (r.states.length > STATE_LIMITS.maxStatesPerPage) fail("too many states");
     return { preview: r, requestSha256: sha256(canonicalJson(b)), synthetic: r.states.some((s) => s.provenance === "synthetic") };
   });
@@ -176,6 +195,8 @@ export interface PageRun {
   checkpoints: Checkpoint[];
   freeze: Obj | null;
   lazy: Obj | null;
+  // observed (not awaited) at the baseline measurement
+  readiness: Obj | null;
   states: { seq: number; name: string; provenance: string; applied: number; refused: number; missing: number; error: string | null; reverted: number | null; revertFailed: number | null }[];
   warnings: string[];
 }
@@ -220,8 +241,8 @@ function classify(err: unknown): "failed" | "ambiguous" {
 }
 
 // Post-response validation. Returns accepted, or rejected/ambiguous + reason.
-export async function validateStateResponse(doc: unknown, r: RequestPreview, resolver: Resolver): Promise<{ status: "accepted" | "rejected" | "ambiguous"; reason: string | null; run: Pick<PageRun, "freeze" | "lazy" | "states" | "warnings"> }> {
-  const out: Pick<PageRun, "freeze" | "lazy" | "states" | "warnings"> = { freeze: null, lazy: null, states: [], warnings: [] };
+export async function validateStateResponse(doc: unknown, r: RequestPreview, resolver: Resolver): Promise<{ status: "accepted" | "rejected" | "ambiguous"; reason: string | null; run: Pick<PageRun, "freeze" | "lazy" | "readiness" | "states" | "warnings"> }> {
+  const out: Pick<PageRun, "freeze" | "lazy" | "readiness" | "states" | "warnings"> = { freeze: null, lazy: null, readiness: null, states: [], warnings: [] };
   const reject = (status: "rejected" | "ambiguous", reason: string) => ({ status, reason, run: out });
   if (!isObj(doc)) return reject("ambiguous", "response is not an object");
   if (JSON.stringify(doc).length > LIMITS.hifiMaxJsonBytes) return reject("rejected", "response exceeds the byte bound");
@@ -243,7 +264,8 @@ export async function validateStateResponse(doc: unknown, r: RequestPreview, res
   const returns = actions && Array.isArray(actions.javascriptReturns) ? actions.javascriptReturns : null;
   const shots = actions && Array.isArray(actions.screenshots) ? actions.screenshots : null;
   const scrapes = actions && Array.isArray(actions.scrapes) ? actions.scrapes : null;
-  const jsRoles = r.roles.filter((x) => x.role === "freeze" || x.role === "lazy" || x.role === "state" || x.role === "revert");
+  const jsRoles = r.roles.filter((x) => x.role === "freeze" || x.role === "scroll" || x.role === "state" || x.role === "revert");
+  const scrolls: Obj[] = [];
   // Each planned executeJavascript must have returned its tagged object, in order.
   if (!returns || returns.length !== jsRoles.length) return reject("ambiguous", `expected ${jsRoles.length} javascriptReturns, got ${returns ? returns.length : "none"} (possibly a partial run or unawaited async script)`);
   for (const [i, role] of jsRoles.entries()) {
@@ -251,7 +273,12 @@ export async function validateStateResponse(doc: unknown, r: RequestPreview, res
     if (!isObj(v) || v.w2f !== role.role) return reject("ambiguous", `javascriptReturns[${i}] is not the expected "${role.role}" result`);
     if ((role.role === "state" || role.role === "revert") && v.seq !== role.seq) return reject("ambiguous", `javascriptReturns[${i}] has seq ${String(v.seq)}, expected ${role.seq}`);
     if (role.role === "freeze") out.freeze = v;
-    if (role.role === "lazy") out.lazy = v;
+    if (role.role === "scroll") scrolls.push(v);
+  }
+  if (scrolls.length) {
+    const last = scrolls[scrolls.length - 1]!;
+    out.lazy = { steps: scrolls.length, finalY: last.y ?? null, scrollHeight: last.scrollHeight ?? null, maxGapPx: last.maxGapPx ?? null, coverageComplete: scrolls.every((x) => x.coverageComplete === true), cappedByMaxPx: scrolls.some((x) => x.cappedByMaxPx === true) };
+    if (out.lazy.coverageComplete !== true) out.warnings.push("lazy-load coverage partial: scroll steps were further apart than the viewport");
   }
   if (!shots || shots.length !== r.states.length || !shots.every((s) => typeof s === "string" && s.length <= LIMITS.maxUrlChars)) return reject("ambiguous", `expected ${r.states.length} screenshots`);
   if (!scrapes || scrapes.length !== r.states.length) return reject("ambiguous", `expected ${r.states.length} scrapes`);
@@ -263,6 +290,11 @@ export async function validateStateResponse(doc: unknown, r: RequestPreview, res
     if (v.provenance !== s.provenance) return reject("ambiguous", `state ${s.seq} provenance mismatch`);
     const err = typeof v.error === "string" ? v.error.slice(0, 200) : null;
     out.states.push({ seq: s.seq, name: s.name, provenance: s.provenance, applied: Array.isArray(v.applied) ? v.applied.length : 0, refused: Array.isArray(v.refused) ? v.refused.length : 0, missing: Array.isArray(v.missing) ? v.missing.length : 0, error: err, reverted: rvv && typeof rvv.reverted === "number" ? rvv.reverted : null, revertFailed: rvv && typeof rvv.failed === "number" ? rvv.failed : null });
+    if (s.seq === 0 && isObj(v.readiness)) {
+      out.readiness = v.readiness;
+      if (typeof v.readiness.imagesIncomplete === "number" && v.readiness.imagesIncomplete > 0) out.warnings.push(`${v.readiness.imagesIncomplete} image(s) still incomplete at baseline measurement`);
+      if (v.readiness.fontsStatus === "loading") out.warnings.push("web fonts still loading at baseline measurement");
+    }
     if (err) out.warnings.push(`state "${s.name}" failed in the browser (${err}); it reverted itself`);
     if (s.provenance === "synthetic" && Array.isArray(v.applied) && v.applied.length === 0) out.warnings.push(`state "${s.name}": no modification applied`);
     if (rvv && rvv.failed !== 0) out.warnings.push(`state "${s.name}": revert reported ${String(rvv.failed)} failure(s)`);
@@ -300,6 +332,7 @@ export async function executeStateRun(o: ExecuteOptions): Promise<RunResult> {
       checkpoints: [],
       freeze: null,
       lazy: null,
+      readiness: null,
       states: [],
       warnings: [],
     };
@@ -359,7 +392,7 @@ export async function executeStateRun(o: ExecuteOptions): Promise<RunResult> {
     run.attempts = 1;
     try {
       cp("request-sent", "attempt 1 of 1 (no retries, autoResume false)");
-      doc = await withTimeout(client.scrape(String(url), { ...opts, autoResume: false }), STATE_LIMITS.requestTimeoutMs + 30_000);
+      doc = await withTimeout(client.scrape(String(url), { ...opts, autoResume: false }), r.timing.wallClockMs);
       cp("response-received");
     } catch (err) {
       outcome = classify(err);

@@ -1,7 +1,16 @@
-// Browser-side scripts embedded in planned (NOT executed by this tool)
-// executeJavascript actions. They are literal strings so the exact bytes in a
-// request preview are the bytes under test. Every script returns a tagged,
-// bounded object (`w2f: "freeze" | "lazy" | "state" | "revert"`).
+// Browser-side scripts embedded in executeJavascript actions. They are literal
+// strings so the exact bytes in a request preview are the bytes under test.
+// Every script returns a tagged, bounded object
+// (`w2f: "freeze" | "scroll" | "state" | "revert"`).
+//
+// ALL scripts are SYNCHRONOUS IIFE expressions - the same form as Firecrawl's
+// own internal executeJavascript (branding) script,
+// `(function name() { ...; return obj; })();` (firecrawl/firecrawl
+// apps/api/src/scraper/scrapeURL/engines/fire-engine/brandingScript.ts), whose
+// return arrives as actions.javascriptReturns[i] = { type: "object", value }
+// (fire-engine/index.ts, transformers/index.ts). Whether the provider awaits a
+// returned Promise is NOT documented, so no script is async and no script
+// sleeps: every delay is a documented provider `wait` action.
 //
 // Scope: no script clicks, submits, focuses inputs, navigates, opens windows,
 // fetches, or reads storage/cookies. State changes are DECLARATIVE DOM
@@ -18,7 +27,7 @@
 
 // Freeze: report what was attempted / applied / unavailable. JS timers,
 // requestAnimationFrame loops and WebGL/canvas rendering are NOT frozen.
-export const FREEZE_JS = String.raw`(() => {
+export const FREEZE_JS = String.raw`(function w2fFreeze() {
   const r = { w2f: "freeze", attempted: [], applied: {}, unavailable: [], modifications: [], notFrozen: ["JS timers", "requestAnimationFrame loops", "WebGL/canvas rendering"] };
   const note = (k, n) => { r.attempted.push(k); if (n === null) r.unavailable.push(k); else r.applied[k] = n; };
   try {
@@ -39,34 +48,30 @@ export const FREEZE_JS = String.raw`(() => {
     note("force-aos-visible", n); r.modifications.push("forced .aos-animate on " + n + " element(s) (not the page's original visibility)");
   }
   return r;
-})()`;
+})();`;
 
-// Bounded lazy-load scroll, back to the top, then a bounded visibility settle
-// (web fonts ready, <img> elements complete). Reports what did not settle.
-export const LAZY_JS = String.raw`(async () => {
-  const maxSteps = __MAX_STEPS__, maxPx = __MAX_PX__, stepWait = __STEP_WAIT_MS__, settleMs = __VISIBILITY_MS__;
-  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
-  let steps = 0, y = 0;
-  const step = Math.max(200, Math.min(window.innerHeight || 800, 2000));
-  while (steps < maxSteps && y < maxPx) {
-    const h = document.documentElement.scrollHeight;
-    if (y + (window.innerHeight || 800) >= h) break;
-    y = Math.min(y + step, maxPx); window.scrollTo(0, y); steps++; await sleep(stepWait);
-  }
-  const reachedBottom = y + (window.innerHeight || 800) >= document.documentElement.scrollHeight;
-  window.scrollTo(0, 0); await sleep(stepWait);
-  const t0 = Date.now();
-  let fontsReady = null;
-  try { if (document.fonts && document.fonts.ready) fontsReady = await Promise.race([document.fonts.ready.then(() => true), sleep(settleMs).then(() => false)]); } catch (e) { fontsReady = false; }
-  const imgs = Array.from(document.images).slice(0, 2000);
-  while (Date.now() - t0 < settleMs && imgs.some((i) => !i.complete)) await sleep(100);
-  const imagesPending = imgs.filter((i) => !i.complete).length;
-  return { w2f: "lazy", steps, scrolledTo: y, reachedBottom, capped: !reachedBottom, settle: { fontsReady, images: imgs.length, imagesPending, waitedMs: Date.now() - t0, settled: fontsReady !== false && imagesPending === 0 } };
-})()`;
+// One lazy-load scroll step (synchronous). Step k of n scrolls to an evenly
+// spread position so the last step reaches the bottom (bounded by maxPx); the
+// following provider `wait` action gives lazy content time to load. Reports
+// the gap between positions: a gap larger than the viewport means some regions
+// were never in view (lazy coverage partial).
+export const SCROLL_JS = String.raw`(function w2fScroll() {
+  const k = __STEP__, n = __STEPS__, maxPx = __MAX_PX__;
+  const vh = window.innerHeight || 800;
+  const maxY = Math.max(0, Math.min(maxPx, document.documentElement.scrollHeight - vh));
+  const y = Math.round((maxY * k) / n);
+  window.scrollTo(0, y);
+  const gap = Math.round(maxY / n);
+  return { w2f: "scroll", step: k, steps: n, y, scrollHeight: document.documentElement.scrollHeight, viewportHeight: vh, maxGapPx: gap, coverageComplete: gap <= vh, cappedByMaxPx: document.documentElement.scrollHeight - vh > maxPx };
+})();`;
 
 // Apply one declarative state (or the baseline), measure the page and the
-// state's scope, and scroll the scope into view for the following screenshot.
-export const STATE_JS = String.raw`(async () => {
+// state's scope SYNCHRONOUSLY (layout is forced by getBoundingClientRect; CSS
+// transitions/animations are already frozen), observe readiness (document
+// readyState, font loading status, incomplete images - observation only, no
+// waiting), and scroll the scope into view for the following screenshot.
+// Page JS that reacts asynchronously to the modification is NOT awaited.
+export const STATE_JS = String.raw`(function w2fState() {
   const STATE = __STATE__;
   const MAX = { elements: 20000, texts: 20000, images: 500, svgs: 200, rules: 200, media: 50, fixed: 50, match: 5 };
   const MAX_RETURN_CHARS = __MAX_RETURN_CHARS__;
@@ -99,7 +104,8 @@ export const STATE_JS = String.raw`(async () => {
       out.applied.push({ selector: m.selector, mechanism: m.mechanism });
     }
   }
-  await new Promise((res) => setTimeout(res, __SETTLE_MS__));
+  const imgsAll = Array.from(document.images).slice(0, 5000);
+  const readiness = { readyState: document.readyState, fontsStatus: document.fonts ? document.fonts.status : null, images: imgsAll.length, imagesIncomplete: imgsAll.filter((i) => !i.complete).length, lazyImages: imgsAll.filter((i) => i.loading === "lazy").length };
   const bounds = (e) => { const b = e.getBoundingClientRect(); return { x: b.x + scrollX, y: b.y + scrollY, w: b.width, h: b.height }; };
   const props = ["backgroundColor","color","fontFamily","fontSize","fontWeight","fontStyle","lineHeight","textDecorationLine","borderTopWidth","borderRightWidth","borderBottomWidth","borderLeftWidth","borderTopColor","borderRightColor","borderBottomColor","borderLeftColor","borderRadius","opacity","display","visibility","position","paddingTop","paddingRight","paddingBottom","paddingLeft","objectFit"];
   const styles = (e) => { const c = getComputedStyle(e); const o = {}; for (const k of props) o[k] = c[k]; return o; };
@@ -150,7 +156,8 @@ export const STATE_JS = String.raw`(async () => {
   mediaOf("iframe", "iframe", (e) => ({ src: String(e.src || "").slice(0, 2048) || null }));
   let scope = null, shotY = 0;
   if (STATE.scope) { const s = document.querySelector(STATE.scope); if (s) { scope = bounds(s); window.scrollTo(0, Math.max(0, scope.y - 40)); shotY = window.scrollY || 0; } else out.missing.push(STATE.scope); }
-  const result = { ...out, scope, screenshotScrollY: shotY, viewport: { width: innerWidth, height: innerHeight }, measured: { url: location.href, viewport: { width: innerWidth, height: innerHeight }, title: document.title, elements, texts, images, svgs }, fixed, motion, media, truncated: false };
+  if (!scope) { window.scrollTo(0, 0); shotY = window.scrollY || 0; }
+  const result = { ...out, readiness, scope, screenshotScrollY: shotY, viewport: { width: innerWidth, height: innerHeight }, measured: { url: location.href, viewport: { width: innerWidth, height: innerHeight }, title: document.title, elements, texts, images, svgs }, fixed, motion, media, truncated: false };
   // Byte bound: drop measurement tails (largest first) until the return fits.
   for (const k of ["texts", "elements", "svgs", "images"]) {
     while (JSON.stringify(result).length > MAX_RETURN_CHARS && result.measured[k].length) { result.measured[k].length = Math.floor(result.measured[k].length / 2); result.truncated = true; }
@@ -161,13 +168,13 @@ export const STATE_JS = String.raw`(async () => {
     // Apply/measure failed: revert immediately so later steps see the baseline.
     return { ...out, error: String(e && e.message || e).slice(0, 200), reverted: revertNow() };
   }
-})()`;
+})();`;
 
 // Undo the previous state's mutations (in reverse order).
-export const REVERT_JS = String.raw`(() => {
+export const REVERT_JS = String.raw`(function w2fRevert() {
   const list = window.__w2fRevert || []; let n = 0, failed = 0;
   try {
     for (const op of list.reverse()) { try { if (op[0] === "attr") { if (op[3] === null) op[1].removeAttribute(op[2]); else op[1].setAttribute(op[2], op[3]); } else if (op[0] === "class") op[1].classList.remove(op[2]); n++; } catch (e) { failed++; } }
   } finally { window.__w2fRevert = []; try { window.scrollTo(0, 0); } catch (e) {} }
   return { w2f: "revert", seq: __SEQ__, reverted: n, failed };
-})()`;
+})();`;

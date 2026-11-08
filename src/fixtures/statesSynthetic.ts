@@ -54,6 +54,7 @@ export function syntheticStateResponse(opts: { dropScreenshot?: boolean; failRev
     screenshotScrollY: scope ? Math.max(0, scope.y - 40) : 0,
     viewport: { width: 800, height: 600 },
     measured: measured(open),
+    readiness: { readyState: "complete", fontsStatus: "loaded", images: 0, imagesIncomplete: 0, lazyImages: 0 },
     fixed: [],
     motion,
     media,
@@ -74,7 +75,7 @@ export function syntheticStateResponse(opts: { dropScreenshot?: boolean; failRev
       actions: {
         javascriptReturns: [
           { type: "object", value: { w2f: "freeze", attempted: ["css-animations-transitions", "web-animations", "video-pause", "swiper-autoplay-stop", "force-aos-visible"], applied: { "css-animations-transitions": 1, "web-animations": 3, "video-pause": 1, "swiper-autoplay-stop": 0, "force-aos-visible": 2 }, unavailable: [], modifications: ["forced .aos-animate on 2 element(s) (not the page's original visibility)"], notFrozen: ["JS timers", "requestAnimationFrame loops", "WebGL/canvas rendering"] } },
-          { type: "object", value: { w2f: "lazy", steps: 2, scrolledTo: 1200, reachedBottom: true, capped: false } },
+          ...[1, 2, 3].map((k) => ({ type: "object", value: { w2f: "scroll", step: k, steps: 3, y: k * 33, scrollHeight: 700, viewportHeight: 600, maxGapPx: 33, coverageComplete: true, cappedByMaxPx: false } })),
           { type: "object", value: states[0] },
           { type: "object", value: states[1] },
           { type: "object", value: { w2f: "revert", seq: 1, reverted: opts.errorState ? 0 : 1, failed: opts.failRevert ? 1 : 0 } },

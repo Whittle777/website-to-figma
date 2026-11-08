@@ -34,6 +34,7 @@ export function adaptTaggedReturns(data: Obj, name: string): AdaptedStates | nul
   for (const v of values) {
     if (v.w2f === "freeze" && !out.freeze) out.freeze = v;
     else if (v.w2f === "lazy" && !out.lazy) out.lazy = v;
+    else if (v.w2f === "scroll") out.lazy = { w2f: "lazy", steps: v.steps, finalY: v.y, coverageComplete: v.coverageComplete === true && (out.lazy?.coverageComplete ?? true) !== false };
     else if (v.w2f === "revert" && typeof v.seq === "number") reverts.set(v.seq, v);
     else if (v.w2f === "state" && typeof v.seq === "number" && Number.isInteger(v.seq) && v.seq >= 0 && v.seq < STATE_LIMITS.maxStatesPerPage) {
       if (bySeq.has(v.seq)) {

@@ -85,7 +85,8 @@ async function createClient(apiKey: string): Promise<CrawlClient> {
   const { default: Firecrawl } = await import("@mendable/firecrawl-js");
   // maxRetries is the total attempt count in SDK 4.52 (1 = no retries);
   // timeoutMs becomes the axios (socket-inactivity) request timeout.
-  return new Firecrawl({ apiKey, timeoutMs: 30_000, maxRetries: 1 });
+  // apiUrl pinned: the SDK otherwise falls back to the FIRECRAWL_API_URL env var.
+  return new Firecrawl({ apiKey, apiUrl: "https://api.firecrawl.dev", timeoutMs: 30_000, maxRetries: 1 });
 }
 
 function underStartPath(u: URL, start: URL): boolean {

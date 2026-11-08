@@ -8,9 +8,10 @@
       "url": "https://example.com/",
       "waitMs": 2000,
       "lazy": {
-        "steps": 6,
+        "steps": 3,
         "maxPx": 20000,
-        "stepWaitMs": 300
+        "stepWaitMs": 500,
+        "visibilityMs": 1500
       },
       "states": [
         {

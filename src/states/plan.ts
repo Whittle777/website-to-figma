@@ -5,14 +5,18 @@
 // manual operator review only, with NO handler side-effect guarantee (see
 // scripts.ts). Provider cost of these requests is unknown and not estimated.
 import { parseHttpUrl } from "../security/urlGuard";
-import { FREEZE_JS, LAZY_JS, REVERT_JS, STATE_JS } from "./scripts";
+import { FREEZE_JS, REVERT_JS, SCROLL_JS, STATE_JS } from "./scripts";
 
 export class StatePlanError extends Error {}
 
 // Firecrawl docs (scrape actions): "up to 50 actions per request, and the
 // combined wait time across all wait actions and waitFor must not exceed 60
 // seconds". This tool's own budgets are stricter by default and also count
-// in-script sleeps (lazy scroll steps, settle delays) toward the wait budget.
+// Firecrawl source (apps/api/src/controllers/v2/types.ts): MAX_ACTIONS = 50,
+// ACTIONS_MAX_WAIT_TIME = 60 s counted as waitFor + wait.milliseconds (a
+// selector wait counts 1 s), wait.milliseconds must be a positive integer.
+// All scripts here are synchronous and never sleep, so the provider's wait
+// accounting is exactly our combined wait (in-script sleep is always 0).
 export const STATE_LIMITS = {
   providerMaxActions: 50,
   providerMaxCombinedWaitMs: 60_000,
@@ -25,12 +29,19 @@ export const STATE_LIMITS = {
   maxSelectorChars: 200,
   maxNameChars: 40,
   maxPageWaitMs: 10_000,
-  maxSettleMs: 2_000,
   maxLazySteps: 10,
   maxLazyPx: 30_000,
-  maxLazyStepWaitMs: 1_000,
+  maxLazyStepWaitMs: 2_000,
   maxVisibilityMs: 5_000,
-  requestTimeoutMs: 90_000,
+  // Request timeout = min(max, base + 2 x combined waits + per-state); the
+  // combined wait never exceeds half of it (mirrors the provider's waitFor rule).
+  requestTimeoutBaseMs: 20_000,
+  requestTimeoutPerStateMs: 10_000,
+  maxRequestTimeoutMs: 120_000,
+  // SDK 4.52 with autoResume false uses timeout + 5000 as the HTTP timeout
+  // (dist/index.js:564); our own wall clock adds a further margin.
+  sdkTimeoutMarginMs: 5_000,
+  wallClockMarginMs: 30_000,
   maxStateReturnChars: 6_000_000, // per measured state, enforced in-browser and by the adapter
 } as const;
 
@@ -55,7 +66,6 @@ export interface ManualState {
 export interface PlannedPage {
   url: string;
   waitMs: number;
-  settleMs: number;
   lazy: { steps: number; maxPx: number; stepWaitMs: number; visibilityMs: number };
   states: PlannedState[]; // [0] is the implicit baseline "Default"
   manual: ManualState[];
@@ -151,7 +161,7 @@ export function parseStatePlan(json: unknown): StatePlan {
   const pages = json.pages.map((raw, i): PlannedPage => {
     const p = `pages[${i}]`;
     if (!isObj(raw)) throw new StatePlanError(`${p}: expected object`);
-    keys(raw, p, ["url", "waitMs", "settleMs", "lazy", "states", "manual"]);
+    keys(raw, p, ["url", "waitMs", "lazy", "states", "manual"]);
     let url: URL;
     try {
       url = parseHttpUrl(String(raw.url));
@@ -165,9 +175,9 @@ export function parseStatePlan(json: unknown): StatePlan {
     if (!isObj(lazyRaw)) throw new StatePlanError(`${p}.lazy: expected object`);
     keys(lazyRaw, `${p}.lazy`, ["steps", "maxPx", "stepWaitMs", "visibilityMs"]);
     const lazy = {
-      steps: int(lazyRaw.steps, `${p}.lazy.steps`, 6, 0, STATE_LIMITS.maxLazySteps),
+      steps: int(lazyRaw.steps, `${p}.lazy.steps`, 3, 0, STATE_LIMITS.maxLazySteps),
       maxPx: int(lazyRaw.maxPx, `${p}.lazy.maxPx`, 20_000, 0, STATE_LIMITS.maxLazyPx),
-      stepWaitMs: int(lazyRaw.stepWaitMs, `${p}.lazy.stepWaitMs`, 300, 0, STATE_LIMITS.maxLazyStepWaitMs),
+      stepWaitMs: int(lazyRaw.stepWaitMs, `${p}.lazy.stepWaitMs`, 500, 0, STATE_LIMITS.maxLazyStepWaitMs),
       visibilityMs: int(lazyRaw.visibilityMs, `${p}.lazy.visibilityMs`, 1_500, 0, STATE_LIMITS.maxVisibilityMs),
     };
     const rawStates = raw.states === undefined ? [] : raw.states;
@@ -201,7 +211,6 @@ export function parseStatePlan(json: unknown): StatePlan {
     return {
       url: url.href,
       waitMs: int(raw.waitMs, `${p}.waitMs`, 2_000, 0, STATE_LIMITS.maxPageWaitMs),
-      settleMs: int(raw.settleMs, `${p}.settleMs`, 300, 0, STATE_LIMITS.maxSettleMs),
       lazy,
       states,
       manual,
@@ -218,19 +227,16 @@ function fill(script: string, values: Record<string, unknown>): string {
   });
 }
 
-// Standard-only settings reviewed for crawl (no JSON/LLM formats, no parsers,
-// basic proxy, every documented surcharge option off, no threatProtection
-// override so the team's vendor default applies) plus rawHtml and actions.
+// Minimal request body. Vendor/account safety settings are NOT overridden:
+// checkPromptInjection, redactPII, lockdown, threatProtection, blockAds,
+// removeBase64Images, parsers and mobile are OMITTED so the provider/team
+// defaults apply unchanged (Firecrawl source apps/api/src/controllers/v2/
+// types.ts:861-872 lists their schema defaults). Only content/cost choices are
+// sent: rawHtml only (no JSON/LLM formats), full page (onlyMainContent false)
+// and the basic proxy (the schema default "auto" may escalate proxies).
 export const STATE_SCRAPE_OPTIONS = {
   onlyMainContent: false,
-  blockAds: true,
-  removeBase64Images: true,
-  parsers: [] as string[],
   proxy: "basic",
-  lockdown: false,
-  checkPromptInjection: false,
-  redactPII: false,
-  mobile: false,
 } as const;
 export interface StateRequestBody {
   url: string;
@@ -238,25 +244,19 @@ export interface StateRequestBody {
   timeout: number;
   actions: Obj[];
   onlyMainContent: false;
-  blockAds: true;
-  removeBase64Images: true;
-  parsers: string[];
   proxy: "basic";
-  lockdown: false;
-  checkPromptInjection: false;
-  redactPII: false;
-  mobile: false;
 }
 
-export type ActionRole = "wait" | "freeze" | "lazy" | "state" | "screenshot" | "scrape" | "revert";
+export type ActionRole = "wait" | "freeze" | "scroll" | "state" | "screenshot" | "scrape" | "revert";
 export interface RequestPreview {
   pageUrl: string;
   sent: false;
   body: StateRequestBody;
   roles: { index: number; role: ActionRole; state?: string; seq?: number }[];
   actionCount: number;
-  // waitFor + wait actions + in-script sleeps (lazy steps and settle delays)
+  // sum of wait.milliseconds (= the provider's waitFor + wait accounting; no waitFor is sent)
   combinedWaitMs: number;
+  timing: { requestTimeoutMs: number; sdkHttpTimeoutMs: number; wallClockMs: number; combinedWaitMs: number; inScriptSleepMs: 0 };
   states: { seq: number; name: string; provenance: "baseline" | "synthetic"; review: string | null; screenshotIndex: number; scrapeIndex: number }[];
   manual: ManualState[];
 }
@@ -271,19 +271,25 @@ export function buildStateRequest(plan: StatePlan, page: PlannedPage): RequestPr
     actions.push(action);
   };
   let waits = 0;
-  if (page.waitMs > 0) {
-    push("wait", { type: "wait", milliseconds: page.waitMs });
-    waits += page.waitMs;
-  }
+  const wait = (ms: number) => {
+    if (ms <= 0) return; // provider requires a positive integer
+    push("wait", { type: "wait", milliseconds: ms });
+    waits += ms;
+  };
+  wait(page.waitMs);
   push("freeze", { type: "executeJavascript", script: fill(FREEZE_JS, { FORCE_AOS: plan.forceAos }) });
-  // Lazy scroll + visibility settle always runs (steps may be 0).
-  push("lazy", { type: "executeJavascript", script: fill(LAZY_JS, { MAX_STEPS: page.lazy.steps, MAX_PX: page.lazy.maxPx, STEP_WAIT_MS: page.lazy.stepWaitMs, VISIBILITY_MS: page.lazy.visibilityMs }) });
-  waits += (page.lazy.steps + 1) * page.lazy.stepWaitMs + page.lazy.visibilityMs;
+  // Lazy load: synchronous scroll steps, each followed by a provider wait; the
+  // last wait is the visibility settle (at least the step wait).
+  const n = page.lazy.steps;
+  for (let k = 1; k <= n; k++) {
+    push("scroll", { type: "executeJavascript", script: fill(SCROLL_JS, { STEP: k, STEPS: n, MAX_PX: page.lazy.maxPx }) });
+    wait(k === n ? Math.max(page.lazy.stepWaitMs, page.lazy.visibilityMs) : page.lazy.stepWaitMs);
+  }
+  if (n === 0) wait(page.lazy.visibilityMs);
   const states: RequestPreview["states"] = [];
   let shots = 0;
   page.states.forEach((s, seq) => {
-    push("state", { type: "executeJavascript", script: fill(STATE_JS, { STATE: { seq, name: s.name, scope: s.scope, mutations: s.mutations }, SETTLE_MS: page.settleMs, MAX_RETURN_CHARS: STATE_LIMITS.maxStateReturnChars }) }, { state: s.name, seq });
-    waits += page.settleMs;
+    push("state", { type: "executeJavascript", script: fill(STATE_JS, { STATE: { seq, name: s.name, scope: s.scope, mutations: s.mutations }, MAX_RETURN_CHARS: STATE_LIMITS.maxStateReturnChars }) }, { state: s.name, seq });
     push("screenshot", { type: "screenshot", fullPage: false }, { state: s.name, seq });
     push("scrape", { type: "scrape" }, { state: s.name, seq });
     states.push({ seq, name: s.name, provenance: s.mutations.length ? "synthetic" : "baseline", review: s.mutations.length ? SYNTHETIC_REVIEW : null, screenshotIndex: shots, scrapeIndex: shots });
@@ -292,13 +298,16 @@ export function buildStateRequest(plan: StatePlan, page: PlannedPage): RequestPr
   });
   if (actions.length > plan.maxActions) throw new StatePlanError(`${page.url}: ${actions.length} actions exceed the plan budget of ${plan.maxActions} (provider maximum ${STATE_LIMITS.providerMaxActions})`);
   if (waits > plan.maxCombinedWaitMs) throw new StatePlanError(`${page.url}: combined waits ${waits} ms exceed the plan budget of ${plan.maxCombinedWaitMs} ms (provider maximum ${STATE_LIMITS.providerMaxCombinedWaitMs} ms)`);
+  const timeout = Math.min(STATE_LIMITS.maxRequestTimeoutMs, STATE_LIMITS.requestTimeoutBaseMs + 2 * waits + STATE_LIMITS.requestTimeoutPerStateMs * page.states.length);
+  if (waits * 2 > timeout) throw new StatePlanError(`${page.url}: combined waits ${waits} ms exceed half of the ${timeout} ms request timeout`);
   return {
     pageUrl: page.url,
     sent: false,
-    body: { url: page.url, formats: ["rawHtml"], timeout: STATE_LIMITS.requestTimeoutMs, actions, ...STATE_SCRAPE_OPTIONS, parsers: [] },
+    body: { url: page.url, formats: ["rawHtml"], timeout, actions, ...STATE_SCRAPE_OPTIONS },
     roles,
     actionCount: actions.length,
     combinedWaitMs: waits,
+    timing: { requestTimeoutMs: timeout, sdkHttpTimeoutMs: timeout + STATE_LIMITS.sdkTimeoutMarginMs, wallClockMs: timeout + STATE_LIMITS.wallClockMarginMs, combinedWaitMs: waits, inScriptSleepMs: 0 },
     states,
     manual: page.manual,
   };
@@ -322,6 +331,7 @@ export const PREVIEW_NOTICE = [
   "Provider cost of these requests is UNKNOWN: Firecrawl documents 1 credit per scrape but no per-action/screenshot price; no estimate is given (only the operator's own asserted price is used, to reserve ledger budget).",
   "Screenshot URLs in a provider response expire (documented 24 h) and are never downloaded by this tool.",
   "Not frozen: JS timers, requestAnimationFrame loops, WebGL/canvas rendering. Cross-origin stylesheets cannot be read (reported as inaccessible).",
+  "All scripts are synchronous (no async/sleep); every delay is a documented provider wait action. States are measured synchronously after the modification: page JS that reacts asynchronously is not awaited. Readiness (fonts, incomplete images) is observed and recorded, not waited for beyond the planned waits.",
 ];
 
 export function buildStatePreview(plan: StatePlan): StatePreviewDoc {

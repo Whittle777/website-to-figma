@@ -48,7 +48,7 @@ describe("tagged-return adapter", () => {
 
   it("drops a state return over the per-state byte bound", () => {
     const json = clone(syntheticStateResponse()) as any;
-    json.data.actions.javascriptReturns[3].value.measured.title = "x".repeat(STATE_LIMITS.maxStateReturnChars);
+    json.data.actions.javascriptReturns.find((r: any) => r.value.w2f === "state" && r.value.seq === 1).value.measured.title = "x".repeat(STATE_LIMITS.maxStateReturnChars);
     const r = adapt(json);
     expect(r.warnings.join()).toMatch(/state 1 return exceeds/);
     expect(r.warnings.join()).toMatch(/non-contiguous/);
