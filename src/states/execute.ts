@@ -130,7 +130,8 @@ export function validateForExecution(planJson: unknown, previewJson: unknown): V
     if (waits !== r.combinedWaitMs || waits > STATE_LIMITS.providerMaxCombinedWaitMs || waits > plan.maxCombinedWaitMs || waits * 2 > (b.timeout as number)) fail("combined waits exceed the budget");
     if (actions.some((a) => a.type === "executeJavascript" && /\basync\b|\bawait\b|setTimeout|setInterval|Promise/.test(a.script as string))) fail("scripts must be synchronous");
     if (r.states.length > STATE_LIMITS.maxStatesPerPage) fail("too many states");
-    return { preview: r, requestSha256: sha256(canonicalJson(b)), synthetic: r.states.some((s) => s.provenance === "synthetic") };
+    // modifies = any synthetic DOM modification or page-API trigger (needs acknowledgement)
+    return { preview: r, requestSha256: sha256(canonicalJson(b)), synthetic: r.states.some((s) => s.provenance === "synthetic" || s.provenance === "page-api") };
   });
   return { plan, preview: rebuilt, previewSha256: sha256(want), requests };
 }
@@ -153,7 +154,7 @@ export function assertRunGates(v: ValidatedRun, g: RunGates): { perRequest: numb
   if (!Number.isInteger(g.operatorReportedBalance) || (g.operatorReportedBalance as number) < 0) missing.push("--operator-reported-balance N");
   if (!g.confirmExistingCredits) missing.push("--confirm-existing-credits");
   if (!g.confirmNoTopup) missing.push("--confirm-no-topup");
-  if ((v.plan.forceAos || v.requests.some((r) => r.synthetic)) && !g.acknowledgeSyntheticModifications) missing.push("--acknowledge-synthetic-modifications (synthetic DOM changes / forced AOS visibility; no handler side-effect guarantee)");
+  if ((v.plan.forceAos || v.requests.some((r) => r.synthetic)) && !g.acknowledgeSyntheticModifications) missing.push("--acknowledge-synthetic-modifications (synthetic DOM changes / forced AOS visibility / page-API Swiper advance; no handler side-effect guarantee)");
   if (!g.ledgerPath) missing.push("--ledger FILE (shared local project ledger; 1000-credit budget ceiling, not a provider cap)");
   if (missing.length) throw new StateRunPolicyError(`Refusing before any request: missing operator inputs:\n  ${missing.join("\n  ")}`);
   const perRequest = g.operatorCreditsPerRequest as number;
@@ -197,7 +198,7 @@ export interface PageRun {
   lazy: Obj | null;
   // observed (not awaited) at the baseline measurement
   readiness: Obj | null;
-  states: { seq: number; name: string; provenance: string; applied: number; refused: number; missing: number; error: string | null; reverted: number | null; revertFailed: number | null }[];
+  states: { seq: number; name: string; provenance: string; applied: number; refused: number; missing: number; error: string | null; reverted: number | null; revertFailed: number | null; trigger: Obj | null }[];
   warnings: string[];
 }
 
@@ -289,14 +290,19 @@ export async function validateStateResponse(doc: unknown, r: RequestPreview, res
     if (v.name !== s.name) return reject("ambiguous", `state ${s.seq} returned name ${String(v.name)}`);
     if (v.provenance !== s.provenance) return reject("ambiguous", `state ${s.seq} provenance mismatch`);
     const err = typeof v.error === "string" ? v.error.slice(0, 200) : null;
-    out.states.push({ seq: s.seq, name: s.name, provenance: s.provenance, applied: Array.isArray(v.applied) ? v.applied.length : 0, refused: Array.isArray(v.refused) ? v.refused.length : 0, missing: Array.isArray(v.missing) ? v.missing.length : 0, error: err, reverted: rvv && typeof rvv.reverted === "number" ? rvv.reverted : null, revertFailed: rvv && typeof rvv.failed === "number" ? rvv.failed : null });
+    out.states.push({ seq: s.seq, name: s.name, provenance: s.provenance, applied: Array.isArray(v.applied) ? v.applied.length : 0, refused: Array.isArray(v.refused) ? v.refused.length : 0, missing: Array.isArray(v.missing) ? v.missing.length : 0, error: err, reverted: rvv && typeof rvv.reverted === "number" ? rvv.reverted : null, revertFailed: rvv && typeof rvv.failed === "number" ? rvv.failed : null, trigger: isObj(v.trigger) ? v.trigger : null });
+    if (s.provenance === "page-api") {
+      const t = isObj(v.trigger) ? v.trigger : null;
+      if (!t || t.valid !== true) out.warnings.push(`state "${s.name}": page-API trigger refused (${t && typeof t.reason === "string" ? t.reason : "no trigger report"}); this variant equals the pre-trigger page`);
+      else if (t.moved !== true) out.warnings.push(`state "${s.name}": Swiper did not move`);
+    }
     if (s.seq === 0 && isObj(v.readiness)) {
       out.readiness = v.readiness;
       if (typeof v.readiness.imagesIncomplete === "number" && v.readiness.imagesIncomplete > 0) out.warnings.push(`${v.readiness.imagesIncomplete} image(s) still incomplete at baseline measurement`);
       if (v.readiness.fontsStatus === "loading") out.warnings.push("web fonts still loading at baseline measurement");
     }
     if (err) out.warnings.push(`state "${s.name}" failed in the browser (${err}); it reverted itself`);
-    if (s.provenance === "synthetic" && Array.isArray(v.applied) && v.applied.length === 0) out.warnings.push(`state "${s.name}": no modification applied`);
+    if ((s.provenance === "synthetic" || s.provenance === "page-api") && Array.isArray(v.applied) && v.applied.length === 0) out.warnings.push(`state "${s.name}": no modification applied`);
     if (rvv && rvv.failed !== 0) out.warnings.push(`state "${s.name}": revert reported ${String(rvv.failed)} failure(s)`);
   }
   if (out.freeze && Array.isArray(out.freeze.modifications) && out.freeze.modifications.length) out.warnings.push(`freeze modified the page: ${out.freeze.modifications.map(String).join("; ").slice(0, 160)}`);

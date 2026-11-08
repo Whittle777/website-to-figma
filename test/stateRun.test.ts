@@ -354,18 +354,58 @@ describe("bounded screenshot acquisition (fake transport only)", () => {
 });
 
 describe("sample plans", () => {
-  it("committed previews equal the rebuilt previews; Bootslander is 1 page, baseline only, 17 actions", () => {
+  it("committed previews equal the rebuilt previews; Bootslander is 1 page, 3 states, 18 actions", () => {
     for (const [planFile, previewFile] of [["samples/state-plan.example.json", "samples/state-plan.example.preview.json"], ["samples/state-plan.bootslander.json", "samples/state-plan.bootslander.preview.json"]]) {
       const v = validateForExecution(JSON.parse(readFileSync(planFile!, "utf8")), JSON.parse(readFileSync(previewFile!, "utf8")));
       expect(v.requests.length).toBe(1);
     }
     const b = validateForExecution(JSON.parse(readFileSync("samples/state-plan.bootslander.json", "utf8")), JSON.parse(readFileSync("samples/state-plan.bootslander.preview.json", "utf8")));
-    expect(b.requests[0]!.preview.roles.map((r) => r.role)).toEqual(["wait", "freeze", ...Array(6).fill(["scroll", "wait"]).flat(), "state", "screenshot", "scrape"]);
-    expect(b.requests[0]!.preview.combinedWaitMs).toBe(2000 + 5 * 400 + 2000);
-    // forced AOS is a modification: acknowledgement required even without synthetic states
+    const p = b.requests[0]!.preview;
+    // baseline BEFORE any scrolling; scroll steps immediately before the scroll-reveal state
+    expect(p.roles.map((r) => r.role)).toEqual(["wait", "freeze", "state", "screenshot", "scrape", "scroll", "wait", "scroll", "wait", "scroll", "wait", "state", "screenshot", "scrape", "state", "screenshot", "scrape", "revert"]);
+    expect(p.states.map((x) => [x.name, x.provenance])).toEqual([["Default", "baseline"], ["AOS revealed", "scroll-triggered"], ["Testimonial next", "page-api"]]);
+    expect(p.combinedWaitMs).toBe(2000 + 500 + 500 + 1500);
+    expect(p.timing.requestTimeoutMs).toBe(20_000 + 2 * 4500 + 3 * 10_000);
+    // page-API trigger requires the acknowledgement
     const dir = tmp();
     initLedger(join(dir, "l.json"), 15, "prior");
-    expect(() => assertRunGates(b, { operatorCreditsPerRequest: 1, operatorReportedBalance: 10, confirmExistingCredits: true, confirmNoTopup: true, ledgerPath: join(dir, "l.json") })).toThrow(/forced AOS/);
+    expect(() => assertRunGates(b, { operatorCreditsPerRequest: 1, operatorReportedBalance: 10, confirmExistingCredits: true, confirmNoTopup: true, ledgerPath: join(dir, "l.json") })).toThrow(/page-API Swiper/);
+  });
+
+  it("Bootslander-shaped fake response -> accepted -> variants labelled baseline / scroll-triggered / page-api", async () => {
+    const bp = JSON.parse(readFileSync("samples/state-plan.bootslander.json", "utf8"));
+    const s = setup(bp);
+    const pageUrl = "https://bootstrapmade.com/content/demo/Bootslander/";
+    const make = (moved: boolean) => {
+      const d = doc(pageUrl);
+      const byName = (n: string) => d.actions.javascriptReturns.find((r: any) => r.value.w2f === "state" && r.value.name === n).value;
+      const base = byName("Default"), aos = byName("FAQ open"), sw = byName("Tab two");
+      const freeze = d.actions.javascriptReturns[0];
+      const scroll = (k: number) => ({ type: "object", value: { w2f: "scroll", step: k, steps: 3, y: k * 33, coverageComplete: true } });
+      Object.assign(aos, { name: "AOS revealed", provenance: "scroll-triggered", seq: 1, applied: [], refused: [] });
+      Object.assign(sw, { name: "Testimonial next", provenance: "page-api", seq: 2, refused: [], applied: moved ? [{ selector: "#testimonials .swiper.init-swiper", mechanism: "swiper-next" }] : [], trigger: { kind: "swiper-next", valid: true, moved, before: { realIndex: 0 }, after: { realIndex: moved ? 1 : 0 }, listeners: ["init"] } });
+      d.actions.javascriptReturns = [freeze, { type: "object", value: base }, scroll(1), scroll(2), scroll(3), { type: "object", value: aos }, { type: "object", value: sw }, { type: "object", value: { w2f: "revert", seq: 2, reverted: 1, failed: 0 } }];
+      return d;
+    };
+    const saved: any[] = [];
+    const r = await executeStateRun({ validated: s.validated, gates: { ...s.gates, operatorReportedBalance: 900 }, resolver: fakeIpDns(), getApiKey: () => KEY, createClient: async () => fakeClient(() => make(true), []).client, save: (_i, w) => saved.push(w) });
+    expect(r.pages[0]!.status).toBe("accepted");
+    expect(r.pages[0]!.states.map((x) => x.provenance)).toEqual(["baseline", "scroll-triggered", "page-api"]);
+    const cap = captureFromScrapeResponses([{ name: "p.json", json: saved[0] }], "run");
+    const v2 = convertCapture({ capture: cap.capture, assets: [], assetWarnings: [] });
+    const vs = v2.pages[0]!.states!.variants;
+    expect(vs.map((x) => [x.name, x.provenance])).toEqual([["Default", "baseline"], ["AOS revealed", "scroll-triggered"], ["Testimonial next", "page-api"]]);
+    expect(vs[1]!.notes.join(" ")).toMatch(/OBSERVED page reaction to the planned provider scroll steps/);
+    expect(vs[2]!.notes.join(" ")).toMatch(/PAGE-API state: .*slideNext\(0\).*realIndex 0 -> 1/);
+    expect(vs[2]!.notes.join(" ")).toMatch(/Not a user event/);
+    // a Swiper that did not move is omitted, never shown as a state
+    const s2 = setup(bp);
+    const saved2: any[] = [];
+    const r2 = await executeStateRun({ validated: s2.validated, gates: { ...s2.gates, operatorReportedBalance: 900 }, resolver: fakeIpDns(), getApiKey: () => KEY, createClient: async () => fakeClient(() => make(false), []).client, save: (_i, w) => saved2.push(w) });
+    expect(r2.pages[0]!.warnings.join()).toMatch(/Swiper did not move/);
+    const v3 = convertCapture({ capture: captureFromScrapeResponses([{ name: "p.json", json: saved2[0] }], "run").capture, assets: [], assetWarnings: [] });
+    expect(v3.pages[0]!.states!.variants.map((x) => x.name)).toEqual(["Default", "AOS revealed"]);
+    expect(v3.pages[0]!.warnings.join()).toMatch(/Testimonial next" omitted: Swiper trigger did not move/);
   });
 });
 

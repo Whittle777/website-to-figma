@@ -53,10 +53,29 @@ export interface Mutation {
   value?: string | null;
   className?: string;
 }
+// Non-synthetic, narrowly scoped triggers (no clicks, no event dispatch):
+//  - "scroll-reveal": the planned bounded scroll steps run immediately before
+//    this state, so it records the page's OWN reaction to scrolling (e.g. AOS
+//    scroll listeners). Provenance "scroll-triggered" (observed).
+//  - "swiper-next": the page's own Swiper instance bound to exactly one
+//    element (`el.swiper`, set by Swiper's mount) is advanced with
+//    slideNext(0) - the same API its autoplay calls. Provenance "page-api":
+//    an actual library state reached early via the page API, not a user
+//    event; Swiper's own event listeners run.
+export type StateTrigger = "scroll-reveal" | "swiper-next";
+export type StateProvenance = "baseline" | "synthetic" | "scroll-triggered" | "page-api";
 export interface PlannedState {
   name: string;
   scope: string | null;
   mutations: Mutation[];
+  trigger?: StateTrigger;
+  selector?: string;
+}
+
+export function provenanceOf(s: PlannedState): StateProvenance {
+  if (s.trigger === "scroll-reveal") return "scroll-triggered";
+  if (s.trigger === "swiper-next") return "page-api";
+  return s.mutations.length ? "synthetic" : "baseline";
 }
 export interface ManualState {
   name: string;
@@ -188,11 +207,26 @@ export function parseStatePlan(json: unknown): StatePlan {
     for (const [j, s] of rawStates.entries()) {
       const q = `${p}.states[${j}]`;
       if (!isObj(s)) throw new StatePlanError(`${q}: expected object`);
-      keys(s, q, ["name", "scope", "mutations"]);
+      keys(s, q, ["name", "scope", "mutations", "trigger", "selector"]);
       const n = name(s.name, `${q}.name`);
       if (states.some((x) => x.name.toLowerCase() === n.toLowerCase())) throw new StatePlanError(`${q}.name "${n}" is not unique (Default is reserved)`);
+      const scope = s.scope === undefined || s.scope === null ? null : selector(s.scope, `${q}.scope`);
+      if (s.trigger !== undefined) {
+        if (s.trigger !== "scroll-reveal" && s.trigger !== "swiper-next") throw new StatePlanError(`${q}.trigger must be "scroll-reveal" or "swiper-next" (no other interaction is supported)`);
+        if (s.mutations !== undefined) throw new StatePlanError(`${q}: a trigger state cannot also carry mutations`);
+        if (states.some((x) => x.trigger === s.trigger)) throw new StatePlanError(`${q}: at most one "${s.trigger}" state per page`);
+        if (s.trigger === "scroll-reveal") {
+          if (s.selector !== undefined) throw new StatePlanError(`${q}.selector is only valid for "swiper-next"`);
+          states.push({ name: n, scope, mutations: [], trigger: "scroll-reveal" });
+        } else {
+          const sel = selector(s.selector, `${q}.selector`);
+          states.push({ name: n, scope: scope ?? sel, mutations: [], trigger: "swiper-next", selector: sel });
+        }
+        continue;
+      }
+      if (s.selector !== undefined) throw new StatePlanError(`${q}.selector is only valid for "swiper-next"`);
       if (!Array.isArray(s.mutations) || s.mutations.length === 0 || s.mutations.length > STATE_LIMITS.maxMutationsPerState) throw new StatePlanError(`${q}.mutations must hold 1..${STATE_LIMITS.maxMutationsPerState} entries`);
-      states.push({ name: n, scope: s.scope === undefined || s.scope === null ? null : selector(s.scope, `${q}.scope`), mutations: s.mutations.map((m, k) => mutation(m, `${q}.mutations[${k}]`)) });
+      states.push({ name: n, scope, mutations: s.mutations.map((m, k) => mutation(m, `${q}.mutations[${k}]`)) });
     }
     const rawManual = raw.manual === undefined ? [] : raw.manual;
     if (!Array.isArray(rawManual) || rawManual.length > STATE_LIMITS.maxManualPerPage) throw new StatePlanError(`${p}.manual: at most ${STATE_LIMITS.maxManualPerPage} entries`);
@@ -203,8 +237,13 @@ export function parseStatePlan(json: unknown): StatePlan {
       const reason = typeof m.reason === "string" ? m.reason.slice(0, 200) : "";
       return { name: name(m.name, `${q}.name`), selector: selector(m.selector, `${q}.selector`), reason };
     });
-    // The baseline measures the same scope as the first scoped synthetic state.
-    states[0]!.scope = states.find((x) => x.scope)?.scope ?? null;
+    // The baseline measures the same scope as the first scoped synthetic state
+    // - except with a scroll-reveal state: then the baseline is the initial
+    // top-of-page view, and scrolling a lower scope into view would itself
+    // trigger scroll handlers, so it stays at the top (scope null).
+    const reveal = states.find((x) => x.trigger === "scroll-reveal");
+    states[0]!.scope = reveal ? null : (states.find((x) => x.scope)?.scope ?? null);
+    if (reveal && lazy.steps === 0) throw new StatePlanError(`${p}: a "scroll-reveal" state needs lazy.steps >= 1`);
     if (states.length + manual.length > STATE_LIMITS.maxStatesPerPage) {
       throw new StatePlanError(`${p}: ${states.length} planned + ${manual.length} manual states exceed ${STATE_LIMITS.maxStatesPerPage} total (baseline included)`);
     }
@@ -257,11 +296,16 @@ export interface RequestPreview {
   // sum of wait.milliseconds (= the provider's waitFor + wait accounting; no waitFor is sent)
   combinedWaitMs: number;
   timing: { requestTimeoutMs: number; sdkHttpTimeoutMs: number; wallClockMs: number; combinedWaitMs: number; inScriptSleepMs: 0 };
-  states: { seq: number; name: string; provenance: "baseline" | "synthetic"; review: string | null; screenshotIndex: number; scrapeIndex: number }[];
+  states: { seq: number; name: string; provenance: StateProvenance; review: string | null; screenshotIndex: number; scrapeIndex: number }[];
   manual: ManualState[];
 }
 
-const SYNTHETIC_REVIEW = "SYNTHETIC modification (not the page's observed original state); NOT executed; operator review required: attribute/class/open changes can run page MutationObservers, toggle listeners or custom-element callbacks - no handler side-effect guarantee";
+const REVIEW: Record<StateProvenance, string | null> = {
+  baseline: null,
+  synthetic: "SYNTHETIC modification (not the page's observed original state); operator review required: attribute/class/open changes can run page MutationObservers, toggle listeners or custom-element callbacks - no handler side-effect guarantee",
+  "scroll-triggered": "OBSERVED page reaction to the planned provider scroll steps (page scroll listeners run, e.g. AOS); no DOM modification by this tool beyond the recorded freeze",
+  "page-api": "PAGE-API state: the page's own Swiper instance (validated: exactly one element, el.swiper bound by Swiper) advanced with slideNext(0), the call its autoplay makes; not a user event; Swiper's own event listeners run; reverted with slidePrev(0)",
+};
 
 export function buildStateRequest(plan: StatePlan, page: PlannedPage): RequestPreview {
   const actions: Obj[] = [];
@@ -279,22 +323,30 @@ export function buildStateRequest(plan: StatePlan, page: PlannedPage): RequestPr
   wait(page.waitMs);
   push("freeze", { type: "executeJavascript", script: fill(FREEZE_JS, { FORCE_AOS: plan.forceAos }) });
   // Lazy load: synchronous scroll steps, each followed by a provider wait; the
-  // last wait is the visibility settle (at least the step wait).
+  // last wait is the visibility settle (at least the step wait). They run
+  // before the first state, or - with a scroll-reveal state - immediately
+  // before that state (so the baseline is the initial, unscrolled view).
   const n = page.lazy.steps;
-  for (let k = 1; k <= n; k++) {
-    push("scroll", { type: "executeJavascript", script: fill(SCROLL_JS, { STEP: k, STEPS: n, MAX_PX: page.lazy.maxPx }) });
-    wait(k === n ? Math.max(page.lazy.stepWaitMs, page.lazy.visibilityMs) : page.lazy.stepWaitMs);
-  }
-  if (n === 0) wait(page.lazy.visibilityMs);
+  const scrollSteps = () => {
+    for (let k = 1; k <= n; k++) {
+      push("scroll", { type: "executeJavascript", script: fill(SCROLL_JS, { STEP: k, STEPS: n, MAX_PX: page.lazy.maxPx }) });
+      wait(k === n ? Math.max(page.lazy.stepWaitMs, page.lazy.visibilityMs) : page.lazy.stepWaitMs);
+    }
+    if (n === 0) wait(page.lazy.visibilityMs);
+  };
+  const revealAt = page.states.findIndex((x) => x.trigger === "scroll-reveal");
+  if (revealAt < 0) scrollSteps();
   const states: RequestPreview["states"] = [];
   let shots = 0;
   page.states.forEach((s, seq) => {
-    push("state", { type: "executeJavascript", script: fill(STATE_JS, { STATE: { seq, name: s.name, scope: s.scope, mutations: s.mutations }, MAX_RETURN_CHARS: STATE_LIMITS.maxStateReturnChars }) }, { state: s.name, seq });
+    if (seq === revealAt) scrollSteps();
+    const provenance = provenanceOf(s);
+    push("state", { type: "executeJavascript", script: fill(STATE_JS, { STATE: { seq, name: s.name, provenance, scope: s.scope, mutations: s.mutations, trigger: s.trigger ?? null, selector: s.selector ?? null }, MAX_RETURN_CHARS: STATE_LIMITS.maxStateReturnChars }) }, { state: s.name, seq });
     push("screenshot", { type: "screenshot", fullPage: false }, { state: s.name, seq });
     push("scrape", { type: "scrape" }, { state: s.name, seq });
-    states.push({ seq, name: s.name, provenance: s.mutations.length ? "synthetic" : "baseline", review: s.mutations.length ? SYNTHETIC_REVIEW : null, screenshotIndex: shots, scrapeIndex: shots });
+    states.push({ seq, name: s.name, provenance, review: REVIEW[provenance], screenshotIndex: shots, scrapeIndex: shots });
     shots++;
-    if (s.mutations.length) push("revert", { type: "executeJavascript", script: fill(REVERT_JS, { SEQ: seq }) }, { state: s.name, seq });
+    if (s.mutations.length || s.trigger === "swiper-next") push("revert", { type: "executeJavascript", script: fill(REVERT_JS, { SEQ: seq }) }, { state: s.name, seq });
   });
   if (actions.length > plan.maxActions) throw new StatePlanError(`${page.url}: ${actions.length} actions exceed the plan budget of ${plan.maxActions} (provider maximum ${STATE_LIMITS.providerMaxActions})`);
   if (waits > plan.maxCombinedWaitMs) throw new StatePlanError(`${page.url}: combined waits ${waits} ms exceed the plan budget of ${plan.maxCombinedWaitMs} ms (provider maximum ${STATE_LIMITS.providerMaxCombinedWaitMs} ms)`);

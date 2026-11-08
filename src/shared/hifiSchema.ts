@@ -134,11 +134,14 @@ export interface HifiAsset {
 
 // Interactive-state variants (optional; added with the offline state planner).
 // "synthetic" = a declarative DOM modification measured in a hosted browser,
-// NOT the page's observed original state; "manual" = an operator-captured
-// screenshot only (no measurement); "baseline" = the unmodified page.
+// NOT the page's observed original state; "scroll-triggered" = the page's own
+// reaction to planned provider scrolling (observed); "page-api" = the page's
+// own Swiper instance advanced via its API (actual library state, not a user
+// event); "manual" = an operator-captured screenshot only (no measurement);
+// "baseline" = the unmodified page.
 export interface StateVariant {
   name: string;
-  provenance: "baseline" | "synthetic" | "manual";
+  provenance: "baseline" | "synthetic" | "scroll-triggered" | "page-api" | "manual";
   // page coordinates of this state's own measurement (manual: 0,0,w,h)
   frame: Rect;
   nodes: HifiNode[]; // relative to frame
@@ -378,7 +381,7 @@ function checkStatesEtc(c: C, pg: Record<string, unknown>, p: string, assetIds: 
         if (!c.obj(v, q, ["name", "provenance", "frame", "nodes", "referenceAssetId", "screenshot", "notes"])) return;
         if (typeof v.name !== "string" || !STATE_NAME.test(v.name) || names.has(v.name.toLowerCase())) c.fail(`${q}.name`, "expected a unique state name");
         else names.add(v.name.toLowerCase());
-        c.oneOf(v.provenance, `${q}.provenance`, ["baseline", "synthetic", "manual"]);
+        c.oneOf(v.provenance, `${q}.provenance`, ["baseline", "synthetic", "scroll-triggered", "page-api", "manual"]);
         if ((j === 0) !== (v.provenance === "baseline")) c.fail(`${q}.provenance`, "exactly the first variant must be the baseline");
         if (j === 0 && v.name !== "Default") c.fail(`${q}.name`, 'the baseline variant must be named "Default"');
         if (c.obj(v.frame, `${q}.frame`, ["x", "y", "w", "h"])) {

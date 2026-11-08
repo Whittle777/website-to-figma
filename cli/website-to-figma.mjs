@@ -8813,7 +8813,7 @@ function checkStatesEtc(c, pg, p, assetIds, assetsById) {
         if (!c.obj(v, q, ["name", "provenance", "frame", "nodes", "referenceAssetId", "screenshot", "notes"])) return;
         if (typeof v.name !== "string" || !STATE_NAME.test(v.name) || names.has(v.name.toLowerCase())) c.fail(`${q}.name`, "expected a unique state name");
         else names.add(v.name.toLowerCase());
-        c.oneOf(v.provenance, `${q}.provenance`, ["baseline", "synthetic", "manual"]);
+        c.oneOf(v.provenance, `${q}.provenance`, ["baseline", "synthetic", "scroll-triggered", "page-api", "manual"]);
         if (j === 0 !== (v.provenance === "baseline")) c.fail(`${q}.provenance`, "exactly the first variant must be the baseline");
         if (j === 0 && v.name !== "Default") c.fail(`${q}.name`, 'the baseline variant must be named "Default"');
         if (c.obj(v.frame, `${q}.frame`, ["x", "y", "w", "h"])) {
@@ -9417,7 +9417,8 @@ function attachStates(ctx) {
     if (rawStates.length || stateRefs.length) {
       const variants = [];
       const base2 = rawStates.find((s) => s.seq === 0) ?? null;
-      const ordered = base2 ? [base2, ...rawStates.filter((s) => s !== base2 && s.provenance === "synthetic")] : [];
+      const KINDS = ["synthetic", "scroll-triggered", "page-api"];
+      const ordered = base2 ? [base2, ...rawStates.filter((s) => s !== base2 && KINDS.includes(String(s.provenance)))] : [];
       const firstScope = ordered.find((s) => rectOf(s.scope));
       for (const st3 of ordered) {
         const name3 = typeof st3.name === "string" && STATE_NAME.test(st3.name) ? st3.name : null;
@@ -9456,8 +9457,22 @@ function attachStates(ctx) {
         });
         budget -= nodes.length;
         const notes = [];
-        if (isBase) notes.push("Baseline: the page as measured, before any state modification");
-        else {
+        const kind = isBase ? "baseline" : String(st3.provenance);
+        const trig = isObj(st3.trigger) ? st3.trigger : null;
+        if (isBase) notes.push("Baseline: the page as measured, before any state modification or trigger");
+        else if (kind === "scroll-triggered") {
+          notes.push("OBSERVED page reaction to the planned provider scroll steps (page scroll listeners, e.g. AOS); no DOM modification by this tool beyond the recorded freeze");
+          notes.push("Not a user interaction; only scroll-driven changes are represented");
+        } else if (kind === "page-api") {
+          const b = trig && isObj(trig.before) ? trig.before : null;
+          const a = trig && isObj(trig.after) ? trig.after : null;
+          notes.push(`PAGE-API state: the page's own Swiper instance advanced with slideNext(0) (the call its autoplay makes)${b && a ? `; realIndex ${String(b.realIndex)} -> ${String(a.realIndex)}` : ""}`);
+          notes.push("Not a user event (no click/swipe); Swiper's own event listeners ran; no handler side-effect guarantee");
+          if (!trig || trig.valid !== true || trig.moved !== true) {
+            pw(`State "${name3}" omitted: Swiper trigger ${trig && trig.valid === true ? "did not move" : `refused (${trig && typeof trig.reason === "string" ? trig.reason : "no report"})`}`);
+            continue;
+          }
+        } else {
           const applied = Array.isArray(st3.applied) ? st3.applied.filter(isObj).map((a) => `${String(a.mechanism)} ${String(a.selector)}`) : [];
           notes.push(`SYNTHETIC state: DOM modification (${applied.join("; ").slice(0, 120) || "none applied"}), not an observed original state`);
           notes.push("No handler side-effect guarantee: page observers/callbacks may have reacted to the modification");
@@ -9473,7 +9488,7 @@ function attachStates(ctx) {
         const assoc = st3.screenshot === "action-order" ? "action-order" : "unassociated";
         variants.push({
           name: name3,
-          provenance: isBase ? "baseline" : "synthetic",
+          provenance: kind,
           frame,
           nodes,
           referenceAssetId: ref ? ctx.assetIdFor(ref) : null,
@@ -10385,10 +10400,10 @@ var init_scripts = __esm({
   const STATE = __STATE__;
   const MAX = { elements: 20000, texts: 20000, images: 500, svgs: 200, rules: 200, media: 50, fixed: 50, match: 5 };
   const MAX_RETURN_CHARS = __MAX_RETURN_CHARS__;
-  const out = { w2f: "state", seq: STATE.seq, name: STATE.name, provenance: STATE.mutations.length > 0 ? "synthetic" : "baseline", applied: [], missing: [], refused: [] };
+  const out = { w2f: "state", seq: STATE.seq, name: STATE.name, provenance: STATE.provenance, applied: [], missing: [], refused: [], trigger: null };
   const ATTRS = { "open": ["details"], "aria-expanded": null, "aria-selected": null, "aria-hidden": null, "hidden": null, "data-state": null };
   window.__w2fRevert = [];
-  const revertNow = () => { let n = 0; const list = window.__w2fRevert || []; window.__w2fRevert = []; for (const op of list.reverse()) { try { if (op[0] === "attr") { if (op[3] === null) op[1].removeAttribute(op[2]); else op[1].setAttribute(op[2], op[3]); } else op[1].classList.remove(op[2]); n++; } catch (e) {} } return n; };
+  const revertNow = () => { let n = 0; const list = window.__w2fRevert || []; window.__w2fRevert = []; for (const op of list.reverse()) { try { if (op[0] === "attr") { if (op[3] === null) op[1].removeAttribute(op[2]); else op[1].setAttribute(op[2], op[3]); } else if (op[0] === "class") op[1].classList.remove(op[2]); else if (op[0] === "swiper") op[1].slidePrev(0); n++; } catch (e) {} } return n; };
   try {
   if (!window.__w2fToggleGuard) { window.__w2fToggleGuard = true; window.addEventListener("toggle", (e) => e.stopImmediatePropagation(), true); }
   for (const m of STATE.mutations) {
@@ -10416,6 +10431,39 @@ var init_scripts = __esm({
   }
   const imgsAll = Array.from(document.images).slice(0, 5000);
   const readiness = { readyState: document.readyState, fontsStatus: document.fonts ? document.fonts.status : null, images: imgsAll.length, imagesIncomplete: imgsAll.filter((i) => !i.complete).length, lazyImages: imgsAll.filter((i) => i.loading === "lazy").length };
+  if (STATE.trigger === "swiper-next") {
+    // Page API only: exactly one element, bound to its own Swiper instance by
+    // Swiper's mount (el.swiper === instance, instance.el === el), not inside a
+    // form/link/button, not destroyed. slideNext(0) is the call its autoplay
+    // makes; speed 0 finishes synchronously. No click or event dispatch.
+    const t = { kind: "swiper-next", selector: STATE.selector, valid: false, reason: null, before: null, after: null, moved: false, listeners: null };
+    out.trigger = t;
+    let els = [];
+    try { els = Array.from(document.querySelectorAll(STATE.selector)); } catch (e) { t.reason = "invalid selector"; }
+    const el = els.length === 1 ? els[0] : null;
+    const sw = el ? el.swiper : null;
+    if (!t.reason) {
+      if (els.length !== 1) t.reason = "selector must match exactly one element (matched " + els.length + ")";
+      else if (!el.classList.contains("swiper")) t.reason = "element is not a .swiper container";
+      else if (el.closest("form, a, button")) t.reason = "element is inside a form, link or button";
+      else if (!sw || typeof sw !== "object" || sw.el !== el || typeof sw.slideNext !== "function" || typeof sw.slidePrev !== "function") t.reason = "no Swiper instance bound to this element";
+      else if (sw.destroyed || sw.enabled === false) t.reason = "Swiper instance is destroyed or disabled";
+      else if (sw.params && sw.params.allowSlideNext === false) t.reason = "Swiper disallows slideNext";
+    }
+    if (t.reason) out.refused.push({ selector: STATE.selector, reason: t.reason });
+    else {
+      const snap = () => ({ activeIndex: sw.activeIndex, realIndex: sw.realIndex, slides: sw.slides ? sw.slides.length : null, loop: !!(sw.params && sw.params.loop), autoplayRunning: sw.autoplay ? !!sw.autoplay.running : null });
+      t.valid = true;
+      t.listeners = Object.keys(sw.eventsListeners || {}).slice(0, 50);
+      t.before = snap();
+      sw.slideNext(0);
+      t.after = snap();
+      t.moved = t.after.realIndex !== t.before.realIndex || t.after.activeIndex !== t.before.activeIndex;
+      window.__w2fRevert.push(["swiper", sw]);
+      out.applied.push({ selector: STATE.selector, mechanism: "swiper-next" });
+      if (!t.moved) out.refused.push({ selector: STATE.selector, reason: "slideNext did not move the slider" });
+    }
+  }
   const bounds = (e) => { const b = e.getBoundingClientRect(); return { x: b.x + scrollX, y: b.y + scrollY, w: b.width, h: b.height }; };
   const props = ["backgroundColor","color","fontFamily","fontSize","fontWeight","fontStyle","lineHeight","textDecorationLine","borderTopWidth","borderRightWidth","borderBottomWidth","borderLeftWidth","borderTopColor","borderRightColor","borderBottomColor","borderLeftColor","borderRadius","opacity","display","visibility","position","paddingTop","paddingRight","paddingBottom","paddingLeft","objectFit"];
   const styles = (e) => { const c = getComputedStyle(e); const o = {}; for (const k of props) o[k] = c[k]; return o; };
@@ -10482,7 +10530,7 @@ var init_scripts = __esm({
     REVERT_JS = String.raw`(function w2fRevert() {
   const list = window.__w2fRevert || []; let n = 0, failed = 0;
   try {
-    for (const op of list.reverse()) { try { if (op[0] === "attr") { if (op[3] === null) op[1].removeAttribute(op[2]); else op[1].setAttribute(op[2], op[3]); } else if (op[0] === "class") op[1].classList.remove(op[2]); n++; } catch (e) { failed++; } }
+    for (const op of list.reverse()) { try { if (op[0] === "attr") { if (op[3] === null) op[1].removeAttribute(op[2]); else op[1].setAttribute(op[2], op[3]); } else if (op[0] === "class") op[1].classList.remove(op[2]); else if (op[0] === "swiper") op[1].slidePrev(0); n++; } catch (e) { failed++; } }
   } finally { window.__w2fRevert = []; try { window.scrollTo(0, 0); } catch (e) {} }
   return { w2f: "revert", seq: __SEQ__, reverted: n, failed };
 })();`;
@@ -10490,6 +10538,11 @@ var init_scripts = __esm({
 });
 
 // src/states/plan.ts
+function provenanceOf(s) {
+  if (s.trigger === "scroll-reveal") return "scroll-triggered";
+  if (s.trigger === "swiper-next") return "page-api";
+  return s.mutations.length ? "synthetic" : "baseline";
+}
 function keys(o, p, allowed) {
   for (const k of Object.keys(o)) if (!allowed.includes(k)) throw new StatePlanError(`${p}: unknown key "${k}"`);
 }
@@ -10577,11 +10630,26 @@ function parseStatePlan(json) {
     for (const [j, s] of rawStates.entries()) {
       const q = `${p}.states[${j}]`;
       if (!isObj3(s)) throw new StatePlanError(`${q}: expected object`);
-      keys(s, q, ["name", "scope", "mutations"]);
+      keys(s, q, ["name", "scope", "mutations", "trigger", "selector"]);
       const n = name(s.name, `${q}.name`);
       if (states.some((x) => x.name.toLowerCase() === n.toLowerCase())) throw new StatePlanError(`${q}.name "${n}" is not unique (Default is reserved)`);
+      const scope = s.scope === void 0 || s.scope === null ? null : selector(s.scope, `${q}.scope`);
+      if (s.trigger !== void 0) {
+        if (s.trigger !== "scroll-reveal" && s.trigger !== "swiper-next") throw new StatePlanError(`${q}.trigger must be "scroll-reveal" or "swiper-next" (no other interaction is supported)`);
+        if (s.mutations !== void 0) throw new StatePlanError(`${q}: a trigger state cannot also carry mutations`);
+        if (states.some((x) => x.trigger === s.trigger)) throw new StatePlanError(`${q}: at most one "${s.trigger}" state per page`);
+        if (s.trigger === "scroll-reveal") {
+          if (s.selector !== void 0) throw new StatePlanError(`${q}.selector is only valid for "swiper-next"`);
+          states.push({ name: n, scope, mutations: [], trigger: "scroll-reveal" });
+        } else {
+          const sel = selector(s.selector, `${q}.selector`);
+          states.push({ name: n, scope: scope ?? sel, mutations: [], trigger: "swiper-next", selector: sel });
+        }
+        continue;
+      }
+      if (s.selector !== void 0) throw new StatePlanError(`${q}.selector is only valid for "swiper-next"`);
       if (!Array.isArray(s.mutations) || s.mutations.length === 0 || s.mutations.length > STATE_LIMITS.maxMutationsPerState) throw new StatePlanError(`${q}.mutations must hold 1..${STATE_LIMITS.maxMutationsPerState} entries`);
-      states.push({ name: n, scope: s.scope === void 0 || s.scope === null ? null : selector(s.scope, `${q}.scope`), mutations: s.mutations.map((m, k) => mutation(m, `${q}.mutations[${k}]`)) });
+      states.push({ name: n, scope, mutations: s.mutations.map((m, k) => mutation(m, `${q}.mutations[${k}]`)) });
     }
     const rawManual = raw.manual === void 0 ? [] : raw.manual;
     if (!Array.isArray(rawManual) || rawManual.length > STATE_LIMITS.maxManualPerPage) throw new StatePlanError(`${p}.manual: at most ${STATE_LIMITS.maxManualPerPage} entries`);
@@ -10592,7 +10660,9 @@ function parseStatePlan(json) {
       const reason = typeof m.reason === "string" ? m.reason.slice(0, 200) : "";
       return { name: name(m.name, `${q}.name`), selector: selector(m.selector, `${q}.selector`), reason };
     });
-    states[0].scope = states.find((x) => x.scope)?.scope ?? null;
+    const reveal = states.find((x) => x.trigger === "scroll-reveal");
+    states[0].scope = reveal ? null : states.find((x) => x.scope)?.scope ?? null;
+    if (reveal && lazy.steps === 0) throw new StatePlanError(`${p}: a "scroll-reveal" state needs lazy.steps >= 1`);
     if (states.length + manual.length > STATE_LIMITS.maxStatesPerPage) {
       throw new StatePlanError(`${p}: ${states.length} planned + ${manual.length} manual states exceed ${STATE_LIMITS.maxStatesPerPage} total (baseline included)`);
     }
@@ -10628,20 +10698,26 @@ function buildStateRequest(plan, page) {
   wait(page.waitMs);
   push("freeze", { type: "executeJavascript", script: fill(FREEZE_JS, { FORCE_AOS: plan.forceAos }) });
   const n = page.lazy.steps;
-  for (let k = 1; k <= n; k++) {
-    push("scroll", { type: "executeJavascript", script: fill(SCROLL_JS, { STEP: k, STEPS: n, MAX_PX: page.lazy.maxPx }) });
-    wait(k === n ? Math.max(page.lazy.stepWaitMs, page.lazy.visibilityMs) : page.lazy.stepWaitMs);
-  }
-  if (n === 0) wait(page.lazy.visibilityMs);
+  const scrollSteps = () => {
+    for (let k = 1; k <= n; k++) {
+      push("scroll", { type: "executeJavascript", script: fill(SCROLL_JS, { STEP: k, STEPS: n, MAX_PX: page.lazy.maxPx }) });
+      wait(k === n ? Math.max(page.lazy.stepWaitMs, page.lazy.visibilityMs) : page.lazy.stepWaitMs);
+    }
+    if (n === 0) wait(page.lazy.visibilityMs);
+  };
+  const revealAt = page.states.findIndex((x) => x.trigger === "scroll-reveal");
+  if (revealAt < 0) scrollSteps();
   const states = [];
   let shots = 0;
   page.states.forEach((s, seq) => {
-    push("state", { type: "executeJavascript", script: fill(STATE_JS, { STATE: { seq, name: s.name, scope: s.scope, mutations: s.mutations }, MAX_RETURN_CHARS: STATE_LIMITS.maxStateReturnChars }) }, { state: s.name, seq });
+    if (seq === revealAt) scrollSteps();
+    const provenance = provenanceOf(s);
+    push("state", { type: "executeJavascript", script: fill(STATE_JS, { STATE: { seq, name: s.name, provenance, scope: s.scope, mutations: s.mutations, trigger: s.trigger ?? null, selector: s.selector ?? null }, MAX_RETURN_CHARS: STATE_LIMITS.maxStateReturnChars }) }, { state: s.name, seq });
     push("screenshot", { type: "screenshot", fullPage: false }, { state: s.name, seq });
     push("scrape", { type: "scrape" }, { state: s.name, seq });
-    states.push({ seq, name: s.name, provenance: s.mutations.length ? "synthetic" : "baseline", review: s.mutations.length ? SYNTHETIC_REVIEW : null, screenshotIndex: shots, scrapeIndex: shots });
+    states.push({ seq, name: s.name, provenance, review: REVIEW[provenance], screenshotIndex: shots, scrapeIndex: shots });
     shots++;
-    if (s.mutations.length) push("revert", { type: "executeJavascript", script: fill(REVERT_JS, { SEQ: seq }) }, { state: s.name, seq });
+    if (s.mutations.length || s.trigger === "swiper-next") push("revert", { type: "executeJavascript", script: fill(REVERT_JS, { SEQ: seq }) }, { state: s.name, seq });
   });
   if (actions.length > plan.maxActions) throw new StatePlanError(`${page.url}: ${actions.length} actions exceed the plan budget of ${plan.maxActions} (provider maximum ${STATE_LIMITS.providerMaxActions})`);
   if (waits > plan.maxCombinedWaitMs) throw new StatePlanError(`${page.url}: combined waits ${waits} ms exceed the plan budget of ${plan.maxCombinedWaitMs} ms (provider maximum ${STATE_LIMITS.providerMaxCombinedWaitMs} ms)`);
@@ -10676,7 +10752,7 @@ function buildStatePreview(plan) {
     manualRoute
   };
 }
-var StatePlanError, STATE_LIMITS, ATTRIBUTES, REFUSED_MECHANISMS, NAME, CLASS, isObj3, STATE_SCRAPE_OPTIONS, SYNTHETIC_REVIEW, PREVIEW_NOTICE;
+var StatePlanError, STATE_LIMITS, ATTRIBUTES, REFUSED_MECHANISMS, NAME, CLASS, isObj3, STATE_SCRAPE_OPTIONS, REVIEW, PREVIEW_NOTICE;
 var init_plan = __esm({
   "src/states/plan.ts"() {
     "use strict";
@@ -10731,7 +10807,12 @@ var init_plan = __esm({
       onlyMainContent: false,
       proxy: "basic"
     };
-    SYNTHETIC_REVIEW = "SYNTHETIC modification (not the page's observed original state); NOT executed; operator review required: attribute/class/open changes can run page MutationObservers, toggle listeners or custom-element callbacks - no handler side-effect guarantee";
+    REVIEW = {
+      baseline: null,
+      synthetic: "SYNTHETIC modification (not the page's observed original state); operator review required: attribute/class/open changes can run page MutationObservers, toggle listeners or custom-element callbacks - no handler side-effect guarantee",
+      "scroll-triggered": "OBSERVED page reaction to the planned provider scroll steps (page scroll listeners run, e.g. AOS); no DOM modification by this tool beyond the recorded freeze",
+      "page-api": "PAGE-API state: the page's own Swiper instance (validated: exactly one element, el.swiper bound by Swiper) advanced with slideNext(0), the call its autoplay makes; not a user event; Swiper's own event listeners run; reverted with slidePrev(0)"
+    };
     PREVIEW_NOTICE = [
       "NOT SENT. Planning sends nothing. Execution is a separate, operator-gated command (states-run) that fails closed without explicit operator pricing, ledger and credit confirmations, and never retries.",
       "Synthetic states are DOM modifications (not observed original states) for manual operator review; no handler side-effect guarantee.",
@@ -10782,10 +10863,13 @@ function adaptTaggedReturns(data, name3) {
   for (const seq of [...bySeq.keys()].sort((a, b) => a - b)) {
     const s = bySeq.get(seq);
     const synthetic = s.provenance === "synthetic";
+    const known = seq === 0 || ["synthetic", "scroll-triggered", "page-api"].includes(String(s.provenance));
+    const needsRevert = synthetic || s.provenance === "page-api";
     const st3 = {
       seq,
       name: typeof s.name === "string" ? s.name.slice(0, 40) : `State ${seq}`,
-      provenance: seq === 0 ? "baseline" : synthetic ? "synthetic" : "invalid",
+      provenance: seq === 0 ? "baseline" : ["synthetic", "scroll-triggered", "page-api"].includes(String(s.provenance)) ? s.provenance : "invalid",
+      trigger: isObj4(s.trigger) ? s.trigger : null,
       scope: isObj4(s.scope) ? s.scope : null,
       screenshotScrollY: typeof s.screenshotScrollY === "number" ? s.screenshotScrollY : null,
       viewport: isObj4(s.viewport) ? s.viewport : null,
@@ -10798,7 +10882,7 @@ function adaptTaggedReturns(data, name3) {
       residueFromSeq: tainted,
       screenshot: associated ? "action-order" : "unassociated"
     };
-    if (seq > 0 && !synthetic) warnings.push(`${name3}: state ${seq} is not labelled synthetic; omitted`);
+    if (!known) warnings.push(`${name3}: state ${seq} has an unknown provenance; omitted`);
     if (htmlAssociated) {
       const sc = scrapes[seq];
       const html = isObj4(sc) ? sc.html : void 0;
@@ -10810,8 +10894,8 @@ function adaptTaggedReturns(data, name3) {
       if (Array.isArray(s.media)) st3.media = s.media.slice(0, 50);
     }
     if (associated) out.screenshotHints.push({ state: st3.name, seq, screenshotUrl: String(shots[seq]).slice(0, LIMITS.maxUrlChars), scrollY: st3.screenshotScrollY });
-    if (seq === 0 || synthetic) out.states.push(st3);
-    if (synthetic) {
+    if (known) out.states.push(st3);
+    if (needsRevert) {
       const rv = reverts.get(seq);
       if (!rv || rv.failed !== 0 || s.error === void 0 && typeof rv.reverted === "number" && Array.isArray(s.applied) && rv.reverted < s.applied.length) {
         if (seq < Math.max(...bySeq.keys())) warnings.push(`${name3}: revert of state ${seq} unconfirmed; later states may include its modifications`);
@@ -41190,7 +41274,7 @@ function validateForExecution(planJson, previewJson) {
     if (waits !== r.combinedWaitMs || waits > STATE_LIMITS.providerMaxCombinedWaitMs || waits > plan.maxCombinedWaitMs || waits * 2 > b.timeout) fail("combined waits exceed the budget");
     if (actions.some((a) => a.type === "executeJavascript" && /\basync\b|\bawait\b|setTimeout|setInterval|Promise/.test(a.script))) fail("scripts must be synchronous");
     if (r.states.length > STATE_LIMITS.maxStatesPerPage) fail("too many states");
-    return { preview: r, requestSha256: sha256(canonicalJson(b)), synthetic: r.states.some((s) => s.provenance === "synthetic") };
+    return { preview: r, requestSha256: sha256(canonicalJson(b)), synthetic: r.states.some((s) => s.provenance === "synthetic" || s.provenance === "page-api") };
   });
   return { plan, preview: rebuilt, previewSha256: sha256(want), requests };
 }
@@ -41200,7 +41284,7 @@ function assertRunGates(v, g) {
   if (!Number.isInteger(g.operatorReportedBalance) || g.operatorReportedBalance < 0) missing.push("--operator-reported-balance N");
   if (!g.confirmExistingCredits) missing.push("--confirm-existing-credits");
   if (!g.confirmNoTopup) missing.push("--confirm-no-topup");
-  if ((v.plan.forceAos || v.requests.some((r) => r.synthetic)) && !g.acknowledgeSyntheticModifications) missing.push("--acknowledge-synthetic-modifications (synthetic DOM changes / forced AOS visibility; no handler side-effect guarantee)");
+  if ((v.plan.forceAos || v.requests.some((r) => r.synthetic)) && !g.acknowledgeSyntheticModifications) missing.push("--acknowledge-synthetic-modifications (synthetic DOM changes / forced AOS visibility / page-API Swiper advance; no handler side-effect guarantee)");
   if (!g.ledgerPath) missing.push("--ledger FILE (shared local project ledger; 1000-credit budget ceiling, not a provider cap)");
   if (missing.length) throw new StateRunPolicyError(`Refusing before any request: missing operator inputs:
   ${missing.join("\n  ")}`);
@@ -41278,14 +41362,19 @@ async function validateStateResponse(doc, r, resolver) {
     if (v.name !== s.name) return reject("ambiguous", `state ${s.seq} returned name ${String(v.name)}`);
     if (v.provenance !== s.provenance) return reject("ambiguous", `state ${s.seq} provenance mismatch`);
     const err = typeof v.error === "string" ? v.error.slice(0, 200) : null;
-    out.states.push({ seq: s.seq, name: s.name, provenance: s.provenance, applied: Array.isArray(v.applied) ? v.applied.length : 0, refused: Array.isArray(v.refused) ? v.refused.length : 0, missing: Array.isArray(v.missing) ? v.missing.length : 0, error: err, reverted: rvv && typeof rvv.reverted === "number" ? rvv.reverted : null, revertFailed: rvv && typeof rvv.failed === "number" ? rvv.failed : null });
+    out.states.push({ seq: s.seq, name: s.name, provenance: s.provenance, applied: Array.isArray(v.applied) ? v.applied.length : 0, refused: Array.isArray(v.refused) ? v.refused.length : 0, missing: Array.isArray(v.missing) ? v.missing.length : 0, error: err, reverted: rvv && typeof rvv.reverted === "number" ? rvv.reverted : null, revertFailed: rvv && typeof rvv.failed === "number" ? rvv.failed : null, trigger: isObj6(v.trigger) ? v.trigger : null });
+    if (s.provenance === "page-api") {
+      const t = isObj6(v.trigger) ? v.trigger : null;
+      if (!t || t.valid !== true) out.warnings.push(`state "${s.name}": page-API trigger refused (${t && typeof t.reason === "string" ? t.reason : "no trigger report"}); this variant equals the pre-trigger page`);
+      else if (t.moved !== true) out.warnings.push(`state "${s.name}": Swiper did not move`);
+    }
     if (s.seq === 0 && isObj6(v.readiness)) {
       out.readiness = v.readiness;
       if (typeof v.readiness.imagesIncomplete === "number" && v.readiness.imagesIncomplete > 0) out.warnings.push(`${v.readiness.imagesIncomplete} image(s) still incomplete at baseline measurement`);
       if (v.readiness.fontsStatus === "loading") out.warnings.push("web fonts still loading at baseline measurement");
     }
     if (err) out.warnings.push(`state "${s.name}" failed in the browser (${err}); it reverted itself`);
-    if (s.provenance === "synthetic" && Array.isArray(v.applied) && v.applied.length === 0) out.warnings.push(`state "${s.name}": no modification applied`);
+    if ((s.provenance === "synthetic" || s.provenance === "page-api") && Array.isArray(v.applied) && v.applied.length === 0) out.warnings.push(`state "${s.name}": no modification applied`);
     if (rvv && rvv.failed !== 0) out.warnings.push(`state "${s.name}": revert reported ${String(rvv.failed)} failure(s)`);
   }
   if (out.freeze && Array.isArray(out.freeze.modifications) && out.freeze.modifications.length) out.warnings.push(`freeze modified the page: ${out.freeze.modifications.map(String).join("; ").slice(0, 160)}`);

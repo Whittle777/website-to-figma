@@ -612,7 +612,7 @@
           if (!c.obj(v, q, ["name", "provenance", "frame", "nodes", "referenceAssetId", "screenshot", "notes"])) return;
           if (typeof v.name !== "string" || !STATE_NAME.test(v.name) || names.has(v.name.toLowerCase())) c.fail(`${q}.name`, "expected a unique state name");
           else names.add(v.name.toLowerCase());
-          c.oneOf(v.provenance, `${q}.provenance`, ["baseline", "synthetic", "manual"]);
+          c.oneOf(v.provenance, `${q}.provenance`, ["baseline", "synthetic", "scroll-triggered", "page-api", "manual"]);
           if (j === 0 !== (v.provenance === "baseline")) c.fail(`${q}.provenance`, "exactly the first variant must be the baseline");
           if (j === 0 && v.name !== "Default") c.fail(`${q}.name`, 'the baseline variant must be named "Default"');
           if (c.obj(v.frame, `${q}.frame`, ["x", "y", "w", "h"])) {
@@ -1455,7 +1455,7 @@ Width fit skipped for ${unfitted} measured text run(s) (difference too large); n
   async function buildStates(track2, section, page, y, fonts, hashes, doc, stats) {
     const st = page.states;
     const x0 = 80;
-    const head = label(track2, section, `States / ${page.path}: native component variants (${st.variants.map((v) => `${v.name}: ${v.provenance}`).join(", ")}). Synthetic states are DOM modifications, not observed original states.${st.reactions === "click-cycle" && st.variants.length > 1 ? " Prototype: ON_CLICK -> CHANGE_TO next variant." : ""}`, 14, true, x0, y, 1200);
+    const head = label(track2, section, `States / ${page.path}: native component variants (${st.variants.map((v) => `${v.name}: ${v.provenance}`).join(", ")}). Synthetic states are DOM modifications, not observed original states; scroll-triggered = observed page reaction to scrolling; page-api = the page's own Swiper advanced via its API (not a user event).${st.reactions === "click-cycle" && st.variants.length > 1 ? " Prototype: ON_CLICK -> CHANGE_TO next variant." : ""}`, 14, true, x0, y, 1200);
     const top = y + head.height + 16;
     const comps = [];
     let x = 0;

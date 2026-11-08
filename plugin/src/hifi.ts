@@ -452,7 +452,7 @@ function stateLines(page: HifiPage): string[] {
 async function buildStates(track: Track, section: SectionNode, page: HifiPage, y: number, fonts: Map<HifiText, ResolvedFont>, hashes: Map<string, string>, doc: HifiDoc, stats: HifiStats): Promise<number> {
   const st = page.states!;
   const x0 = 80;
-  const head = label(track, section, `States / ${page.path}: native component variants (${st.variants.map((v) => `${v.name}: ${v.provenance}`).join(", ")}). Synthetic states are DOM modifications, not observed original states.${st.reactions === "click-cycle" && st.variants.length > 1 ? " Prototype: ON_CLICK -> CHANGE_TO next variant." : ""}`, 14, true, x0, y, 1200);
+  const head = label(track, section, `States / ${page.path}: native component variants (${st.variants.map((v) => `${v.name}: ${v.provenance}`).join(", ")}). Synthetic states are DOM modifications, not observed original states; scroll-triggered = observed page reaction to scrolling; page-api = the page's own Swiper advanced via its API (not a user event).${st.reactions === "click-cycle" && st.variants.length > 1 ? " Prototype: ON_CLICK -> CHANGE_TO next variant." : ""}`, 14, true, x0, y, 1200);
   const top = y + head.height + 16;
   const comps: ComponentNode[] = [];
   let x = 0;

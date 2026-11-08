@@ -330,7 +330,9 @@ substitute.
 
 | Interaction | Status |
 | --- | --- |
-| Baseline (unmodified page) after a fixed wait, freeze and lazy scroll | Supported (observed) |
+| Baseline (unmodified page) after a fixed wait and freeze | Supported (observed). With a scroll-reveal state it is the initial, unscrolled view. |
+| `scroll-reveal`: the page's own reaction to the planned provider scroll steps (e.g. AOS scroll listeners) | Supported as **scroll-triggered** (observed page reaction; no DOM edit by this tool beyond the recorded freeze) |
+| `swiper-next`: the page's own Swiper instance, bound to exactly one validated `.swiper` element (`el.swiper`), advanced with `slideNext(0)`, the call its autoplay makes; reverted with `slidePrev(0)` | Supported as **page-api** (actual library state reached via the page API, not a user event; Swiper's listeners run). Refused if the selector is ambiguous, the instance is unbound/foreign/destroyed, or the element is inside a form, link or button. Omitted if the slider did not move. |
 | `<details open>`, an allowlisted `aria-*` / `hidden` / `data-state` attribute, or a CSS class on declared elements | Supported as **synthetic** DOM modification; no handler side-effect guarantee |
 | Forced AOS visibility | Supported as a recorded modification |
 | Click, hover, focus, keyboard, typing, form submit, login, purchase, outbound link, navigation, arbitrary JS | **Unsupported** (refused); operator-captured `manual` screenshots only |
@@ -481,10 +483,23 @@ website-to-figma states-screenshots --run private-runs/state-run-<id> --out priv
   `--state-reactions click-cycle` optionally adds `ON_CLICK` → `CHANGE_TO` reactions, and any
   failure rolls back the whole import.
 
-Synthetic samples: `website-to-figma fixture hifi-states`, `samples/state-plan.example.json`
-(3 states, 14 actions) and `samples/state-plan.bootslander.json` (1 page, baseline only, forced
-AOS recorded as a modification, 6 actions). Synthetic states for Bootslander need selectors that
-an operator has verified; none are invented here.
+Samples:
+- `website-to-figma fixture hifi-states` (synthetic).
+- `samples/state-plan.example.json`: 3 synthetic states, 19 actions.
+- `samples/state-plan.bootslander.json`: 1 page, 3 states, 18 actions.
+  - `Default`, the initial view before any scrolling.
+  - `AOS revealed`, scroll-triggered (scope `#features`).
+  - `Testimonial next`, page-api via `#testimonials .swiper.init-swiper`.
+
+**Bootslander analysis.** Its selectors and semantics were checked against the public HTML and JS
+(a normal public GET, not executed):
+- **Swiper.** The page has exactly one `.init-swiper`, with no links, forms, buttons or inputs
+  inside it. It is created by `new Swiper(el, config)` on `load` with loop, autoplay 5 s and
+  clickable bullets, and no `on` handlers. Swiper 11.2.10's mount binds `el.swiper`. `slideNext`
+  only does `loopFix` (reorders slides) plus `slideTo`.
+- **Scroll handlers.** These only toggle classes: AOS (`once: true, mirror: false`, 99 ms
+  throttled scroll listener), header `scrolled`, `.scroll-top.active` and navmenu scrollspy.
+- **Not live.** None of this has been executed live.
 
 ## Figma plugin (development)
 

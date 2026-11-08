@@ -2,13 +2,16 @@
   "schema": "website-to-figma/state-plan",
   "schemaVersion": 1,
   "site": "https://bootstrapmade.com",
-  "forceAos": true,
+  "forceAos": false,
   "pages": [
     {
       "url": "https://bootstrapmade.com/content/demo/Bootslander/",
       "waitMs": 2000,
-      "lazy": { "steps": 6, "maxPx": 20000, "stepWaitMs": 400, "visibilityMs": 2000 },
-      "states": [],
+      "lazy": { "steps": 3, "maxPx": 20000, "stepWaitMs": 500, "visibilityMs": 1500 },
+      "states": [
+        { "name": "AOS revealed", "trigger": "scroll-reveal", "scope": "#features" },
+        { "name": "Testimonial next", "trigger": "swiper-next", "selector": "#testimonials .swiper.init-swiper", "scope": "#testimonials" }
+      ],
       "manual": []
     }
   ]

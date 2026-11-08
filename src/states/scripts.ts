@@ -75,10 +75,10 @@ export const STATE_JS = String.raw`(function w2fState() {
   const STATE = __STATE__;
   const MAX = { elements: 20000, texts: 20000, images: 500, svgs: 200, rules: 200, media: 50, fixed: 50, match: 5 };
   const MAX_RETURN_CHARS = __MAX_RETURN_CHARS__;
-  const out = { w2f: "state", seq: STATE.seq, name: STATE.name, provenance: STATE.mutations.length > 0 ? "synthetic" : "baseline", applied: [], missing: [], refused: [] };
+  const out = { w2f: "state", seq: STATE.seq, name: STATE.name, provenance: STATE.provenance, applied: [], missing: [], refused: [], trigger: null };
   const ATTRS = { "open": ["details"], "aria-expanded": null, "aria-selected": null, "aria-hidden": null, "hidden": null, "data-state": null };
   window.__w2fRevert = [];
-  const revertNow = () => { let n = 0; const list = window.__w2fRevert || []; window.__w2fRevert = []; for (const op of list.reverse()) { try { if (op[0] === "attr") { if (op[3] === null) op[1].removeAttribute(op[2]); else op[1].setAttribute(op[2], op[3]); } else op[1].classList.remove(op[2]); n++; } catch (e) {} } return n; };
+  const revertNow = () => { let n = 0; const list = window.__w2fRevert || []; window.__w2fRevert = []; for (const op of list.reverse()) { try { if (op[0] === "attr") { if (op[3] === null) op[1].removeAttribute(op[2]); else op[1].setAttribute(op[2], op[3]); } else if (op[0] === "class") op[1].classList.remove(op[2]); else if (op[0] === "swiper") op[1].slidePrev(0); n++; } catch (e) {} } return n; };
   try {
   if (!window.__w2fToggleGuard) { window.__w2fToggleGuard = true; window.addEventListener("toggle", (e) => e.stopImmediatePropagation(), true); }
   for (const m of STATE.mutations) {
@@ -106,6 +106,39 @@ export const STATE_JS = String.raw`(function w2fState() {
   }
   const imgsAll = Array.from(document.images).slice(0, 5000);
   const readiness = { readyState: document.readyState, fontsStatus: document.fonts ? document.fonts.status : null, images: imgsAll.length, imagesIncomplete: imgsAll.filter((i) => !i.complete).length, lazyImages: imgsAll.filter((i) => i.loading === "lazy").length };
+  if (STATE.trigger === "swiper-next") {
+    // Page API only: exactly one element, bound to its own Swiper instance by
+    // Swiper's mount (el.swiper === instance, instance.el === el), not inside a
+    // form/link/button, not destroyed. slideNext(0) is the call its autoplay
+    // makes; speed 0 finishes synchronously. No click or event dispatch.
+    const t = { kind: "swiper-next", selector: STATE.selector, valid: false, reason: null, before: null, after: null, moved: false, listeners: null };
+    out.trigger = t;
+    let els = [];
+    try { els = Array.from(document.querySelectorAll(STATE.selector)); } catch (e) { t.reason = "invalid selector"; }
+    const el = els.length === 1 ? els[0] : null;
+    const sw = el ? el.swiper : null;
+    if (!t.reason) {
+      if (els.length !== 1) t.reason = "selector must match exactly one element (matched " + els.length + ")";
+      else if (!el.classList.contains("swiper")) t.reason = "element is not a .swiper container";
+      else if (el.closest("form, a, button")) t.reason = "element is inside a form, link or button";
+      else if (!sw || typeof sw !== "object" || sw.el !== el || typeof sw.slideNext !== "function" || typeof sw.slidePrev !== "function") t.reason = "no Swiper instance bound to this element";
+      else if (sw.destroyed || sw.enabled === false) t.reason = "Swiper instance is destroyed or disabled";
+      else if (sw.params && sw.params.allowSlideNext === false) t.reason = "Swiper disallows slideNext";
+    }
+    if (t.reason) out.refused.push({ selector: STATE.selector, reason: t.reason });
+    else {
+      const snap = () => ({ activeIndex: sw.activeIndex, realIndex: sw.realIndex, slides: sw.slides ? sw.slides.length : null, loop: !!(sw.params && sw.params.loop), autoplayRunning: sw.autoplay ? !!sw.autoplay.running : null });
+      t.valid = true;
+      t.listeners = Object.keys(sw.eventsListeners || {}).slice(0, 50);
+      t.before = snap();
+      sw.slideNext(0);
+      t.after = snap();
+      t.moved = t.after.realIndex !== t.before.realIndex || t.after.activeIndex !== t.before.activeIndex;
+      window.__w2fRevert.push(["swiper", sw]);
+      out.applied.push({ selector: STATE.selector, mechanism: "swiper-next" });
+      if (!t.moved) out.refused.push({ selector: STATE.selector, reason: "slideNext did not move the slider" });
+    }
+  }
   const bounds = (e) => { const b = e.getBoundingClientRect(); return { x: b.x + scrollX, y: b.y + scrollY, w: b.width, h: b.height }; };
   const props = ["backgroundColor","color","fontFamily","fontSize","fontWeight","fontStyle","lineHeight","textDecorationLine","borderTopWidth","borderRightWidth","borderBottomWidth","borderLeftWidth","borderTopColor","borderRightColor","borderBottomColor","borderLeftColor","borderRadius","opacity","display","visibility","position","paddingTop","paddingRight","paddingBottom","paddingLeft","objectFit"];
   const styles = (e) => { const c = getComputedStyle(e); const o = {}; for (const k of props) o[k] = c[k]; return o; };
@@ -174,7 +207,7 @@ export const STATE_JS = String.raw`(function w2fState() {
 export const REVERT_JS = String.raw`(function w2fRevert() {
   const list = window.__w2fRevert || []; let n = 0, failed = 0;
   try {
-    for (const op of list.reverse()) { try { if (op[0] === "attr") { if (op[3] === null) op[1].removeAttribute(op[2]); else op[1].setAttribute(op[2], op[3]); } else if (op[0] === "class") op[1].classList.remove(op[2]); n++; } catch (e) { failed++; } }
+    for (const op of list.reverse()) { try { if (op[0] === "attr") { if (op[3] === null) op[1].removeAttribute(op[2]); else op[1].setAttribute(op[2], op[3]); } else if (op[0] === "class") op[1].classList.remove(op[2]); else if (op[0] === "swiper") op[1].slidePrev(0); n++; } catch (e) { failed++; } }
   } finally { window.__w2fRevert = []; try { window.scrollTo(0, 0); } catch (e) {} }
   return { w2f: "revert", seq: __SEQ__, reverted: n, failed };
 })();`;

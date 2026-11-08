@@ -41,7 +41,7 @@ function dom(html: string) {
   return { d, w, run: (script: string) => w.eval(script) as unknown };
 }
 
-const stateScript = (state: Record<string, unknown>, maxChars: number = STATE_LIMITS.maxStateReturnChars) => fill(STATE_JS, { STATE: { seq: 1, scope: null, ...state }, MAX_RETURN_CHARS: maxChars });
+const stateScript = (state: Record<string, unknown>, maxChars: number = STATE_LIMITS.maxStateReturnChars) => fill(STATE_JS, { STATE: { seq: 1, scope: null, trigger: null, selector: null, provenance: (state.mutations as unknown[] | undefined)?.length ? "synthetic" : "baseline", ...state }, MAX_RETURN_CHARS: maxChars });
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -53,6 +53,18 @@ describe("state plan validation (offline)", () => {
     expect(p.maxCombinedWaitMs).toBe(30_000);
     expect(p.forceAos).toBe(false);
     expect(p.pages[0]!.states[0]!.scope).toBe("#faq");
+  });
+
+  it("accepts only the two narrow triggers, once each, without mutations", () => {
+    const st = (states: unknown[], lazy?: unknown) => basePlan({}, { states, ...(lazy ? { lazy } : {}) });
+    const p = parseStatePlan(st([{ name: "Revealed", trigger: "scroll-reveal", scope: "#features" }, { name: "Next", trigger: "swiper-next", selector: "#t .swiper" }]));
+    expect(p.pages[0]!.states.map((x) => [x.name, x.trigger ?? null, x.scope])).toEqual([["Default", null, null], ["Revealed", "scroll-reveal", "#features"], ["Next", "swiper-next", "#t .swiper"]]);
+    expect(() => parseStatePlan(st([{ name: "X", trigger: "click", selector: "#a" }]))).toThrow(/no other interaction/);
+    expect(() => parseStatePlan(st([{ name: "X", trigger: "swiper-next" }]))).toThrow(/selector/);
+    expect(() => parseStatePlan(st([{ name: "X", trigger: "swiper-next", selector: "#a", mutations: [] }]))).toThrow(/cannot also carry mutations/);
+    expect(() => parseStatePlan(st([{ name: "X", trigger: "swiper-next", selector: "#a" }, { name: "Y", trigger: "swiper-next", selector: "#b" }]))).toThrow(/at most one/);
+    expect(() => parseStatePlan(st([{ name: "X", trigger: "scroll-reveal", selector: "#a" }]))).toThrow(/only valid for "swiper-next"/);
+    expect(() => parseStatePlan(st([{ name: "X", trigger: "scroll-reveal" }], { steps: 0 }))).toThrow(/steps >= 1/);
   });
 
   it("counts manual states toward the 3-state total", () => {
@@ -190,6 +202,38 @@ describe("browser scripts in jsdom (synthetic markup)", () => {
     w.document.getElementById("b").style.display = "none";
     await run(stateScript({ name: "Default", mutations: [] }));
     expect(w.document.getElementById("b").hasAttribute("data-w2f-id")).toBe(false);
+  });
+
+  it("swiper-next uses only the page's own bound Swiper instance and reverts with slidePrev(0)", async () => {
+    const { w, run } = dom('<section id="t"><div class="swiper" id="sw"><div class="swiper-wrapper"></div></div></section><div class="swiper" id="other"></div><form><div class="swiper" id="inform"></div></form>');
+    const calls: string[] = [];
+    const bind = (id: string, extra: Record<string, unknown> = {}) => {
+      const el = w.document.getElementById(id);
+      const sw: any = { el, activeIndex: 2, realIndex: 0, slides: [1, 2, 3], params: { loop: true }, eventsListeners: { init: [], slideChange: [] }, autoplay: { running: false }, destroyed: false, enabled: true,
+        slideNext(speed: number) { calls.push(`next:${speed}`); this.activeIndex++; this.realIndex++; },
+        slidePrev(speed: number) { calls.push(`prev:${speed}`); this.activeIndex--; this.realIndex--; }, ...extra };
+      el.swiper = sw;
+      return sw;
+    };
+    const sw = bind("sw");
+    const go = (selector: string) => run(stateScript({ name: "Next", mutations: [], trigger: "swiper-next", selector, provenance: "page-api" })) as any;
+    const r = go("#t .swiper");
+    expect(r.provenance).toBe("page-api");
+    expect(r.trigger).toMatchObject({ valid: true, moved: true, before: { realIndex: 0 }, after: { realIndex: 1 }, listeners: ["init", "slideChange"] });
+    expect(calls).toEqual(["next:0"]);
+    expect(run(fill(REVERT_JS, { SEQ: 1 }))).toMatchObject({ reverted: 1, failed: 0 });
+    expect(calls).toEqual(["next:0", "prev:0"]);
+    expect(sw.realIndex).toBe(0);
+    // refusals: ambiguous selector, no bound instance, foreign instance, inside a form, destroyed
+    expect(go(".swiper").trigger.reason).toMatch(/exactly one element \(matched 3\)/);
+    expect(go("#other").trigger.reason).toMatch(/no Swiper instance bound/);
+    w.document.getElementById("other").swiper = { ...sw, el: w.document.getElementById("sw") };
+    expect(go("#other").trigger.reason).toMatch(/no Swiper instance bound/);
+    bind("inform");
+    expect(go("#inform").trigger.reason).toMatch(/inside a form, link or button/);
+    bind("sw", { destroyed: true });
+    expect(go("#t .swiper").trigger.reason).toMatch(/destroyed/);
+    expect(calls).toEqual(["next:0", "prev:0"]);
   });
 
   it("baseline is labelled baseline, not synthetic", async () => {

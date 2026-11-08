@@ -63,10 +63,13 @@ export function adaptTaggedReturns(data: Obj, name: string): AdaptedStates | nul
   for (const seq of [...bySeq.keys()].sort((a, b) => a - b)) {
     const s = bySeq.get(seq)!;
     const synthetic = s.provenance === "synthetic";
+    const known = seq === 0 || ["synthetic", "scroll-triggered", "page-api"].includes(String(s.provenance));
+    const needsRevert = synthetic || s.provenance === "page-api";
     const st: Obj = {
       seq,
       name: typeof s.name === "string" ? s.name.slice(0, 40) : `State ${seq}`,
-      provenance: seq === 0 ? "baseline" : synthetic ? "synthetic" : "invalid",
+      provenance: seq === 0 ? "baseline" : ["synthetic", "scroll-triggered", "page-api"].includes(String(s.provenance)) ? s.provenance : "invalid",
+      trigger: isObj(s.trigger) ? s.trigger : null,
       scope: isObj(s.scope) ? s.scope : null,
       screenshotScrollY: typeof s.screenshotScrollY === "number" ? s.screenshotScrollY : null,
       viewport: isObj(s.viewport) ? s.viewport : null,
@@ -79,7 +82,7 @@ export function adaptTaggedReturns(data: Obj, name: string): AdaptedStates | nul
       residueFromSeq: tainted,
       screenshot: associated ? "action-order" : "unassociated",
     };
-    if (seq > 0 && !synthetic) warnings.push(`${name}: state ${seq} is not labelled synthetic; omitted`);
+    if (!known) warnings.push(`${name}: state ${seq} has an unknown provenance; omitted`);
     if (htmlAssociated) {
       const sc = scrapes[seq];
       const html = isObj(sc) ? sc.html : undefined;
@@ -91,8 +94,8 @@ export function adaptTaggedReturns(data: Obj, name: string): AdaptedStates | nul
       if (Array.isArray(s.media)) st.media = s.media.slice(0, 50);
     }
     if (associated) out.screenshotHints.push({ state: st.name as string, seq, screenshotUrl: String(shots[seq]).slice(0, LIMITS.maxUrlChars), scrollY: st.screenshotScrollY as number | null });
-    if (seq === 0 || synthetic) out.states.push(st);
-    if (synthetic) {
+    if (known) out.states.push(st);
+    if (needsRevert) {
       const rv = reverts.get(seq);
       if (!rv || rv.failed !== 0 || (s.error === undefined && typeof rv.reverted === "number" && Array.isArray(s.applied) && rv.reverted < s.applied.length)) {
         if (seq < Math.max(...bySeq.keys())) warnings.push(`${name}: revert of state ${seq} unconfirmed; later states may include its modifications`);

@@ -91,7 +91,8 @@ export function attachStates(ctx: StateContext): void {
     if (rawStates.length || stateRefs.length) {
       const variants: StateVariant[] = [];
       const base = rawStates.find((s) => s.seq === 0) ?? null;
-      const ordered = base ? [base, ...rawStates.filter((s) => s !== base && s.provenance === "synthetic")] : [];
+      const KINDS = ["synthetic", "scroll-triggered", "page-api"];
+      const ordered = base ? [base, ...rawStates.filter((s) => s !== base && KINDS.includes(String(s.provenance)))] : [];
       const firstScope = ordered.find((s) => rectOf(s.scope));
       for (const st of ordered) {
         const name = typeof st.name === "string" && STATE_NAME.test(st.name) ? st.name : null;
@@ -132,8 +133,22 @@ export function attachStates(ctx: StateContext): void {
         });
         budget -= nodes.length;
         const notes: string[] = [];
-        if (isBase) notes.push("Baseline: the page as measured, before any state modification");
-        else {
+        const kind = isBase ? "baseline" : (String(st.provenance) as "synthetic" | "scroll-triggered" | "page-api");
+        const trig = isObj(st.trigger) ? st.trigger : null;
+        if (isBase) notes.push("Baseline: the page as measured, before any state modification or trigger");
+        else if (kind === "scroll-triggered") {
+          notes.push("OBSERVED page reaction to the planned provider scroll steps (page scroll listeners, e.g. AOS); no DOM modification by this tool beyond the recorded freeze");
+          notes.push("Not a user interaction; only scroll-driven changes are represented");
+        } else if (kind === "page-api") {
+          const b = trig && isObj(trig.before) ? trig.before : null;
+          const a = trig && isObj(trig.after) ? trig.after : null;
+          notes.push(`PAGE-API state: the page's own Swiper instance advanced with slideNext(0) (the call its autoplay makes)${b && a ? `; realIndex ${String(b.realIndex)} -> ${String(a.realIndex)}` : ""}`);
+          notes.push("Not a user event (no click/swipe); Swiper's own event listeners ran; no handler side-effect guarantee");
+          if (!trig || trig.valid !== true || trig.moved !== true) {
+            pw(`State "${name}" omitted: Swiper trigger ${trig && trig.valid === true ? "did not move" : `refused (${trig && typeof trig.reason === "string" ? trig.reason : "no report"})`}`);
+            continue;
+          }
+        } else {
           const applied = Array.isArray(st.applied) ? st.applied.filter(isObj).map((a) => `${String(a.mechanism)} ${String(a.selector)}`) : [];
           notes.push(`SYNTHETIC state: DOM modification (${applied.join("; ").slice(0, 120) || "none applied"}), not an observed original state`);
           notes.push("No handler side-effect guarantee: page observers/callbacks may have reacted to the modification");
@@ -149,7 +164,7 @@ export function attachStates(ctx: StateContext): void {
         const assoc = st.screenshot === "action-order" ? "action-order" : "unassociated";
         variants.push({
           name,
-          provenance: isBase ? "baseline" : "synthetic",
+          provenance: kind,
           frame,
           nodes,
           referenceAssetId: ref ? ctx.assetIdFor(ref) : null,
