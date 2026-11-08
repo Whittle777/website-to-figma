@@ -1,0 +1,34 @@
+{
+  "name": "website-to-figma",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local CLI that maps a small website into versioned JSON, plus a development Figma plugin that imports it as low-fidelity editable wireframes.",
+  "type": "module",
+  "engines": {
+    "node": ">=20.12"
+  },
+  "dependencies": {
+    "@mendable/firecrawl-js": "^4.52.0",
+    "ipaddr.js": "^2.5.0",
+    "node-html-parser": "^9.0.7"
+  },
+  "devDependencies": {
+    "@figma/plugin-typings": "^1.142.0",
+    "@types/node": "^26.6.6",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  },
+  "bin": {
+    "website-to-figma": "dist/cli.js"
+  },
+  "scripts": {
+    "cli": "tsx src/cli.ts",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.plugin.json",
+    "test": "vitest run",
+    "build": "node scripts/build.mjs",
+    "samples": "tsx src/cli.ts fixture 5 --out samples/fixture-5.json && tsx src/cli.ts fixture 10 --out samples/fixture-10.json && tsx src/cli.ts fixture 20 --out samples/fixture-20.json",
+    "package": "npm run build && node scripts/package.mjs"
+  }
+}

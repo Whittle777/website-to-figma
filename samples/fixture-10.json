@@ -1,0 +1,556 @@
+{
+  "schema": "website-to-figma/site-map",
+  "schemaVersion": 1,
+  "generator": {
+    "name": "website-to-figma",
+    "version": "0.1.0"
+  },
+  "source": {
+    "mode": "fixture",
+    "fixtureId": "fixture-10",
+    "label": "SYNTHETIC FIXTURE - not a real website"
+  },
+  "site": {
+    "origin": "https://fixture.example",
+    "host": "fixture.example"
+  },
+  "crawl": {
+    "requestedLimit": 10,
+    "hardCap": 20,
+    "discoveredCount": 10,
+    "returnedCount": 10,
+    "truncated": false,
+    "incomplete": true,
+    "notes": [
+      "SYNTHETIC FIXTURE - not a real website",
+      "3 page(s) dropped: final URL not on the start site",
+      "3 duplicate URL(s) merged after canonicalization"
+    ]
+  },
+  "pages": [
+    {
+      "id": "p0",
+      "url": "https://fixture.example/",
+      "path": "/",
+      "title": "Fixture Co - Home",
+      "parentId": null,
+      "depth": 0,
+      "nav": {
+        "items": [
+          "Home",
+          "About",
+          "Pricing",
+          "Blog",
+          "Docs",
+          "Contact"
+        ]
+      },
+      "footer": {
+        "items": [
+          "Privacy",
+          "Terms",
+          "Status",
+          "Careers"
+        ],
+        "text": "Fixture Co (synthetic fixture)"
+      },
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 1,
+          "text": "Fixture Co - Home"
+        },
+        {
+          "type": "text",
+          "text": "A synthetic product homepage used to test wireframe generation."
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Section heading"
+        },
+        {
+          "type": "text",
+          "text": "Synthetic paragraph content for layout."
+        },
+        {
+          "type": "cards",
+          "cards": [
+            {
+              "title": "Fast",
+              "text": "Feature card one."
+            },
+            {
+              "title": "Simple",
+              "text": "Feature card two."
+            },
+            {
+              "title": "Local",
+              "text": "Feature card three."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "p1",
+      "url": "https://fixture.example/about",
+      "path": "/about",
+      "title": "About Fixture Co",
+      "parentId": "p0",
+      "depth": 1,
+      "nav": {
+        "items": [
+          "Home",
+          "About",
+          "Pricing",
+          "Blog",
+          "Docs",
+          "Contact"
+        ]
+      },
+      "footer": {
+        "items": [
+          "Privacy",
+          "Terms",
+          "Status",
+          "Careers"
+        ],
+        "text": "Fixture Co (synthetic fixture)"
+      },
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 1,
+          "text": "About Fixture Co"
+        },
+        {
+          "type": "text",
+          "text": "Synthetic about page with a short company story."
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Section heading"
+        },
+        {
+          "type": "text",
+          "text": "Synthetic paragraph content for layout."
+        }
+      ]
+    },
+    {
+      "id": "p2",
+      "url": "https://fixture.example/blog",
+      "path": "/blog",
+      "title": "Blog",
+      "parentId": "p0",
+      "depth": 1,
+      "nav": {
+        "items": [
+          "Home",
+          "About",
+          "Pricing",
+          "Blog",
+          "Docs",
+          "Contact"
+        ]
+      },
+      "footer": {
+        "items": [
+          "Privacy",
+          "Terms",
+          "Status",
+          "Careers"
+        ],
+        "text": "Fixture Co (synthetic fixture)"
+      },
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 1,
+          "text": "Blog"
+        },
+        {
+          "type": "text",
+          "text": "Synthetic blog index."
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Section heading"
+        },
+        {
+          "type": "text",
+          "text": "Synthetic paragraph content for layout."
+        },
+        {
+          "type": "cards",
+          "cards": [
+            {
+              "title": "Hello world",
+              "text": "First post teaser."
+            },
+            {
+              "title": "Release notes",
+              "text": "Second post teaser."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "p3",
+      "url": "https://fixture.example/contact",
+      "path": "/contact",
+      "title": "Contact",
+      "parentId": "p0",
+      "depth": 1,
+      "nav": {
+        "items": [
+          "Home",
+          "About",
+          "Pricing",
+          "Blog",
+          "Docs",
+          "Contact"
+        ]
+      },
+      "footer": {
+        "items": [
+          "Privacy",
+          "Terms",
+          "Status",
+          "Careers"
+        ],
+        "text": "Fixture Co (synthetic fixture)"
+      },
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 1,
+          "text": "Contact"
+        },
+        {
+          "type": "text",
+          "text": "Synthetic contact page."
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Section heading"
+        },
+        {
+          "type": "text",
+          "text": "Synthetic paragraph content for layout."
+        }
+      ]
+    },
+    {
+      "id": "p4",
+      "url": "https://fixture.example/docs",
+      "path": "/docs",
+      "title": "Documentation",
+      "parentId": "p0",
+      "depth": 1,
+      "nav": {
+        "items": [
+          "Docs home",
+          "Getting started",
+          "API reference",
+          "Back to site"
+        ]
+      },
+      "footer": {
+        "items": [
+          "Privacy",
+          "Terms",
+          "Status",
+          "Careers"
+        ],
+        "text": "Fixture Co (synthetic fixture)"
+      },
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 1,
+          "text": "Documentation"
+        },
+        {
+          "type": "text",
+          "text": "Synthetic docs landing page."
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Section heading"
+        },
+        {
+          "type": "text",
+          "text": "Synthetic paragraph content for layout."
+        },
+        {
+          "type": "cards",
+          "cards": [
+            {
+              "title": "Getting started",
+              "text": "Install and run."
+            },
+            {
+              "title": "API reference",
+              "text": "Every endpoint."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "p5",
+      "url": "https://fixture.example/pricing",
+      "path": "/pricing",
+      "title": "Pricing",
+      "parentId": "p0",
+      "depth": 1,
+      "nav": {
+        "items": [
+          "Home",
+          "About",
+          "Pricing",
+          "Blog",
+          "Docs",
+          "Contact"
+        ]
+      },
+      "footer": {
+        "items": [
+          "Privacy",
+          "Terms",
+          "Status",
+          "Careers"
+        ],
+        "text": "Fixture Co (synthetic fixture)"
+      },
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 1,
+          "text": "Pricing"
+        },
+        {
+          "type": "text",
+          "text": "Three synthetic plans."
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Section heading"
+        },
+        {
+          "type": "text",
+          "text": "Synthetic paragraph content for layout."
+        },
+        {
+          "type": "cards",
+          "cards": [
+            {
+              "title": "Starter",
+              "text": "Plan card for individuals."
+            },
+            {
+              "title": "Team",
+              "text": "Plan card for small teams."
+            },
+            {
+              "title": "Scale",
+              "text": "Plan card for larger teams."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "p6",
+      "url": "https://fixture.example/blog/hello-world",
+      "path": "/blog/hello-world",
+      "title": "Hello world",
+      "parentId": "p2",
+      "depth": 2,
+      "nav": {
+        "items": [
+          "Home",
+          "About",
+          "Pricing",
+          "Blog",
+          "Docs",
+          "Contact"
+        ]
+      },
+      "footer": {
+        "items": [
+          "Privacy",
+          "Terms",
+          "Status",
+          "Careers"
+        ],
+        "text": "Fixture Co (synthetic fixture)"
+      },
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 1,
+          "text": "Hello world"
+        },
+        {
+          "type": "text",
+          "text": "Synthetic blog post body."
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Section heading"
+        },
+        {
+          "type": "text",
+          "text": "Synthetic paragraph content for layout."
+        }
+      ]
+    },
+    {
+      "id": "p7",
+      "url": "https://fixture.example/blog/release-notes",
+      "path": "/blog/release-notes",
+      "title": "Release notes",
+      "parentId": "p2",
+      "depth": 2,
+      "nav": {
+        "items": [
+          "Home",
+          "About",
+          "Pricing",
+          "Blog",
+          "Docs",
+          "Contact"
+        ]
+      },
+      "footer": {
+        "items": [
+          "Privacy",
+          "Terms",
+          "Status",
+          "Careers"
+        ],
+        "text": "Fixture Co (synthetic fixture)"
+      },
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 1,
+          "text": "Release notes"
+        },
+        {
+          "type": "text",
+          "text": "Synthetic release notes post."
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Section heading"
+        },
+        {
+          "type": "text",
+          "text": "Synthetic paragraph content for layout."
+        }
+      ]
+    },
+    {
+      "id": "p8",
+      "url": "https://fixture.example/docs/api",
+      "path": "/docs/api",
+      "title": "API reference",
+      "parentId": "p4",
+      "depth": 2,
+      "nav": {
+        "items": [
+          "Docs home",
+          "Getting started",
+          "API reference",
+          "Back to site"
+        ]
+      },
+      "footer": {
+        "items": [
+          "Privacy",
+          "Terms",
+          "Status",
+          "Careers"
+        ],
+        "text": "Fixture Co (synthetic fixture)"
+      },
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 1,
+          "text": "API reference"
+        },
+        {
+          "type": "text",
+          "text": "Synthetic API overview."
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Section heading"
+        },
+        {
+          "type": "text",
+          "text": "Synthetic paragraph content for layout."
+        }
+      ]
+    },
+    {
+      "id": "p9",
+      "url": "https://fixture.example/docs/getting-started",
+      "path": "/docs/getting-started",
+      "title": "Getting started",
+      "parentId": "p4",
+      "depth": 2,
+      "nav": {
+        "items": [
+          "Docs home",
+          "Getting started",
+          "API reference",
+          "Back to site"
+        ]
+      },
+      "footer": {
+        "items": [
+          "Privacy",
+          "Terms",
+          "Status",
+          "Careers"
+        ],
+        "text": "Fixture Co (synthetic fixture)"
+      },
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 1,
+          "text": "Getting started"
+        },
+        {
+          "type": "text",
+          "text": "Synthetic setup guide."
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Section heading"
+        },
+        {
+          "type": "text",
+          "text": "Synthetic paragraph content for layout."
+        }
+      ]
+    }
+  ]
+}
