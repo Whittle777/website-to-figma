@@ -65,17 +65,14 @@ export const SCROLL_JS = String.raw`(function w2fScroll() {
   return { w2f: "scroll", step: k, steps: n, y, scrollHeight: document.documentElement.scrollHeight, viewportHeight: vh, maxGapPx: gap, coverageComplete: gap <= vh, cappedByMaxPx: document.documentElement.scrollHeight - vh > maxPx };
 })();`;
 
-// Apply one declarative state (or the baseline), measure the page and the
-// state's scope SYNCHRONOUSLY (layout is forced by getBoundingClientRect; CSS
-// transitions/animations are already frozen), observe readiness (document
-// readyState, font loading status, incomplete images - observation only, no
-// waiting), and scroll the scope into view for the following screenshot.
-// Page JS that reacts asynchronously to the modification is NOT awaited.
-export const STATE_JS = String.raw`(function w2fState() {
+// Apply one declarative state or narrow trigger (or nothing, for the
+// baseline), then bring the state's scope into view (or the page top) with
+// scrollIntoView. A documented provider `wait` follows, then the separate
+// measure+verify step. Synchronous; no clicks or event dispatch.
+export const APPLY_JS = String.raw`(function w2fApply() {
   const STATE = __STATE__;
-  const MAX = { elements: 20000, texts: 20000, images: 500, svgs: 200, rules: 200, media: 50, fixed: 50, match: 5 };
-  const MAX_RETURN_CHARS = __MAX_RETURN_CHARS__;
-  const out = { w2f: "state", seq: STATE.seq, name: STATE.name, provenance: STATE.provenance, applied: [], missing: [], refused: [], trigger: null };
+  const MAX = { match: 5 };
+  const out = { w2f: "apply", seq: STATE.seq, name: STATE.name, provenance: STATE.provenance, applied: [], missing: [], refused: [], trigger: null, error: null, scrollY: null };
   const ATTRS = { "open": ["details"], "aria-expanded": null, "aria-selected": null, "aria-hidden": null, "hidden": null, "data-state": null };
   window.__w2fRevert = [];
   const revertNow = () => { let n = 0; const list = window.__w2fRevert || []; window.__w2fRevert = []; for (const op of list.reverse()) { try { if (op[0] === "attr") { if (op[3] === null) op[1].removeAttribute(op[2]); else op[1].setAttribute(op[2], op[3]); } else if (op[0] === "class") op[1].classList.remove(op[2]); else if (op[0] === "swiper") op[1].slidePrev(0); n++; } catch (e) {} } return n; };
@@ -104,8 +101,6 @@ export const STATE_JS = String.raw`(function w2fState() {
       out.applied.push({ selector: m.selector, mechanism: m.mechanism });
     }
   }
-  const imgsAll = Array.from(document.images).slice(0, 5000);
-  const readiness = { readyState: document.readyState, fontsStatus: document.fonts ? document.fonts.status : null, images: imgsAll.length, imagesIncomplete: imgsAll.filter((i) => !i.complete).length, lazyImages: imgsAll.filter((i) => i.loading === "lazy").length };
   if (STATE.trigger === "swiper-next") {
     // Page API only: exactly one element, bound to its own Swiper instance by
     // Swiper's mount (el.swiper === instance, instance.el === el), not inside a
@@ -139,6 +134,34 @@ export const STATE_JS = String.raw`(function w2fState() {
       if (!t.moved) out.refused.push({ selector: STATE.selector, reason: "slideNext did not move the slider" });
     }
   }
+  let target = null;
+  if (STATE.scope) { try { target = document.querySelector(STATE.scope); } catch (e) { out.refused.push({ selector: STATE.scope, reason: "invalid scope selector" }); } if (!target) out.missing.push(STATE.scope); }
+  if (target && typeof target.scrollIntoView === "function") target.scrollIntoView({ block: "start", inline: "nearest" });
+  else if (target) { const r = target.getBoundingClientRect(); window.scrollTo(0, Math.max(0, r.top + (window.scrollY || 0))); }
+  else window.scrollTo(0, 0);
+  out.scrollY = window.scrollY || 0;
+  return out;
+  } catch (e) {
+    // Apply failed: revert immediately so later steps see the pre-state page.
+    return { ...out, error: String(e && e.message || e).slice(0, 200), reverted: revertNow() };
+  }
+})();`;
+
+// Measure the page and VERIFY what the following screenshot can show
+// (synchronous; nothing is modified or scrolled here). The verify record
+// gives scrollY, the CSS viewport, the document height, the target's
+// viewport-relative bounds and whether the action viewport is expanded
+// beyond the largest documented screenshot viewport (7680x4320), in which
+// case the screenshot position cannot be verified from inside the page.
+export const STATE_JS = String.raw`(function w2fState() {
+  const STATE = __STATE__;
+  const MAX = { elements: 20000, texts: 20000, images: 500, svgs: 200, rules: 200, media: 50, fixed: 50 };
+  const MAX_RETURN_CHARS = __MAX_RETURN_CHARS__;
+  const MAX_SCREENSHOT_VIEWPORT_H = 4320;
+  const out = { w2f: "state", seq: STATE.seq, name: STATE.name, provenance: STATE.provenance, missing: [] };
+  try {
+  const imgsAll = Array.from(document.images).slice(0, 5000);
+  const readiness = { readyState: document.readyState, fontsStatus: document.fonts ? document.fonts.status : null, images: imgsAll.length, imagesIncomplete: imgsAll.filter((i) => !i.complete).length, lazyImages: imgsAll.filter((i) => i.loading === "lazy").length };
   const bounds = (e) => { const b = e.getBoundingClientRect(); return { x: b.x + scrollX, y: b.y + scrollY, w: b.width, h: b.height }; };
   const props = ["backgroundColor","color","fontFamily","fontSize","fontWeight","fontStyle","lineHeight","textDecorationLine","borderTopWidth","borderRightWidth","borderBottomWidth","borderLeftWidth","borderTopColor","borderRightColor","borderBottomColor","borderLeftColor","borderRadius","opacity","display","visibility","position","paddingTop","paddingRight","paddingBottom","paddingLeft","objectFit"];
   const styles = (e) => { const c = getComputedStyle(e); const o = {}; for (const k of props) o[k] = c[k]; return o; };
@@ -187,19 +210,25 @@ export const STATE_JS = String.raw`(function w2fState() {
   mediaOf("canvas", "canvas", (e) => { let webgl = false; try { webgl = !!(e.getContext && (e.getContext("webgl2") || e.getContext("webgl"))); } catch (x) {} return { webgl }; });
   mediaOf("lottie-player, dotlottie-player, [data-animation-path]", "lottie", () => ({}));
   mediaOf("iframe", "iframe", (e) => ({ src: String(e.src || "").slice(0, 2048) || null }));
-  let scope = null, shotY = 0;
-  if (STATE.scope) { const s = document.querySelector(STATE.scope); if (s) { scope = bounds(s); window.scrollTo(0, Math.max(0, scope.y - 40)); shotY = window.scrollY || 0; } else out.missing.push(STATE.scope); }
-  if (!scope) { window.scrollTo(0, 0); shotY = window.scrollY || 0; }
-  const result = { ...out, readiness, scope, screenshotScrollY: shotY, viewport: { width: innerWidth, height: innerHeight }, measured: { url: location.href, viewport: { width: innerWidth, height: innerHeight }, title: document.title, elements, texts, images, svgs }, fixed, motion, media, truncated: false };
+  const vh = window.innerHeight || 0, vw = window.innerWidth || 0;
+  const docH = Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0);
+  const expanded = vh > MAX_SCREENSHOT_VIEWPORT_H;
+  let scope = null, target = null;
+  if (STATE.scope) {
+    let s = null; try { s = document.querySelector(STATE.scope); } catch (e) {}
+    if (s) { scope = bounds(s); const r = s.getBoundingClientRect(); target = { selector: STATE.scope, viewTop: r.top, viewBottom: r.bottom, inViewport: !expanded && r.top >= -1 && r.bottom <= vh + 1, partiallyVisible: !expanded && r.bottom > 0 && r.top < vh }; }
+    else out.missing.push(STATE.scope);
+  }
+  const verify = { scrollY: window.scrollY || 0, viewport: { width: vw, height: vh }, documentHeight: docH, expandedViewport: expanded, target };
+  const result = { ...out, readiness, scope, verify, screenshotScrollY: verify.scrollY, viewport: { width: vw, height: vh }, documentHeight: docH, measured: { url: location.href, viewport: { width: vw, height: vh }, documentHeight: docH, title: document.title, elements, texts, images, svgs }, fixed, motion, media, truncated: false };
   // Byte bound: drop measurement tails (largest first) until the return fits.
   for (const k of ["texts", "elements", "svgs", "images"]) {
     while (JSON.stringify(result).length > MAX_RETURN_CHARS && result.measured[k].length) { result.measured[k].length = Math.floor(result.measured[k].length / 2); result.truncated = true; }
   }
-  if (JSON.stringify(result).length > MAX_RETURN_CHARS) return { ...out, error: "return exceeds byte bound", reverted: revertNow() };
+  if (JSON.stringify(result).length > MAX_RETURN_CHARS) return { ...out, error: "return exceeds byte bound" };
   return result;
   } catch (e) {
-    // Apply/measure failed: revert immediately so later steps see the baseline.
-    return { ...out, error: String(e && e.message || e).slice(0, 200), reverted: revertNow() };
+    return { ...out, error: String(e && e.message || e).slice(0, 200) };
   }
 })();`;
 

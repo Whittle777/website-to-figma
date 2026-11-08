@@ -60,6 +60,8 @@
     refTileWorkerHeapMb: 512,
     hifiMaxPageWidth: 4096,
     hifiMaxPageHeight: 3e4,
+    // Taller documents are split into at most this many 30000px segment pages.
+    hifiMaxPageSegments: 4,
     hifiMaxTextChars: 2e3,
     hifiMaxFontStack: 16,
     hifiMaxWarnings: 50,
@@ -622,9 +624,11 @@
           }
           total += checkNodeList(c, v.nodes, `${q}.nodes`, MAX_VARIANT_NODES, assetIds, 0);
           if (v.referenceAssetId !== null && (typeof v.referenceAssetId !== "string" || assetsById.get(v.referenceAssetId)?.kind !== "reference")) c.fail(`${q}.referenceAssetId`, "unknown reference asset");
-          if (v.screenshot !== null && c.obj(v.screenshot, `${q}.screenshot`, ["association", "scrollY", "viewportW", "viewportH"])) {
+          if (v.screenshot !== null && c.obj(v.screenshot, `${q}.screenshot`, ["association", "scrollY", "viewportW", "viewportH"], ["verified", "distinct"])) {
+            if (v.screenshot.verified !== void 0) c.oneOf(v.screenshot.verified, `${q}.screenshot.verified`, ["target-in-viewport", "target-outside-viewport", "unverifiable-expanded-viewport", "no-target"]);
+            if (v.screenshot.distinct !== void 0) c.bool(v.screenshot.distinct, `${q}.screenshot.distinct`);
             c.oneOf(v.screenshot.association, `${q}.screenshot.association`, ["action-order", "unassociated", "manual"]);
-            for (const k of ["scrollY", "viewportW", "viewportH"]) if (v.screenshot[k] !== null) c.num(v.screenshot[k], `${q}.screenshot.${k}`, 0, COORD);
+            for (const k of ["scrollY", "viewportW", "viewportH"]) if (v.screenshot[k] !== null) c.num(v.screenshot[k], `${q}.screenshot.${k}`, 0, 1e6);
           }
           c.labels(v.notes, `${q}.notes`, 10);
         });
@@ -750,7 +754,13 @@
       const ids = /* @__PURE__ */ new Set();
       d.pages.forEach((pg, i) => {
         const p = `$.pages[${i}]`;
-        if (!c.obj(pg, p, ["id", "url", "path", "title", "width", "height", "truncated", "referenceAssetId", "branding", "nodes", "warnings"], ["notes", "parentId", "clips", "instances", "normalization", "referenceTiles", "states", "freeze", "motion", "media"])) return;
+        if (!c.obj(pg, p, ["id", "url", "path", "title", "width", "height", "truncated", "referenceAssetId", "branding", "nodes", "warnings"], ["notes", "parentId", "clips", "instances", "normalization", "referenceTiles", "states", "freeze", "motion", "media", "segment"])) return;
+        if (pg.segment !== void 0 && c.obj(pg.segment, `${p}.segment`, ["index", "count", "offsetY", "sourceHeight"])) {
+          c.int(pg.segment.count, `${p}.segment.count`, 2, LIMITS.hifiMaxPageSegments);
+          c.int(pg.segment.index, `${p}.segment.index`, 0, LIMITS.hifiMaxPageSegments - 1);
+          c.num(pg.segment.offsetY, `${p}.segment.offsetY`, 0, LIMITS.hifiMaxPageHeight * LIMITS.hifiMaxPageSegments);
+          c.num(pg.segment.sourceHeight, `${p}.segment.sourceHeight`, 1, LIMITS.hifiMaxPageHeight * LIMITS.hifiMaxPageSegments);
+        }
         total += checkStatesEtc(c, pg, p, assetIds, assetsById);
         if (pg.referenceTiles !== void 0 && c.obj(pg.referenceTiles, `${p}.referenceTiles`, ["sourceSha256", "sourceWidth", "sourceHeight", "tiles"])) {
           const rt = pg.referenceTiles;
@@ -865,51 +875,6 @@
       return r.ok ? { ok: true, version: 2, doc: r.doc } : r;
     }
     return { ok: false, errors: ["$.schemaVersion: unsupported version (expected 1 or 2)"] };
-  }
-
-  // src/shared/fonts.ts
-  var GENERIC_KEYWORDS = /* @__PURE__ */ new Set(["sans-serif", "serif", "monospace", "system-ui", "ui-sans-serif", "ui-serif", "ui-monospace", "cursive", "fantasy", "-apple-system", "blinkmacsystemfont"]);
-  var GENERIC_FALLBACKS = {
-    sans: ["Inter", "Roboto", "Arial"],
-    serif: ["Noto Serif", "Georgia", "Times New Roman", "Inter"],
-    mono: ["Roboto Mono", "Source Code Pro", "Courier New", "Inter"]
-  };
-  function styleName(weight, italic) {
-    const bold = weight >= 600;
-    if (bold && italic) return "Bold Italic";
-    if (bold) return "Bold";
-    return italic ? "Italic" : "Regular";
-  }
-  function mappedFamily(stack, generic, rules) {
-    if (!rules?.length) return null;
-    const first = stack.find((f) => !GENERIC_KEYWORDS.has(f.toLowerCase()))?.toLowerCase();
-    const aliases = { sans: ["sans", "sans-serif"], serif: ["serif"], mono: ["mono", "monospace"] };
-    return rules.find((r) => first && r.match.toLowerCase() === first || aliases[generic].includes(r.match.toLowerCase())) ?? null;
-  }
-  function resolveFont(stack, generic, weight, italic, available, rule) {
-    const wanted = styleName(weight, italic);
-    const concrete = stack.filter((f) => !GENERIC_KEYWORDS.has(f.toLowerCase()));
-    const first = concrete[0];
-    if (rule) {
-      for (const style of [wanted, "Regular"]) {
-        if (available.has(`${rule.use}|${style}`)) {
-          return { family: rule.use, style, fallback: rule.use !== first || style !== wanted, reason: `operator font map: ${rule.match} -> ${rule.use}${style !== wanted ? ` (style ${wanted} unavailable)` : ""}` };
-        }
-      }
-    }
-    const candidates = [...concrete, ...GENERIC_FALLBACKS[generic]];
-    for (const family of candidates) {
-      if (available.has(`${family}|${wanted}`)) {
-        const fallback = family !== first;
-        return { family, style: wanted, fallback, reason: fallback ? `measured stack "${stack.join(", ")}" -> ${family}` : "first family of measured stack" };
-      }
-    }
-    for (const family of candidates) {
-      if (available.has(`${family}|Regular`)) {
-        return { family, style: "Regular", fallback: true, reason: `style ${wanted} unavailable; ${family} Regular used` };
-      }
-    }
-    return null;
   }
 
   // src/shared/imageInfo.ts
@@ -1067,37 +1032,262 @@
     return [...h].map((x) => x.toString(16).padStart(8, "0")).join("");
   }
 
-  // plugin/src/hifi.ts
-  var LABEL_FONT = { family: "Inter", style: "Regular" };
-  var LABEL_BOLD = { family: "Inter", style: "Bold" };
-  var MAX_LETTER_SPACING_RATIO = 0.25;
+  // plugin/src/render/nativeHost.ts
   function solid(p) {
     const n = parseInt(p.hex.slice(1), 16);
     return { type: "SOLID", color: { r: (n >> 16 & 255) / 255, g: (n >> 8 & 255) / 255, b: (n & 255) / 255 }, opacity: p.alpha };
   }
-  function radii(n, r) {
-    n.topLeftRadius = r[0];
-    n.topRightRadius = r[1];
-    n.bottomRightRadius = r[2];
-    n.bottomLeftRadius = r[3];
-  }
-  function verifyAssets(doc) {
-    const out = /* @__PURE__ */ new Map();
-    for (const a of doc.assets) {
-      const bytes = figma.base64Decode(a.dataBase64);
-      if (bytes.length !== a.bytes) throw new Error(`Asset ${a.id}: decoded length ${bytes.length} != ${a.bytes}`);
-      if (sha256Hex(bytes) !== a.sha256) throw new Error(`Asset ${a.id}: SHA-256 mismatch`);
-      const info = inspectImage(bytes);
-      if (!info || info.mime !== a.mime || info.width !== a.width || info.height !== a.height) throw new Error(`Asset ${a.id}: image header does not match its declared type/size`);
-      out.set(a.id, bytes);
+  var isStroke = (s) => typeof s === "object" && s !== null && "color" in s;
+  var NativeHost = class {
+    constructor(track2, hashes) {
+      __publicField(this, "track", track2);
+      __publicField(this, "hashes", hashes);
+      __publicField(this, "kind", "native");
+      __publicField(this, "unsupported", /* @__PURE__ */ new Set());
     }
-    return out;
+    box(n, p) {
+      n.name = p.name;
+      n.x = p.x;
+      n.y = p.y;
+      n.resize(Math.max(0.01, p.w), Math.max(0.01, p.h));
+      if (p.image) {
+        n.fills = [{ type: "IMAGE", imageHash: this.hashes.get(p.image.assetId), scaleMode: p.image.mode }];
+      } else if (p.placeholder === "missing") {
+        n.fills = [{ type: "SOLID", color: { r: 0.93, g: 0.93, b: 0.93 } }];
+        n.strokes = [{ type: "SOLID", color: { r: 0.8, g: 0.2, b: 0.2 } }];
+        n.strokeWeight = 1;
+        n.dashPattern = [6, 4];
+      } else if (p.placeholder === "media") {
+        n.fills = [{ type: "SOLID", color: { r: 0.85, g: 0.85, b: 0.85 }, opacity: 0.6 }];
+        n.dashPattern = [6, 4];
+        n.strokes = [{ type: "SOLID", color: { r: 0.4, g: 0.4, b: 0.4 } }];
+        n.strokeWeight = 1;
+      } else {
+        n.fills = p.fill ? [solid(p.fill)] : [];
+        if (p.stroke !== void 0) {
+          if (p.stroke) {
+            n.strokes = [solid(p.stroke.color)];
+            n.strokeWeight = p.stroke.weight;
+            n.strokeAlign = "INSIDE";
+          } else n.strokes = [];
+        }
+      }
+      if (p.radius && n.type !== "ELLIPSE") {
+        n.topLeftRadius = p.radius[0];
+        n.topRightRadius = p.radius[1];
+        n.bottomRightRadius = p.radius[2];
+        n.bottomLeftRadius = p.radius[3];
+      }
+      if (p.opacity !== void 0) n.opacity = p.opacity;
+    }
+    root(p) {
+      const s = this.track(figma.createSection());
+      s.name = p.name;
+      s.x = p.x;
+      s.y = p.y;
+      return s;
+    }
+    async resizeRoot(root, w, h) {
+      root.resizeWithoutConstraints(w, h);
+    }
+    text(parent, p) {
+      const t = this.track(figma.createText());
+      parent.appendChild(t);
+      t.name = p.name;
+      t.fontName = p.font;
+      t.characters = p.characters;
+      t.fontSize = p.size;
+      if (p.lineHeight !== void 0) t.lineHeight = { unit: "PIXELS", value: p.lineHeight };
+      if (p.color) t.fills = [solid(p.color)];
+      if (p.decoration) t.textDecoration = p.decoration;
+      t.x = p.x;
+      t.y = p.y;
+      if (p.width !== void 0) {
+        t.textAutoResize = "HEIGHT";
+        t.resize(p.width, t.height);
+        if (p.align === "RIGHT") t.textAlignHorizontal = "RIGHT";
+      } else if (p.color) t.textAutoResize = "WIDTH_AND_HEIGHT";
+      return t;
+    }
+    rect(parent, p) {
+      const r = this.track(figma.createRectangle());
+      parent.appendChild(r);
+      this.box(r, p);
+      return r;
+    }
+    frame(parent, p) {
+      const f = this.track(figma.createFrame());
+      parent.appendChild(f);
+      this.box(f, p);
+      f.clipsContent = p.clipsContent;
+      return f;
+    }
+    ellipse(parent, p) {
+      const e = this.track(figma.createEllipse());
+      parent.appendChild(e);
+      e.name = p.name;
+      e.x = p.x;
+      e.y = p.y;
+      e.resize(Math.max(0.01, p.w), Math.max(0.01, p.h));
+      e.fills = p.fill ? [solid(p.fill)] : [];
+      e.strokes = p.stroke ? [solid(p.stroke.color)] : [];
+      if (p.stroke) e.strokeWeight = p.stroke.weight;
+      return e;
+    }
+    async path(parent, p) {
+      const v = this.track(figma.createVector());
+      parent.appendChild(v);
+      v.name = p.name;
+      const n = p.points.length;
+      const segments = p.mode === "polygon" ? p.points.map((_, i) => ({ start: i, end: (i + 1) % n })) : p.mode === "polyline" ? p.points.slice(1).map((_, i) => ({ start: i, end: i + 1 })) : Array.from({ length: Math.floor(n / 2) }, (_, i) => ({ start: 2 * i, end: 2 * i + 1 }));
+      await v.setVectorNetworkAsync({
+        vertices: p.points.map((pt, i) => p.arrowEnd && i === n - 1 ? { x: pt.x, y: pt.y, strokeCap: "ARROW_LINES" } : { x: pt.x, y: pt.y }),
+        segments,
+        regions: p.mode === "polygon" ? [{ windingRule: "NONZERO", loops: [p.points.map((_, i) => i)] }] : []
+      });
+      v.fills = p.fill ? [solid(p.fill)] : [];
+      if (p.stroke) {
+        v.strokes = [isStroke(p.stroke) ? solid(p.stroke.color) : { type: "SOLID", color: { r: p.stroke.r, g: p.stroke.g, b: p.stroke.b } }];
+        v.strokeWeight = p.stroke.weight;
+      } else v.strokes = [];
+      v.x = p.x;
+      v.y = p.y;
+      return v;
+    }
+    svg(parent, markup, p) {
+      const f = this.track(figma.createNodeFromSvg(markup));
+      parent.appendChild(f);
+      f.name = p.name;
+      f.x = p.x;
+      f.y = p.y;
+      return f;
+    }
+    hasImage(assetId) {
+      return this.hashes.has(assetId);
+    }
+    hide(n) {
+      n.visible = false;
+      n.locked = true;
+    }
+    component(parent, p) {
+      const c = this.track(figma.createComponent());
+      parent.appendChild(c);
+      this.box(c, p);
+      c.clipsContent = p.clipsContent;
+      if (p.description !== void 0) c.description = p.description;
+      return c;
+    }
+    async instance(parent, comp, p) {
+      const inst = this.track(comp.createInstance());
+      parent.appendChild(inst);
+      inst.x = p.x;
+      inst.y = p.y;
+      return inst;
+    }
+    async override(inst, child, patch) {
+      const target = inst.findOne((n) => n.name === child.name);
+      if (!target || !("fills" in target)) return false;
+      if (patch.fills !== void 0) target.fills = patch.fills ? [solid(patch.fills)] : [];
+      if (patch.strokes) target.strokes = [solid(patch.strokes)];
+      return true;
+    }
+    async variants(parent, comps, p) {
+      const set = this.track(figma.combineAsVariants(comps, parent));
+      set.name = p.name;
+      set.x = p.x;
+      set.y = p.y;
+      return set;
+    }
+    async reaction(src, dest) {
+      const action = { type: "NODE", destinationId: dest.id, navigation: "CHANGE_TO", transition: null };
+      const reaction = { trigger: { type: "ON_CLICK" }, actions: [action] };
+      await src.setReactionsAsync([reaction]);
+    }
+    meta(n, data) {
+      n.setPluginData("w2f", JSON.stringify(data));
+    }
+    async group(parent, nodes, name) {
+      const g = this.track(figma.group(nodes, parent, 0));
+      g.name = name;
+    }
+    async flush() {
+    }
+    width(n) {
+      return n.width;
+    }
+    height(n) {
+      return n.height;
+    }
+    setLetterSpacing(n, px) {
+      n.letterSpacing = { unit: "PIXELS", value: px };
+    }
+    setCharacters(n, chars) {
+      n.characters = chars;
+    }
+    async availableFonts() {
+      return new Set((await figma.listAvailableFontsAsync()).map((f) => `${f.fontName.family}|${f.fontName.style}`));
+    }
+    async loadFont(f) {
+      await figma.loadFontAsync(f);
+    }
+  };
+
+  // src/shared/fonts.ts
+  var GENERIC_KEYWORDS = /* @__PURE__ */ new Set(["sans-serif", "serif", "monospace", "system-ui", "ui-sans-serif", "ui-serif", "ui-monospace", "cursive", "fantasy", "-apple-system", "blinkmacsystemfont"]);
+  var GENERIC_FALLBACKS = {
+    sans: ["Inter", "Roboto", "Arial"],
+    serif: ["Noto Serif", "Georgia", "Times New Roman", "Inter"],
+    mono: ["Roboto Mono", "Source Code Pro", "Courier New", "Inter"]
+  };
+  function styleName(weight, italic) {
+    const bold = weight >= 600;
+    if (bold && italic) return "Bold Italic";
+    if (bold) return "Bold";
+    return italic ? "Italic" : "Regular";
   }
-  async function resolveFonts(doc) {
-    const available = new Set((await figma.listAvailableFontsAsync()).map((f) => `${f.fontName.family}|${f.fontName.style}`));
-    for (const f of [LABEL_FONT, LABEL_BOLD]) {
+  function mappedFamily(stack, generic, rules) {
+    if (!rules?.length) return null;
+    const first = stack.find((f) => !GENERIC_KEYWORDS.has(f.toLowerCase()))?.toLowerCase();
+    const aliases = { sans: ["sans", "sans-serif"], serif: ["serif"], mono: ["mono", "monospace"] };
+    return rules.find((r) => first && r.match.toLowerCase() === first || aliases[generic].includes(r.match.toLowerCase())) ?? null;
+  }
+  function resolveFont(stack, generic, weight, italic, available, rule) {
+    const wanted = styleName(weight, italic);
+    const concrete = stack.filter((f) => !GENERIC_KEYWORDS.has(f.toLowerCase()));
+    const first = concrete[0];
+    if (rule) {
+      for (const style of [wanted, "Regular"]) {
+        if (available.has(`${rule.use}|${style}`)) {
+          return { family: rule.use, style, fallback: rule.use !== first || style !== wanted, reason: `operator font map: ${rule.match} -> ${rule.use}${style !== wanted ? ` (style ${wanted} unavailable)` : ""}` };
+        }
+      }
+    }
+    const candidates = [...concrete, ...GENERIC_FALLBACKS[generic]];
+    for (const family of candidates) {
+      if (available.has(`${family}|${wanted}`)) {
+        const fallback = family !== first;
+        return { family, style: wanted, fallback, reason: fallback ? `measured stack "${stack.join(", ")}" -> ${family}` : "first family of measured stack" };
+      }
+    }
+    for (const family of candidates) {
+      if (available.has(`${family}|Regular`)) {
+        return { family, style: "Regular", fallback: true, reason: `style ${wanted} unavailable; ${family} Regular used` };
+      }
+    }
+    return null;
+  }
+
+  // plugin/src/render/renderer.ts
+  var newStats = (doc) => ({ pages: 0, nodes: 0, images: 0, placeholders: 0, fontFallbacks: 0, fitted: 0, unfitted: 0, shapes: 0, svgs: 0, components: 0, instances: 0, edges: 0, variantSets: 0, variants: 0, reactions: 0, media: 0, warnings: [...doc.warnings] });
+  var LABEL = { family: "Inter", style: "Regular" };
+  var LABEL_BOLD = { family: "Inter", style: "Bold" };
+  var MAX_LETTER_SPACING_RATIO = 0.25;
+  var X0 = 80;
+  async function resolveFonts(host, doc, lists) {
+    const available = await host.availableFonts();
+    for (const f of [LABEL, LABEL_BOLD]) {
       try {
-        await figma.loadFontAsync(f);
+        await host.loadFont(f);
       } catch {
         throw new Error("Could not load Inter Regular/Bold for labels. Nothing was created.");
       }
@@ -1107,7 +1297,7 @@
     const byNode = /* @__PURE__ */ new Map();
     for (let round = 0; round < 6; round++) {
       const needed = /* @__PURE__ */ new Map();
-      for (const list of [...doc.pages.map((p) => p.nodes), ...doc.pages.flatMap((p) => (p.states?.variants ?? []).map((v) => v.nodes)), ...(doc.components ?? []).map((c) => c.nodes)]) {
+      for (const list of lists) {
         for (const n of list) {
           if (n.kind !== "text") continue;
           const r = resolveFont(n.fontStack, n.generic, n.weight, n.italic, available, mappedFamily(n.fontStack, n.generic, doc.fontMap));
@@ -1120,7 +1310,7 @@
       if (needed.size === 0) return { byNode, failedLoads };
       for (const [key, font] of needed) {
         try {
-          await figma.loadFontAsync(font);
+          await host.loadFont(font);
           loaded.add(key);
         } catch {
           available.delete(key);
@@ -1130,191 +1320,138 @@
     }
     throw new Error("Font resolution did not settle. Nothing was created.");
   }
-  function label(track2, parent, chars, size, bold, x, y, width) {
-    const t = track2(figma.createText());
-    parent.appendChild(t);
-    t.fontName = bold ? LABEL_BOLD : LABEL_FONT;
-    t.characters = chars;
-    t.fontSize = size;
-    t.x = x;
-    t.y = y;
-    if (width) {
-      t.resize(width, t.height);
-      t.textAutoResize = "HEIGHT";
+  function allNodeLists(doc) {
+    return [...doc.pages.map((p) => p.nodes), ...doc.pages.flatMap((p) => (p.states?.variants ?? []).map((v) => v.nodes)), ...(doc.components ?? []).map((c) => c.nodes)];
+  }
+  async function label(c, parent, chars, size, bold, x, y, width, name) {
+    const node = c.host.text(parent, { name: name ?? chars.split("\n")[0].slice(0, 80), x, y, characters: chars, font: bold ? LABEL_BOLD : LABEL, size, color: null, width });
+    await c.host.flush();
+    return { node, height: c.host.height(node) };
+  }
+  var pageFrameName = (p) => `Page / ${p.path}${p.segment ? ` (part ${p.segment.index + 1}/${p.segment.count})` : ""} (editable, measured)`;
+  var clipName = (c, i) => `${c.name} [c${i}]`;
+  var buttonName = (label2, i, prefix) => `${prefix}Button / ${label2 ?? "untitled"} [b${i}]`;
+  var buttonLabelOf = (nodes, i) => nodes.find((t) => t.kind === "text" && t.button === i)?.text.trim() ?? null;
+  function nodeName(nodes, n, i, prefix, imageFilled, label2) {
+    if (n.kind === "box") {
+      if (n.role === "button") return { name: buttonName(label2 ? label2(i) : buttonLabelOf(nodes, i), i, prefix), type: "FRAME" };
+      return { name: `${prefix}${n.name}`, type: "RECTANGLE" };
     }
-    return t;
+    if (n.kind === "text") return { name: `${prefix}${n.name}`, type: "TEXT" };
+    if (n.kind === "image") return { name: imageFilled === false ? `${prefix}${n.assetId ? "IMAGE PLACEHOLDER (fill unavailable)" : "MISSING IMAGE"} / ${n.name}` : `${prefix}${n.name}`, type: "RECTANGLE" };
+    if (n.kind === "shape") return { name: `${prefix}${n.name}`, type: n.shape === "ellipse" ? "ELLIPSE" : "VECTOR" };
+    return { name: `${prefix}${n.name}`, type: "FRAME" };
   }
-  function buildBox(track2, parent, b, buttonLabel, off, prefix) {
-    const n = b.role === "button" ? track2(figma.createFrame()) : track2(figma.createRectangle());
-    parent.appendChild(n);
-    n.name = `${prefix}${b.role === "button" ? `Button / ${buttonLabel ?? "untitled"}` : b.name}`;
-    n.x = b.x - off.x;
-    n.y = b.y - off.y;
-    n.resize(Math.max(0.01, b.w), Math.max(0.01, b.h));
-    n.fills = b.fill ? [solid(b.fill)] : [];
-    if (b.border) {
-      n.strokes = [solid(b.border.color)];
-      n.strokeWeight = b.border.weight;
-      n.strokeAlign = "INSIDE";
-    } else n.strokes = [];
-    radii(n, b.radius);
-    n.opacity = b.opacity;
-    if (n.type === "FRAME") n.clipsContent = false;
-    n.setPluginData("w2f", JSON.stringify({ prov: b.prov, role: b.role }));
-    return n;
-  }
-  function buildImage(track2, parent, im, hashes, off, prefix) {
-    const r = track2(figma.createRectangle());
-    parent.appendChild(r);
-    r.x = im.x - off.x;
-    r.y = im.y - off.y;
-    r.resize(Math.max(0.01, im.w), Math.max(0.01, im.h));
-    radii(r, im.radius);
-    const hash = im.assetId ? hashes.get(im.assetId) : void 0;
-    if (hash) {
-      r.name = `${prefix}${im.name}`;
-      r.fills = [{ type: "IMAGE", imageHash: hash, scaleMode: im.fit === "fit" ? "FIT" : "FILL" }];
-      r.setPluginData("w2f", JSON.stringify({ prov: im.prov, assetId: im.assetId }));
-      return true;
-    }
-    r.name = `${prefix}MISSING IMAGE / ${im.name}`;
-    r.fills = [{ type: "SOLID", color: { r: 0.93, g: 0.93, b: 0.93 } }];
-    r.strokes = [{ type: "SOLID", color: { r: 0.8, g: 0.2, b: 0.2 } }];
-    r.strokeWeight = 1;
-    r.dashPattern = [6, 4];
-    r.setPluginData("w2f", JSON.stringify({ prov: im.prov, missing: true }));
-    return false;
-  }
-  async function buildShape(track2, parent, sh, off, prefix) {
+  async function placeShape(c, parent, sh, off, prefix) {
     const name = `${prefix}${sh.name}`;
+    const base = { name, x: sh.x - off.x, y: sh.y - off.y, w: Math.max(0.01, sh.w), h: Math.max(0.01, sh.h) };
     if (sh.shape === "ellipse") {
-      const e = track2(figma.createEllipse());
-      parent.appendChild(e);
-      e.name = name;
-      e.x = sh.x - off.x;
-      e.y = sh.y - off.y;
-      e.resize(Math.max(0.01, sh.w), Math.max(0.01, sh.h));
-      e.fills = sh.fill ? [solid(sh.fill)] : [];
-      e.strokes = sh.stroke ? [solid(sh.stroke.color)] : [];
-      if (sh.stroke) e.strokeWeight = sh.stroke.weight;
-      e.setPluginData("w2f", JSON.stringify({ prov: sh.prov, approximation: true }));
-      return;
+      const e = c.host.ellipse(parent, { ...base, fill: sh.fill, stroke: sh.stroke ? { color: sh.stroke.color, weight: sh.stroke.weight } : null });
+      c.host.meta(e, { prov: sh.prov, approximation: true });
+      return e;
     }
-    const v = track2(figma.createVector());
-    parent.appendChild(v);
-    v.name = name;
     const { w, h } = sh;
-    if (sh.shape === "caret") {
-      await v.setVectorNetworkAsync({
-        vertices: [{ x: 0, y: 0 }, { x: w, y: 0 }, { x: w / 2, y: h }],
-        segments: [{ start: 0, end: 1 }, { start: 1, end: 2 }, { start: 2, end: 0 }],
-        regions: [{ windingRule: "NONZERO", loops: [[0, 1, 2]] }]
-      });
-      v.fills = sh.fill ? [solid(sh.fill)] : [];
-      v.strokes = [];
-    } else {
-      await v.setVectorNetworkAsync({
-        vertices: [{ x: w * 0.2, y: h }, { x: w, y: h * 0.2 }, { x: w * 0.5, y: h }, { x: w, y: h * 0.5 }, { x: w * 0.8, y: h }, { x: w, y: h * 0.8 }],
-        segments: [{ start: 0, end: 1 }, { start: 2, end: 3 }, { start: 4, end: 5 }],
-        regions: []
-      });
-      v.fills = [];
-      v.strokes = sh.stroke ? [solid(sh.stroke.color)] : [];
-      if (sh.stroke) v.strokeWeight = sh.stroke.weight;
-    }
-    v.x = sh.x - off.x;
-    v.y = sh.y - off.y;
-    v.setPluginData("w2f", JSON.stringify({ prov: sh.prov, approximation: true }));
+    const v = sh.shape === "caret" ? await c.host.path(parent, { ...base, points: [{ x: 0, y: 0 }, { x: w, y: 0 }, { x: w / 2, y: h }], mode: "polygon", fill: sh.fill, stroke: null }) : await c.host.path(parent, { ...base, points: [{ x: w * 0.2, y: h }, { x: w, y: h * 0.2 }, { x: w * 0.5, y: h }, { x: w, y: h * 0.5 }, { x: w * 0.8, y: h }, { x: w, y: h * 0.8 }], mode: "pairs", fill: null, stroke: sh.stroke ? { color: sh.stroke.color, weight: sh.stroke.weight } : null });
+    c.host.meta(v, { prov: sh.prov, approximation: true });
+    return v;
   }
-  function buildSvg(track2, parent, sv, off, prefix) {
-    if (!isCanonicalSvg(sv.markup)) return false;
-    const f = track2(figma.createNodeFromSvg(sv.markup));
-    parent.appendChild(f);
-    f.name = `${prefix}${sv.name}`;
-    f.x = sv.x - off.x;
-    f.y = sv.y - off.y;
-    f.setPluginData("w2f", JSON.stringify({ prov: sv.prov, sanitized: true }));
-    return true;
-  }
-  function buildText(track2, parent, t, font, offset, prefix) {
-    const n = track2(figma.createText());
-    parent.appendChild(n);
-    n.name = `${prefix}${t.name}`;
-    n.fontName = { family: font.family, style: font.style };
-    n.characters = t.text;
-    n.fontSize = t.size;
-    n.lineHeight = { unit: "PIXELS", value: t.lineHeight };
-    n.fills = [solid(t.color)];
-    n.textDecoration = t.decoration === "underline" ? "UNDERLINE" : t.decoration === "strike" ? "STRIKETHROUGH" : "NONE";
-    n.x = t.x - offset.x;
-    n.y = t.y - offset.y;
-    if (t.align === "right") {
-      n.textAutoResize = "HEIGHT";
-      n.resize(Math.max(1, t.w), n.height);
-      n.textAlignHorizontal = "RIGHT";
-    } else n.textAutoResize = "WIDTH_AND_HEIGHT";
-    let result = "not-fitted";
-    if (t.prov === "measured" && t.fit !== false && t.align !== "right" && t.graphemes > 1 && t.w > 0) {
-      const ls = (t.w - n.width) / (t.graphemes - 1);
-      if (Math.abs(ls) <= t.size * MAX_LETTER_SPACING_RATIO) {
-        n.letterSpacing = { unit: "PIXELS", value: ls };
-        result = "fitted";
-      } else result = "unfitted";
-    }
-    n.setPluginData("w2f", JSON.stringify({ prov: t.prov, fit: result, font: `${font.family} ${font.style}`, fallback: font.fallback, reason: font.reason, measuredStack: t.fontStack }));
-    return result;
-  }
-  async function renderNodes(track2, parent, nodes, clipGroups, fonts, hashes, stats, prefix) {
+  async function renderNodes(c, parent, nodes, clipGroups, prefix, opts = {}) {
+    const { host } = c;
     const zero = { x: 0, y: 0 };
+    const inScope = (i) => !opts.only || opts.only.has(i);
     const clipFrames = [];
     const buttonFrames = /* @__PURE__ */ new Map();
+    const fits = [];
     let unfitted = 0;
     const clipOf = (n) => n.clip !== void 0 && n.clip >= 0 ? n.clip : -1;
+    const orig = opts.orig ?? ((i) => i);
+    const labelOf = opts.buttonLabel ?? ((o) => buttonLabelOf(nodes, o));
     const place = async (n, i, target, off) => {
+      const p = prefix(i);
       if (n.kind === "box") {
-        const labelText = n.role === "button" ? nodes.find((t) => t.kind === "text" && t.button === i)?.text.trim() ?? null : null;
-        const built = buildBox(track2, target, n, labelText, off, prefix(i));
-        if (built.type === "FRAME") buttonFrames.set(i, built);
+        const nm = nodeName(nodes, n, orig(i), p, null, labelOf);
+        const spec = { name: nm.name, x: n.x - off.x, y: n.y - off.y, w: Math.max(0.01, n.w), h: Math.max(0.01, n.h), fill: n.fill, stroke: n.border ? { color: n.border.color, weight: n.border.weight } : null, radius: n.radius, opacity: n.opacity };
+        const built = n.role === "button" ? host.frame(target, { ...spec, clipsContent: false }) : host.rect(target, spec);
+        host.meta(built, { prov: n.prov, role: n.role });
+        if (n.role === "button") buttonFrames.set(orig(i), built);
+        opts.recordNames?.set(i, nm);
       } else if (n.kind === "image") {
-        if (buildImage(track2, target, n, hashes, off, prefix(i))) stats.images++;
-        else stats.placeholders++;
+        const filled = !!n.assetId && host.hasImage(n.assetId);
+        const nm = nodeName(nodes, n, i, p, filled);
+        const r = host.rect(target, { name: nm.name, x: n.x - off.x, y: n.y - off.y, w: Math.max(0.01, n.w), h: Math.max(0.01, n.h), fill: null, radius: n.radius, ...filled ? { image: { assetId: n.assetId, mode: n.fit === "fit" ? "FIT" : "FILL" } } : { placeholder: "missing" } });
+        host.meta(r, filled ? { prov: n.prov, assetId: n.assetId } : { prov: n.prov, missing: true });
+        if (filled) c.stats.images++;
+        else c.stats.placeholders++;
+        opts.recordNames?.set(i, nm);
       } else if (n.kind === "shape") {
-        await buildShape(track2, target, n, off, prefix(i));
-        stats.shapes++;
+        await placeShape(c, target, n, off, p);
+        c.stats.shapes++;
+        opts.recordNames?.set(i, nodeName(nodes, n, i, p, null));
       } else if (n.kind === "svg") {
-        if (buildSvg(track2, target, n, off, prefix(i))) stats.svgs++;
+        if (!isCanonicalSvg(n.markup)) return;
+        const f = host.svg(target, n.markup, { name: `${p}${n.name}`, x: n.x - off.x, y: n.y - off.y });
+        host.meta(f, { prov: n.prov, sanitized: true });
+        c.stats.svgs++;
+        opts.recordNames?.set(i, nodeName(nodes, n, i, p, null));
       }
     };
-    for (const [i, n] of nodes.entries()) if (n.kind !== "text" && clipOf(n) < 0) await place(n, i, parent, zero);
-    for (const c of clipGroups) {
-      const f = track2(figma.createFrame());
-      parent.appendChild(f);
-      f.name = c.name;
-      f.x = c.x;
-      f.y = c.y;
-      f.resize(Math.max(0.01, c.w), Math.max(0.01, c.h));
-      f.fills = [];
-      f.clipsContent = true;
-      clipFrames.push(f);
+    const phase = opts.phase ?? "all";
+    const run = (ph) => phase === "all" || phase === ph;
+    if (run("unclipped")) {
+      for (const [i, n] of nodes.entries()) if (inScope(i) && n.kind !== "text" && clipOf(n) < 0) await place(n, i, parent, zero);
     }
+    if (run("clipped") || run("text")) {
+      for (const [ci, g] of clipGroups.entries()) {
+        if (opts.createClips === false || !run("clipped")) clipFrames.push(opts.findClip ? opts.findClip(ci) : null);
+        else clipFrames.push(host.frame(parent, { name: clipName(g, ci), x: g.x, y: g.y, w: Math.max(0.01, g.w), h: Math.max(0.01, g.h), fill: null, clipsContent: true }));
+      }
+    }
+    if (run("clipped"))
+      for (const [i, n] of nodes.entries()) {
+        const ci = clipOf(n);
+        if (inScope(i) && n.kind !== "text" && ci >= 0 && clipFrames[ci]) await place(n, i, clipFrames[ci], clipGroups[ci]);
+      }
     for (const [i, n] of nodes.entries()) {
+      if (!run("text") || !inScope(i) || n.kind !== "text") continue;
+      const font = c.fonts.get(n);
+      const button = n.button >= 0 ? buttonFrames.get(n.button) ?? opts.findButton?.(n.button) ?? void 0 : void 0;
       const ci = clipOf(n);
-      if (n.kind !== "text" && ci >= 0) await place(n, i, clipFrames[ci], clipGroups[ci]);
+      const box = n.button >= 0 ? opts.buttonBox ? opts.buttonBox(n.button) : nodes[n.button] : null;
+      const target = button ?? (ci >= 0 && clipFrames[ci] ? clipFrames[ci] : parent);
+      const off = button && box ? { x: box.x, y: box.y } : ci >= 0 && clipFrames[ci] ? clipGroups[ci] : zero;
+      const node = host.text(target, {
+        name: `${prefix(i)}${n.name}`,
+        x: n.x - off.x,
+        y: n.y - off.y,
+        characters: n.text,
+        font: { family: font.family, style: font.style },
+        size: n.size,
+        lineHeight: n.lineHeight,
+        color: n.color,
+        decoration: n.decoration === "underline" ? "UNDERLINE" : n.decoration === "strike" ? "STRIKETHROUGH" : "NONE",
+        ...n.align === "right" ? { width: Math.max(1, n.w), align: "RIGHT" } : {}
+      });
+      fits.push({ node, t: n, font, prefixName: prefix(i) });
+      opts.recordNames?.set(i, nodeName(nodes, n, i, prefix(i), null));
     }
-    for (const [i, n] of nodes.entries()) {
-      if (n.kind !== "text") continue;
-      const font = fonts.get(n);
-      const button = n.button >= 0 ? buttonFrames.get(n.button) : void 0;
-      const ci = clipOf(n);
-      const box = n.button >= 0 ? nodes[n.button] : null;
-      const target = button ?? (ci >= 0 ? clipFrames[ci] : parent);
-      const off = button && box ? { x: box.x, y: box.y } : ci >= 0 ? clipGroups[ci] : zero;
-      const r = buildText(track2, target, n, font, off, prefix(i));
-      if (r === "fitted") stats.fitted++;
-      if (r === "unfitted") unfitted++;
-      if (font.fallback) stats.fontFallbacks++;
+    if (fits.length) await host.flush();
+    for (const f of fits) {
+      const t = f.t;
+      let result = "not-fitted";
+      if (t.prov === "measured" && t.fit !== false && t.align !== "right" && t.graphemes > 1 && t.w > 0) {
+        const ls = (t.w - host.width(f.node)) / (t.graphemes - 1);
+        if (Math.abs(ls) <= t.size * MAX_LETTER_SPACING_RATIO) {
+          host.setLetterSpacing(f.node, ls);
+          result = "fitted";
+        } else result = "unfitted";
+      }
+      if (result === "fitted") c.stats.fitted++;
+      if (result === "unfitted") unfitted++;
+      if (f.font.fallback) c.stats.fontFallbacks++;
+      host.meta(f.node, { prov: t.prov, fit: result, font: `${f.font.family} ${f.font.style}`, fallback: f.font.fallback, reason: f.font.reason, measuredStack: t.fontStack });
     }
-    stats.nodes += nodes.length;
+    if (phase === "all") c.stats.nodes += opts.only ? opts.only.size : nodes.length;
+    else c.stats.nodes += nodes.filter((n, i) => inScope(i) && (phase === "text" ? n.kind === "text" : n.kind !== "text" && phase === "clipped" === clipOf(n) >= 0)).length;
     return unfitted;
   }
   function fontLines(nodes, fonts) {
@@ -1322,7 +1459,7 @@
     for (const n of nodes) {
       if (n.kind !== "text") continue;
       const f = fonts.get(n);
-      if (f.fallback) {
+      if (f?.fallback) {
         const k = `"${n.fontStack.join(", ") || "(none)"}" ${n.weight >= 600 ? "bold" : "regular"}${n.italic ? " italic" : ""} -> ${f.family} ${f.style}${f.reason.startsWith("operator font map") ? " (operator font map)" : ""}`;
         subs.set(k, (subs.get(k) ?? 0) + 1);
       }
@@ -1330,118 +1467,6 @@
     const lines = [...subs].slice(0, 8).map(([k, count]) => `Font fallback (${count} run${count === 1 ? "" : "s"}): ${k}`);
     if (subs.size > 8) lines.push(`Font fallback: ${subs.size - 8} more substitution(s) not listed`);
     return lines;
-  }
-  async function buildPage(track2, section, page, y, fonts, hashes, doc, failedLoads, stats, componentNodes) {
-    const x0 = 80;
-    const ref = page.referenceAssetId ? doc.assets.find((a) => a.id === page.referenceAssetId) : void 0;
-    const notes = [
-      `${page.title} \u2014 ${page.url}`,
-      `Measured absolute desktop snapshot (${page.width}\xD7${page.height}px). Editable, not responsive, not pixel-perfect.`,
-      ...page.truncated ? ["TRUNCATED: see warnings below."] : [],
-      ...(page.notes ?? []).map((n) => `Note: ${n}`),
-      ...page.warnings.map((w) => `Warning: ${w}`),
-      ...fontLines(page.nodes, fonts),
-      ...failedLoads.map((f) => `Font load failure: ${f}`),
-      ...page.instances?.length ? [`Shared components: ${page.instances.length} instance(s) (${page.instances.map((i) => `${i.component}${i.overrides.length ? ` with ${i.overrides.length} override(s)` : ""}`).join(", ")})`] : [],
-      ...stateLines(page),
-      ...page.branding ? [`Branding (page-level, not per-element): ${Object.entries(page.branding.colors).map(([k, v]) => `${k} ${v}`).join(", ")}${page.branding.fonts.length ? `; fonts ${page.branding.fonts.join(", ")}` : ""}`] : []
-    ];
-    const head = label(track2, section, notes.join("\n"), 14, false, x0, y, Math.max(600, page.width));
-    head.name = `Notes / ${page.path}`;
-    const top = y + head.height + 24;
-    const frame = track2(figma.createFrame());
-    section.appendChild(frame);
-    frame.name = `Page / ${page.path} (editable, measured)`;
-    frame.x = x0;
-    frame.y = top;
-    frame.resize(page.width, page.height);
-    frame.fills = [];
-    frame.clipsContent = true;
-    frame.setPluginData("w2f", JSON.stringify({ url: page.url, truncated: page.truncated }));
-    const unfitted = await renderNodes(track2, frame, page.nodes, page.clips ?? [], fonts, hashes, stats, () => "");
-    for (const ins of page.instances ?? []) {
-      const comp = componentNodes.get(ins.component);
-      if (!comp) continue;
-      const inst = track2(comp.createInstance());
-      frame.appendChild(inst);
-      inst.x = ins.x;
-      inst.y = ins.y;
-      for (const o of ins.overrides) {
-        const target = inst.findOne((n) => n.name.startsWith(`#${o.index} `));
-        if (!target || !("fills" in target)) continue;
-        if (o.fill !== void 0) target.fills = o.fill ? [solid(o.fill)] : [];
-        if (o.color) {
-          if (target.type === "TEXT") target.fills = [solid(o.color)];
-          else target.strokes = [solid(o.color)];
-        }
-      }
-      stats.instances++;
-    }
-    for (const m of page.media ?? []) {
-      const r = track2(figma.createRectangle());
-      frame.appendChild(r);
-      r.x = m.x;
-      r.y = m.y;
-      r.resize(Math.max(0.01, m.w), Math.max(0.01, m.h));
-      if (m.stillAssetId && hashes.has(m.stillAssetId)) {
-        r.name = `MEDIA STILL / ${m.kind} (operator still for the observed poster URL; not playing)`;
-        r.fills = [{ type: "IMAGE", imageHash: hashes.get(m.stillAssetId), scaleMode: "FILL" }];
-      } else {
-        r.name = `MEDIA PLACEHOLDER / ${m.kind} (${m.still === "poster-url-observed-not-downloaded" ? "poster URL observed, not downloaded" : "no still available"}${m.webgl ? "; WebGL" : ""})`;
-        r.fills = [{ type: "SOLID", color: { r: 0.85, g: 0.85, b: 0.85 }, opacity: 0.6 }];
-        r.dashPattern = [6, 4];
-        r.strokes = [{ type: "SOLID", color: { r: 0.4, g: 0.4, b: 0.4 } }];
-        r.strokeWeight = 1;
-      }
-      r.setPluginData("w2f", JSON.stringify({ media: m.kind, still: m.still, poster: m.poster, src: m.src, webgl: m.webgl }));
-      stats.media++;
-    }
-    if (unfitted) {
-      head.characters = head.characters + `
-Width fit skipped for ${unfitted} measured text run(s) (difference too large); natural width kept.`;
-      stats.unfitted += unfitted;
-    }
-    let bottom = top + page.height;
-    if (ref) {
-      const rx = x0 + page.width + 80;
-      label(track2, section, `Reference screenshot (image, not editable; ${ref.width}\xD7${ref.height}px at 1:1)`, 14, true, rx, top - 24);
-      const r = track2(figma.createRectangle());
-      section.appendChild(r);
-      r.name = `Reference / ${page.path}`;
-      r.x = rx;
-      r.y = top;
-      r.resize(ref.width, ref.height);
-      r.fills = [{ type: "IMAGE", imageHash: hashes.get(ref.id), scaleMode: "FILL" }];
-      r.setPluginData("w2f", JSON.stringify({ reference: true, sha256: ref.sha256 }));
-      bottom = Math.max(bottom, top + ref.height);
-    } else if (page.referenceTiles) {
-      const rt = page.referenceTiles;
-      const rx = x0 + page.width + 80;
-      label(track2, section, `Reference screenshot (image, not editable; ${rt.sourceWidth}\xD7${rt.sourceHeight}px at 1:1, ${rt.tiles.length} tiles)`, 14, true, rx, top - 24);
-      const holder = track2(figma.createFrame());
-      section.appendChild(holder);
-      holder.name = `Reference / ${page.path} (${rt.tiles.length} tiles)`;
-      holder.x = rx;
-      holder.y = top;
-      holder.resize(rt.sourceWidth, rt.sourceHeight);
-      holder.fills = [];
-      holder.clipsContent = true;
-      holder.setPluginData("w2f", JSON.stringify({ reference: true, tiled: true, sourceSha256: rt.sourceSha256 }));
-      for (const [i, t] of rt.tiles.entries()) {
-        const asset = doc.assets.find((a) => a.id === t.assetId);
-        const r = track2(figma.createRectangle());
-        holder.appendChild(r);
-        r.name = `Reference tile ${i + 1}/${rt.tiles.length} (y ${t.y})`;
-        r.x = 0;
-        r.y = t.y;
-        r.resize(rt.sourceWidth, t.h);
-        r.fills = [{ type: "IMAGE", imageHash: hashes.get(asset.id), scaleMode: "FILL" }];
-        r.setPluginData("w2f", JSON.stringify({ referenceTile: i, y: t.y, h: t.h, tileSha256: asset.sha256, sourceSha256: rt.sourceSha256 }));
-      }
-      bottom = Math.max(bottom, top + rt.sourceHeight);
-    }
-    if (page.states) bottom = await buildStates(track2, section, page, bottom + 80, fonts, hashes, doc, stats);
-    return { bottom, frame };
   }
   function stateLines(page) {
     const out = [];
@@ -1452,150 +1477,223 @@ Width fit skipped for ${unfitted} measured text run(s) (difference too large); n
     if (page.media?.length) out.push(`Media: ${page.media.length} placeholder(s) (video/canvas/lottie/iframe do not play in Figma)`);
     return out;
   }
-  async function buildStates(track2, section, page, y, fonts, hashes, doc, stats) {
-    const st = page.states;
-    const x0 = 80;
-    const head = label(track2, section, `States / ${page.path}: native component variants (${st.variants.map((v) => `${v.name}: ${v.provenance}`).join(", ")}). Synthetic states are DOM modifications, not observed original states; scroll-triggered = observed page reaction to scrolling; page-api = the page's own Swiper advanced via its API (not a user event).${st.reactions === "click-cycle" && st.variants.length > 1 ? " Prototype: ON_CLICK -> CHANGE_TO next variant." : ""}`, 14, true, x0, y, 1200);
-    const top = y + head.height + 16;
-    const comps = [];
-    let x = 0;
-    for (const v of st.variants) {
-      const c = track2(figma.createComponent());
-      section.appendChild(c);
-      c.name = `State=${v.name}`;
-      c.x = x0 + x;
-      c.y = top;
-      c.resize(Math.max(1, v.frame.w), Math.max(1, v.frame.h));
-      c.fills = [];
-      c.clipsContent = true;
-      c.description = v.notes.join("\n");
-      c.setPluginData("w2f", JSON.stringify({ state: v.name, provenance: v.provenance, frame: v.frame, screenshot: v.screenshot }));
-      const ref = v.referenceAssetId ? doc.assets.find((a) => a.id === v.referenceAssetId) : void 0;
-      if (ref && v.screenshot && v.screenshot.scrollY !== null) {
-        const r = track2(figma.createRectangle());
-        c.appendChild(r);
-        r.name = `Reference screenshot / ${v.name} (hidden; ${v.screenshot.association})`;
-        r.x = -v.frame.x;
-        r.y = v.screenshot.scrollY - v.frame.y;
-        r.resize(ref.width, ref.height);
-        r.fills = [{ type: "IMAGE", imageHash: hashes.get(ref.id), scaleMode: "FILL" }];
-        r.visible = false;
-        r.locked = true;
-      }
-      await renderNodes(track2, c, v.nodes, [], fonts, hashes, stats, () => "");
-      comps.push(c);
-      x += v.frame.w + 40;
-      stats.variants++;
+  function componentChildNames(doc) {
+    const out = /* @__PURE__ */ new Map();
+    for (const c of doc.components ?? []) {
+      const m = /* @__PURE__ */ new Map();
+      c.nodes.forEach((n, i) => m.set(i, nodeName(c.nodes, n, i, `#${i} `, null)));
+      out.set(c.id, m);
     }
-    const set = track2(figma.combineAsVariants(comps, section));
-    set.name = `States / ${page.path}`;
-    set.x = x0;
-    set.y = top;
-    stats.variantSets++;
-    if (st.reactions === "click-cycle" && comps.length > 1) {
-      for (const [i, c] of comps.entries()) {
-        const next = comps[(i + 1) % comps.length];
-        const action = { type: "NODE", destinationId: next.id, navigation: "CHANGE_TO", transition: null };
-        const reaction = { trigger: { type: "ON_CLICK" }, actions: [action] };
-        await c.setReactionsAsync([reaction]);
-        stats.reactions++;
-      }
-    }
-    return top + Math.max(...st.variants.map((v) => v.frame.h)) + 40;
+    return out;
   }
-  async function edge(track2, section, from, to) {
-    const gx = 40;
-    const pts = [
-      { x: from.x, y: from.y + 20 },
-      { x: gx, y: from.y + 20 },
-      { x: gx, y: to.y + 20 },
-      { x: to.x, y: to.y + 20 }
-    ];
-    const minX = Math.min(...pts.map((p) => p.x));
-    const minY = Math.min(...pts.map((p) => p.y));
-    const v = track2(figma.createVector());
-    section.appendChild(v);
-    v.name = `Sitemap edge / ${from.name} -> ${to.name}`;
-    await v.setVectorNetworkAsync({
-      vertices: pts.map((p, i) => i === pts.length - 1 ? { x: p.x - minX, y: p.y - minY, strokeCap: "ARROW_LINES" } : { x: p.x - minX, y: p.y - minY }),
-      segments: [{ start: 0, end: 1 }, { start: 1, end: 2 }, { start: 2, end: 3 }],
-      regions: []
-    });
-    v.x = minX;
-    v.y = minY;
-    v.strokes = [{ type: "SOLID", color: { r: 0.6, g: 0.6, b: 0.6 } }];
-    v.strokeWeight = 2;
-    v.fills = [];
-    return v;
-  }
-  async function buildHifiDoc(doc, track2, created, originX) {
-    const bytes = verifyAssets(doc);
-    const { byNode, failedLoads } = await resolveFonts(doc);
-    const hashes = /* @__PURE__ */ new Map();
-    for (const [id, b] of bytes) hashes.set(id, figma.createImage(b).hash);
-    const stats = { pages: 0, nodes: 0, images: 0, placeholders: 0, fontFallbacks: 0, fitted: 0, unfitted: 0, shapes: 0, svgs: 0, components: 0, instances: 0, edges: 0, variantSets: 0, variants: 0, reactions: 0, media: 0, warnings: [...doc.warnings] };
-    const section = track2(figma.createSection());
-    created.push(section);
-    section.name = `website-to-figma \xB7 Hi-fi (measured) \xB7 ${doc.site.host}`;
-    section.x = originX;
-    section.y = 0;
+  async function renderIntro(c, root) {
+    const { doc } = c;
     const intro = [
       `Source: ${doc.source.label} (${doc.source.mode}). ${doc.provenance.notes.join(" ")}`,
       ...doc.fontMap?.length ? [`Operator font map: ${doc.fontMap.map((f) => `${f.match} -> ${f.use}`).join(", ")}`] : [],
       ...doc.warnings.map((w) => `Warning: ${w}`),
       "Not affiliated with Figma or the site owner. Not pixel-perfect."
     ];
-    const title = label(track2, section, `Hi-fi import \xB7 ${doc.site.host}`, 28, true, 80, 40);
-    const info = label(track2, section, intro.join("\n"), 14, false, 80, 40 + title.height + 8, 1200);
-    let y = info.y + info.height + 60;
-    let maxRight = 1300;
-    const componentNodes = /* @__PURE__ */ new Map();
-    if (doc.components?.length) {
-      label(track2, section, "Shared components (identical structure on 2+ pages; per-page paint differences are instance overrides)", 14, true, 80, y);
-      y += 30;
-      for (const c of doc.components) {
-        const comp = track2(figma.createComponent());
-        section.appendChild(comp);
-        comp.name = c.name;
-        comp.x = 80;
-        comp.y = y;
-        comp.resize(Math.max(1, c.w), Math.max(1, c.h));
-        comp.fills = [];
-        comp.clipsContent = false;
-        await renderNodes(track2, comp, c.nodes, [], byNode, hashes, stats, (i) => `#${i} `);
-        componentNodes.set(c.id, comp);
-        stats.components++;
-        y += c.h + 60;
-        maxRight = Math.max(maxRight, 80 + c.w + 80);
+    const title = await label(c, root, `Hi-fi import \xB7 ${doc.site.host}`, 28, true, X0, 40);
+    const info = await label(c, root, intro.join("\n"), 14, false, X0, 40 + title.height + 8, 1200);
+    return 40 + title.height + 8 + info.height + 60;
+  }
+  async function renderComponents(c, root, y0) {
+    const components = /* @__PURE__ */ new Map();
+    let y = y0;
+    let right = 1300;
+    if (!c.doc.components?.length) return { y, right, components };
+    await label(c, root, "Shared components (identical structure on 2+ pages; per-page paint differences are instance overrides)", 14, true, X0, y);
+    y += 30;
+    for (const cm of c.doc.components) {
+      const comp = c.host.component(root, { name: cm.name, x: X0, y, w: Math.max(1, cm.w), h: Math.max(1, cm.h), fill: null, clipsContent: false });
+      await renderNodes(c, comp, cm.nodes, [], (i) => `#${i} `);
+      components.set(cm.id, comp);
+      c.stats.components++;
+      y += cm.h + 60;
+      right = Math.max(right, X0 + cm.w + 80);
+    }
+    return { y: y + 60, right, components };
+  }
+  async function renderPage(c, root, page, y, components, opts = { nodes: true }) {
+    const { host, doc } = c;
+    const ref = page.referenceAssetId ? doc.assets.find((a) => a.id === page.referenceAssetId) : void 0;
+    const notes = [
+      `${page.title} \u2014 ${page.url}`,
+      `Measured absolute desktop snapshot (${page.width}\xD7${page.height}px). Editable, not responsive, not pixel-perfect.`,
+      ...page.truncated ? ["TRUNCATED: see warnings below."] : [],
+      ...(page.notes ?? []).map((n) => `Note: ${n}`),
+      ...page.warnings.map((w) => `Warning: ${w}`),
+      ...fontLines(page.nodes, c.fonts),
+      ...c.failedLoads.map((f) => `Font load failure: ${f}`),
+      ...page.instances?.length ? [`Shared components: ${page.instances.length} instance(s) (${page.instances.map((i) => `${i.component}${i.overrides.length ? ` with ${i.overrides.length} override(s)` : ""}`).join(", ")})`] : [],
+      ...page.segment ? [`Segment ${page.segment.index + 1}/${page.segment.count} of a ${Math.round(page.segment.sourceHeight)}px document (offset y ${page.segment.offsetY}).`] : [],
+      ...stateLines(page),
+      ...page.branding ? [`Branding (page-level, not per-element): ${Object.entries(page.branding.colors).map(([k, v]) => `${k} ${v}`).join(", ")}${page.branding.fonts.length ? `; fonts ${page.branding.fonts.join(", ")}` : ""}`] : []
+    ];
+    const head = await label(c, root, notes.join("\n"), 14, false, X0, y, Math.max(600, page.width), `Notes / ${page.path}${page.segment ? ` (part ${page.segment.index + 1}/${page.segment.count})` : ""}`);
+    const top = y + head.height + 24;
+    const frame = host.frame(root, { name: pageFrameName(page), x: X0, y: top, w: page.width, h: page.height, fill: null, clipsContent: true });
+    host.meta(frame, { url: page.url, truncated: page.truncated });
+    let unfitted = 0;
+    if (opts.nodes) unfitted = await renderNodes(c, frame, page.nodes, page.clips ?? [], () => "");
+    const childNames = componentChildNames(doc);
+    for (const ins of page.instances ?? []) {
+      const comp = components.get(ins.component);
+      if (!comp) continue;
+      const inst = await host.instance(frame, comp, { x: ins.x, y: ins.y });
+      for (const o of ins.overrides) {
+        const child = childNames.get(ins.component)?.get(o.index);
+        if (!child) continue;
+        if (o.fill !== void 0) await host.override(inst, child, { fills: o.fill });
+        if (o.color) await host.override(inst, child, child.type === "TEXT" ? { fills: o.color } : { strokes: o.color });
       }
-      y += 60;
+      c.stats.instances++;
     }
-    const frames = /* @__PURE__ */ new Map();
-    for (const page of doc.pages) {
-      const r = await buildPage(track2, section, page, y, byNode, hashes, doc, failedLoads, stats, componentNodes);
-      frames.set(page.id, r.frame);
-      y = r.bottom + 120;
-      const ref = page.referenceAssetId ? doc.assets.find((a) => a.id === page.referenceAssetId) : void 0;
-      maxRight = Math.max(maxRight, 80 + page.width + 80 + (ref ? ref.width : page.referenceTiles ? page.referenceTiles.sourceWidth : 0) + 80);
-      stats.pages++;
+    for (const m of page.media ?? []) {
+      const filled = !!m.stillAssetId && host.hasImage(m.stillAssetId);
+      const name = filled ? `MEDIA STILL / ${m.kind} (operator still for the observed poster URL; not playing)` : `MEDIA PLACEHOLDER / ${m.kind} (${m.still === "poster-url-observed-not-downloaded" ? "poster URL observed, not downloaded" : m.still === "operator-asset" ? "operator still unavailable in this host" : "no still available"}${m.webgl ? "; WebGL" : ""})`;
+      const r = host.rect(frame, { name, x: m.x, y: m.y, w: Math.max(0.01, m.w), h: Math.max(0.01, m.h), fill: null, ...filled ? { image: { assetId: m.stillAssetId, mode: "FILL" } } : { placeholder: "media" } });
+      host.meta(r, { media: m.kind, still: m.still, poster: m.poster, src: m.src, webgl: m.webgl });
+      c.stats.media++;
     }
+    if (unfitted) {
+      host.setCharacters(head.node, notes.join("\n") + `
+Width fit skipped for ${unfitted} measured text run(s) (difference too large); natural width kept.`);
+      c.stats.unfitted += unfitted;
+    }
+    let bottom = top + page.height;
+    const rx = X0 + page.width + 80;
+    if (ref) {
+      await label(c, root, `Reference screenshot (image, not editable; ${ref.width}\xD7${ref.height}px at 1:1)`, 14, true, rx, top - 24);
+      const ok = host.hasImage(ref.id);
+      const r = host.rect(root, { name: ok ? `Reference / ${page.path}` : `Reference / ${page.path} (IMAGE PLACEHOLDER: fill unavailable; sha256 ${ref.sha256.slice(0, 16)})`, x: rx, y: top, w: ref.width, h: ref.height, fill: null, ...ok ? { image: { assetId: ref.id, mode: "FILL" } } : { placeholder: "missing" } });
+      host.meta(r, { reference: true, sha256: ref.sha256 });
+      bottom = Math.max(bottom, top + ref.height);
+    } else if (page.referenceTiles) {
+      const rt = page.referenceTiles;
+      await label(c, root, `Reference screenshot (image, not editable; ${rt.sourceWidth}\xD7${rt.sourceHeight}px at 1:1, ${rt.tiles.length} tiles)`, 14, true, rx, top - 24);
+      const holder = host.frame(root, { name: `Reference / ${page.path} (${rt.tiles.length} tiles)`, x: rx, y: top, w: rt.sourceWidth, h: rt.sourceHeight, fill: null, clipsContent: true });
+      host.meta(holder, { reference: true, tiled: true, sourceSha256: rt.sourceSha256 });
+      for (const [i, t] of rt.tiles.entries()) {
+        const asset = doc.assets.find((a) => a.id === t.assetId);
+        const ok = host.hasImage(asset.id);
+        const r = host.rect(holder, { name: `Reference tile ${i + 1}/${rt.tiles.length} (y ${t.y})${ok ? "" : " (IMAGE PLACEHOLDER)"}`, x: 0, y: t.y, w: rt.sourceWidth, h: t.h, fill: null, ...ok ? { image: { assetId: asset.id, mode: "FILL" } } : { placeholder: "missing" } });
+        host.meta(r, { referenceTile: i, y: t.y, h: t.h, tileSha256: asset.sha256, sourceSha256: rt.sourceSha256 });
+      }
+      bottom = Math.max(bottom, top + rt.sourceHeight);
+    }
+    if (page.states) bottom = await renderStates(c, root, page, bottom + 80);
+    c.stats.pages++;
+    return { bottom, top, frame, notes: head.node };
+  }
+  async function renderStates(c, root, page, y) {
+    const { host, doc } = c;
+    const st = page.states;
+    const head = await label(c, root, `States / ${page.path}: native component variants (${st.variants.map((v) => `${v.name}: ${v.provenance}`).join(", ")}). Synthetic states are DOM modifications, not observed original states; scroll-triggered = observed page reaction to scrolling; page-api = the page's own Swiper advanced via its API (not a user event).${st.reactions === "click-cycle" && st.variants.length > 1 ? " Prototype: ON_CLICK -> CHANGE_TO next variant." : ""}`, 14, true, X0, y, 1200);
+    const top = y + head.height + 16;
+    const comps = [];
+    let x = 0;
+    for (const v of st.variants) {
+      const comp = host.component(root, { name: `State=${v.name}`, x: X0 + x, y: top, w: Math.max(1, v.frame.w), h: Math.max(1, v.frame.h), fill: null, clipsContent: true, description: v.notes.join("\n") });
+      host.meta(comp, { state: v.name, provenance: v.provenance, frame: v.frame, screenshot: v.screenshot });
+      const ref = v.referenceAssetId ? doc.assets.find((a) => a.id === v.referenceAssetId) : void 0;
+      if (ref && v.screenshot && v.screenshot.scrollY !== null) {
+        const name = `Reference screenshot / ${v.name} (hidden; ${v.screenshot.association}${v.screenshot.verified ? `; ${v.screenshot.verified}` : ""}${v.screenshot.distinct === false ? "; IDENTICAL to another state's screenshot" : ""})`;
+        const ok = host.hasImage(ref.id);
+        const r = host.rect(comp, { name: ok ? name : `${name} (IMAGE PLACEHOLDER)`, x: -v.frame.x, y: v.screenshot.scrollY - v.frame.y, w: ref.width, h: ref.height, fill: null, ...ok ? { image: { assetId: ref.id, mode: "FILL" } } : { placeholder: "missing" } });
+        host.hide(r);
+      }
+      await renderNodes(c, comp, v.nodes, [], () => "");
+      comps.push(comp);
+      x += v.frame.w + 40;
+      c.stats.variants++;
+    }
+    await host.variants(root, comps, { name: `States / ${page.path}`, x: X0, y: top, gap: 40 });
+    c.stats.variantSets++;
+    if (st.reactions === "click-cycle" && comps.length > 1) {
+      await host.flush();
+      for (const [i, comp] of comps.entries()) {
+        await host.reaction(comp, comps[(i + 1) % comps.length]);
+        c.stats.reactions++;
+      }
+    }
+    return top + Math.max(...st.variants.map((v) => v.frame.h)) + 40;
+  }
+  async function renderEdges(c, root, frames) {
     const edges = [];
-    for (const page of doc.pages) {
+    for (const page of c.doc.pages) {
       const from = page.parentId ? frames.get(page.parentId) : void 0;
       const to = frames.get(page.id);
-      if (from && to) edges.push(await edge(track2, section, from, to));
+      if (!from || !to) continue;
+      const gx = 40;
+      const pts = [
+        { x: from.x, y: from.y + 20 },
+        { x: gx, y: from.y + 20 },
+        { x: gx, y: to.y + 20 },
+        { x: to.x, y: to.y + 20 }
+      ];
+      const minX = Math.min(...pts.map((p) => p.x));
+      const minY = Math.min(...pts.map((p) => p.y));
+      const maxX = Math.max(...pts.map((p) => p.x));
+      const maxY = Math.max(...pts.map((p) => p.y));
+      edges.push(await c.host.path(root, { name: `Sitemap edge / ${from.name} -> ${to.name}`, x: minX, y: minY, w: Math.max(1, maxX - minX), h: Math.max(1, maxY - minY), points: pts.map((p) => ({ x: p.x - minX, y: p.y - minY })), mode: "polyline", fill: null, stroke: { r: 0.6, g: 0.6, b: 0.6, weight: 2 }, arrowEnd: true }));
     }
     if (edges.length) {
-      const g = track2(figma.group(edges, section, 0));
-      g.name = "Sitemap edges (vectors, URL path hierarchy)";
-      stats.edges = edges.length;
+      await c.host.group(root, edges, "Sitemap edges (vectors, URL path hierarchy)");
+      c.stats.edges = edges.length;
     }
-    section.resizeWithoutConstraints(maxRight, y);
-    if (stats.fontFallbacks) stats.warnings.push(`Font fallback used for ${stats.fontFallbacks} text run(s); see each page's notes`);
-    for (const f of failedLoads) stats.warnings.push(`Font load failure: ${f}`);
-    if (stats.unfitted) stats.warnings.push(`Width fit skipped for ${stats.unfitted} text run(s)`);
-    for (const p of doc.pages) if (p.truncated) stats.warnings.push(`Page ${p.path} is truncated; see its notes`);
-    if (stats.placeholders) stats.warnings.push(`${stats.placeholders} image(s) shown as MISSING IMAGE placeholders`);
+  }
+  async function renderDocument(host, doc, rootName, originX) {
+    const { byNode, failedLoads } = await resolveFonts(host, doc, allNodeLists(doc));
+    const c = { host, doc, fonts: byNode, failedLoads, stats: newStats(doc) };
+    const root = host.root({ name: rootName, x: originX, y: 0 });
+    let y = await renderIntro(c, root);
+    const comps = await renderComponents(c, root, y);
+    y = comps.y;
+    let maxRight = comps.right;
+    const frames = /* @__PURE__ */ new Map();
+    for (const page of doc.pages) {
+      const r = await renderPage(c, root, page, y, comps.components);
+      frames.set(page.id, { node: r.frame, x: X0, y: r.top, name: pageFrameName(page) });
+      y = r.bottom + 120;
+      const ref = page.referenceAssetId ? doc.assets.find((a) => a.id === page.referenceAssetId) : void 0;
+      maxRight = Math.max(maxRight, X0 + page.width + 80 + (ref ? ref.width : page.referenceTiles ? page.referenceTiles.sourceWidth : 0) + 80);
+    }
+    await renderEdges(c, root, frames);
+    await host.resizeRoot(root, maxRight, y);
+    finishWarnings(c);
+    return { stats: c.stats, root };
+  }
+  function finishWarnings(c) {
+    const s = c.stats;
+    if (s.fontFallbacks) s.warnings.push(`Font fallback used for ${s.fontFallbacks} text run(s); see each page's notes`);
+    for (const f of c.failedLoads) s.warnings.push(`Font load failure: ${f}`);
+    if (s.unfitted) s.warnings.push(`Width fit skipped for ${s.unfitted} text run(s)`);
+    for (const p of c.doc.pages) if (p.truncated) s.warnings.push(`Page ${p.path} is truncated; see its notes`);
+    if (s.placeholders) s.warnings.push(`${s.placeholders} image(s) shown as ${c.host.kind === "planned" ? "IMAGE PLACEHOLDER (fill unavailable in this host)" : "MISSING IMAGE"} placeholders`);
+    for (const u of c.host.unsupported) s.warnings.push(`Not supported by this host: ${u}`);
+  }
+
+  // plugin/src/hifi.ts
+  function verifyAssets(doc) {
+    const out = /* @__PURE__ */ new Map();
+    for (const a of doc.assets) {
+      const bytes = figma.base64Decode(a.dataBase64);
+      if (bytes.length !== a.bytes) throw new Error(`Asset ${a.id}: decoded length ${bytes.length} != ${a.bytes}`);
+      if (sha256Hex(bytes) !== a.sha256) throw new Error(`Asset ${a.id}: SHA-256 mismatch`);
+      const info = inspectImage(bytes);
+      if (!info || info.mime !== a.mime || info.width !== a.width || info.height !== a.height) throw new Error(`Asset ${a.id}: image header does not match its declared type/size`);
+      out.set(a.id, bytes);
+    }
+    return out;
+  }
+  async function buildHifiDoc(doc, track2, created, originX) {
+    const bytes = verifyAssets(doc);
+    const hashes = /* @__PURE__ */ new Map();
+    for (const [id, b] of bytes) hashes.set(id, figma.createImage(b).hash);
+    const { stats, root } = await renderDocument(new NativeHost(track2, hashes), doc, `website-to-figma \xB7 Hi-fi (measured) \xB7 ${doc.site.host}`, originX);
+    created.push(root);
     return stats;
   }
 

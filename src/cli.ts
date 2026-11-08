@@ -22,6 +22,8 @@ import { assertRunGates, executeStateRun, StateRunPolicyError, STOP_CONDITIONS, 
 import { initLedger, ledgerSummary, LedgerError, readLedger, recordManual, resolveEntry } from "./states/ledger";
 import { createExclusiveDir, OutputError, writeExclusive } from "./states/runFiles";
 import { acquireImage, httpsTransport } from "./states/acquire";
+import { createHash } from "node:crypto";
+import { planConnectorJobs, parseImageHashMap, DEFAULT_MAX_JOB_CHARS } from "./connector/jobs";
 import { adaptTaggedReturns } from "./states/adapt";
 import { assertLimit } from "./normalize/build";
 import { MAX_TIMEOUT_SEC, planCrawl, runCrawl } from "./crawl/firecrawl";
@@ -74,6 +76,10 @@ const USAGE = `Usage:
   website-to-figma ledger init|show|resolve|record --ledger FILE [...]
       init --prior-credits N --note TEXT | resolve --id ID --credits N|unknown --note TEXT
       | record --credits N --note TEXT (other attributable project spend)
+  website-to-figma fig-plan --doc site-v2.json --renderer connector-dist/w2f-connector-renderer.js
+        [--renderer-sha256 HEX] [--max-job-chars N] [--image-hashes MAP.json] --out DIR
+      Offline: write ordered Figma-connector job scripts ($fig plan constructors only) that embed the
+      SAME shared renderer as the native plugin. Makes NO Figma calls; run the jobs yourself, in order.
   website-to-figma validate <FILE>
       Validate a site map JSON file (schemaVersion 1 or 2).`;
 
@@ -89,7 +95,7 @@ function parseFlags(args: string[]): { positional: string[]; flags: Map<string, 
     const a = args[i]!;
     if (a === "--yes" || a === "--help" || a === "-h" || a === "--no-map" || a === "--confirm-existing-credits" || a === "--confirm-no-topup" || a === "--acknowledge-synthetic-modifications") {
       flags.set(a.replace(/^-+/, ""), true);
-    } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label" || a === "--font-map" || a === "--normalize-reference" || a === "--plan" || a === "--state-reactions" || a === "--preview" || a === "--ledger" || a === "--operator-credits-per-request" || a === "--reviewed-continuation" || a === "--run" || a === "--prior-credits" || a === "--note" || a === "--id" || a === "--credits") {
+    } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label" || a === "--font-map" || a === "--normalize-reference" || a === "--plan" || a === "--state-reactions" || a === "--preview" || a === "--ledger" || a === "--operator-credits-per-request" || a === "--reviewed-continuation" || a === "--run" || a === "--prior-credits" || a === "--note" || a === "--id" || a === "--credits" || a === "--doc" || a === "--renderer" || a === "--renderer-sha256" || a === "--max-job-chars" || a === "--image-hashes") {
       const v = args[++i];
       if (v === undefined) throw new UsageError(`${a} needs a value`);
       if (a === "--exclude") excludes.push(v);
@@ -317,6 +323,45 @@ async function main(argv: string[]): Promise<number> {
     writeExclusive(join(dir, "manifest.json"), JSON.stringify({ schema: "website-to-figma/asset-manifest", schemaVersion: 1, assets }, null, 2) + "\n");
     console.log(`Wrote ${dir} (PRIVATE; ${assets.length} saved, ${failed} need manual download)`);
     return failed ? 4 : 0;
+  }
+
+  if (cmd === "fig-plan") {
+    const docPath = flags.get("doc");
+    const renderer = flags.get("renderer");
+    const out = flags.get("out");
+    if (typeof docPath !== "string" || typeof renderer !== "string" || typeof out !== "string") throw new UsageError("fig-plan needs --doc FILE --renderer FILE --out DIR");
+    const parsed = parseImportJson(new TextDecoder().decode(readBoundedFile(docPath, LIMITS.hifiMaxJsonBytes)));
+    if (!parsed.ok) throw new UsageError(`--doc is not a valid import file:\n  ${parsed.errors.slice(0, 10).join("\n  ")}`);
+    if (parsed.version !== 2) throw new UsageError("--doc must be a schemaVersion 2 (hi-fi) document");
+    const bundle = new TextDecoder().decode(readBoundedFile(renderer, 2_000_000));
+    const bundleSha = createHash("sha256").update(bundle).digest("hex");
+    const pinned = flags.get("renderer-sha256");
+    if (typeof pinned === "string" && pinned.toLowerCase() !== bundleSha) throw new UsageError(`renderer sha256 ${bundleSha} does not match --renderer-sha256 ${pinned}`);
+    if (!/^("use strict";)?var W2F=/.test(bundle)) throw new UsageError("--renderer is not the website-to-figma connector renderer bundle");
+    const maxChars = intFlag(flags.get("max-job-chars"), "max-job-chars", DEFAULT_MAX_JOB_CHARS);
+    const hashFile = flags.get("image-hashes");
+    const imageHashesBySha = typeof hashFile === "string" ? parseImageHashMap(readBoundedJson(hashFile, 1_000_000, "image hash map")) : undefined;
+    const plan = planConnectorJobs(parsed.doc, bundle, { maxJobChars: maxChars, imageHashesBySha });
+    const mappedCount = imageHashesBySha ? parsed.doc.assets.filter((a) => imageHashesBySha[a.sha256]).length : 0;
+    const dir = createExclusiveDir(out, `fig-plan-${plan.key}-${Date.now()}`);
+    for (const j of plan.jobs) writeExclusive(join(dir, j.file), j.script);
+    const manifest = {
+      schema: "website-to-figma/connector-plan",
+      schemaVersion: 1,
+      rootName: plan.rootName,
+      docKey: plan.key,
+      rendererSha256: bundleSha,
+      maxJobChars: maxChars,
+      run: "Run each job's script with the Figma connector, strictly in this order; stop at the first error. Each job returns { rootId, ids, created, unsupported, warnings }.",
+      imageFills: mappedCount ? `${mappedCount} asset(s) mapped to origin-supplied existing Figma image hashes (IMAGE paints); others are placeholders` : "none mapped: every image is a labelled placeholder (supply --image-hashes from a sanctioned upload to fill them)",
+      notSupported: ["image fills without an origin-supplied hash mapping", "pluginData provenance", "vector networks (SVG polylines)", "edge grouping"],
+      unverified: ["$fig.variants(components, { name }) argument shape", "these jobs have not been run against Figma"],
+      jobs: plan.jobs.map((j) => ({ file: j.file, kind: j.kind, pageId: j.pageId, chars: j.chars, sha256: j.sha256, note: j.note })),
+    };
+    writeExclusive(join(dir, "jobs.json"), JSON.stringify(manifest, null, 2) + "\n");
+    console.log(`Wrote ${dir}: ${plan.jobs.length} job(s), renderer sha256 ${bundleSha}; NO Figma calls were made`);
+    for (const j of plan.jobs) console.log(`  ${j.file} (${j.chars} chars) ${j.note}`);
+    return 0;
   }
 
   if (cmd === "hifi") {

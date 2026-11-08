@@ -265,14 +265,14 @@ export async function validateStateResponse(doc: unknown, r: RequestPreview, res
   const returns = actions && Array.isArray(actions.javascriptReturns) ? actions.javascriptReturns : null;
   const shots = actions && Array.isArray(actions.screenshots) ? actions.screenshots : null;
   const scrapes = actions && Array.isArray(actions.scrapes) ? actions.scrapes : null;
-  const jsRoles = r.roles.filter((x) => x.role === "freeze" || x.role === "scroll" || x.role === "state" || x.role === "revert");
+  const jsRoles = r.roles.filter((x) => x.role === "freeze" || x.role === "scroll" || x.role === "apply" || x.role === "state" || x.role === "revert");
   const scrolls: Obj[] = [];
   // Each planned executeJavascript must have returned its tagged object, in order.
   if (!returns || returns.length !== jsRoles.length) return reject("ambiguous", `expected ${jsRoles.length} javascriptReturns, got ${returns ? returns.length : "none"} (possibly a partial run or unawaited async script)`);
   for (const [i, role] of jsRoles.entries()) {
     const v = isObj(returns[i]) ? (returns[i] as Obj).value : undefined;
     if (!isObj(v) || v.w2f !== role.role) return reject("ambiguous", `javascriptReturns[${i}] is not the expected "${role.role}" result`);
-    if ((role.role === "state" || role.role === "revert") && v.seq !== role.seq) return reject("ambiguous", `javascriptReturns[${i}] has seq ${String(v.seq)}, expected ${role.seq}`);
+    if ((role.role === "apply" || role.role === "state" || role.role === "revert") && v.seq !== role.seq) return reject("ambiguous", `javascriptReturns[${i}] has seq ${String(v.seq)}, expected ${role.seq}`);
     if (role.role === "freeze") out.freeze = v;
     if (role.role === "scroll") scrolls.push(v);
   }
@@ -284,7 +284,10 @@ export async function validateStateResponse(doc: unknown, r: RequestPreview, res
   if (!shots || shots.length !== r.states.length || !shots.every((s) => typeof s === "string" && s.length <= LIMITS.maxUrlChars)) return reject("ambiguous", `expected ${r.states.length} screenshots`);
   if (!scrapes || scrapes.length !== r.states.length) return reject("ambiguous", `expected ${r.states.length} scrapes`);
   for (const s of r.states) {
-    const v = (returns.find((x) => isObj(x) && isObj(x.value) && x.value.w2f === "state" && x.value.seq === s.seq) as Obj).value as Obj;
+    const measuredV = (returns.find((x) => isObj(x) && isObj(x.value) && x.value.w2f === "state" && x.value.seq === s.seq) as Obj).value as Obj;
+    const applyV = (returns.find((x) => isObj(x) && isObj(x.value) && x.value.w2f === "apply" && x.value.seq === s.seq) as Obj).value as Obj;
+    // apply results (applied/refused/trigger/error) merged with the measurement
+    const v: Obj = { ...measuredV, applied: applyV.applied, refused: applyV.refused, trigger: applyV.trigger, error: (typeof applyV.error === "string" && applyV.error) || measuredV.error, missing: [...(Array.isArray(applyV.missing) ? applyV.missing : []), ...(Array.isArray(measuredV.missing) ? measuredV.missing : [])] };
     const rv = returns.find((x) => isObj(x) && isObj(x.value) && x.value.w2f === "revert" && x.value.seq === s.seq) as Obj | undefined;
     const rvv = rv && isObj(rv.value) ? rv.value : null;
     if (v.name !== s.name) return reject("ambiguous", `state ${s.seq} returned name ${String(v.name)}`);
@@ -296,6 +299,9 @@ export async function validateStateResponse(doc: unknown, r: RequestPreview, res
       if (!t || t.valid !== true) out.warnings.push(`state "${s.name}": page-API trigger refused (${t && typeof t.reason === "string" ? t.reason : "no trigger report"}); this variant equals the pre-trigger page`);
       else if (t.moved !== true) out.warnings.push(`state "${s.name}": Swiper did not move`);
     }
+    const vf = isObj(v.verify) ? v.verify : null;
+    if (vf && vf.expandedViewport === true) out.warnings.push(`state "${s.name}": action viewport ${isObj(vf.viewport) ? `${String(vf.viewport.width)}x${String(vf.viewport.height)}` : "?"} is taller than any documented screenshot viewport; screenshot position cannot be verified (likely shows the page top)`);
+    else if (vf && isObj(vf.target) && vf.target.inViewport !== true) out.warnings.push(`state "${s.name}": target ${String(vf.target.selector)} was not fully inside the viewport after scrolling (viewTop ${String(vf.target.viewTop)})`);
     if (s.seq === 0 && isObj(v.readiness)) {
       out.readiness = v.readiness;
       if (typeof v.readiness.imagesIncomplete === "number" && v.readiness.imagesIncomplete > 0) out.warnings.push(`${v.readiness.imagesIncomplete} image(s) still incomplete at baseline measurement`);

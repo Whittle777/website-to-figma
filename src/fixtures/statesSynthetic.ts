@@ -66,6 +66,20 @@ export function syntheticStateResponse(opts: { dropScreenshot?: boolean; failRev
     opts.errorState ? { w2f: "state", seq: 1, name: "FAQ open", provenance: "synthetic", applied: [], missing: [], refused: [], error: "boom", reverted: 1 } : state(1, "FAQ open", "faq", { ...faqScope, h: 140 }, [{ selector: "#faq details", mechanism: "details-open" }]),
     state(2, "Tab two", "tab", null, [{ selector: "#tab2", mechanism: "attribute-set" }]),
   ];
+  // Current tagged format: each state = apply (mutations/trigger + scroll into
+  // view) followed (after a provider wait) by measure+verify.
+  const split = (v: Record<string, unknown>) => {
+    const { applied, refused, missing, error, reverted: _r, trigger, ...rest } = v as Record<string, unknown> & { applied?: unknown; refused?: unknown; missing?: unknown };
+    const apply = { w2f: "apply", seq: v.seq, name: v.name, provenance: v.provenance, applied: applied ?? [], refused: refused ?? [], missing: missing ?? [], trigger: trigger ?? null, error: error ?? null, scrollY: v.screenshotScrollY ?? 0 };
+    const scope = v.scope as { y: number; h: number } | null | undefined;
+    const sy = typeof v.screenshotScrollY === "number" ? v.screenshotScrollY : 0;
+    const measure = error ? { w2f: "state", seq: v.seq, name: v.name, provenance: v.provenance, missing: [], ...synthMeasure(v.seq as number) } : { ...rest, w2f: "state", missing: [], verify: { scrollY: sy, viewport: { width: 800, height: 600 }, documentHeight: 700, expandedViewport: false, target: scope ? { selector: "#scope", viewTop: scope.y - sy, viewBottom: scope.y + scope.h - sy, inViewport: true, partiallyVisible: true } : null }, documentHeight: 700 };
+    return [{ type: "object", value: apply }, { type: "object", value: measure }];
+  };
+  const synthMeasure = (seq: number) => {
+    const m = state(seq, "x", "none", null, []);
+    return { measured: m.measured, viewport: m.viewport, screenshotScrollY: 0, scope: null, readiness: m.readiness, truncated: false };
+  };
   const shots = ["https://example.com/shot-0.png", "https://example.com/shot-1.png", "https://example.com/shot-2.png"];
   return {
     success: true,
@@ -76,10 +90,10 @@ export function syntheticStateResponse(opts: { dropScreenshot?: boolean; failRev
         javascriptReturns: [
           { type: "object", value: { w2f: "freeze", attempted: ["css-animations-transitions", "web-animations", "video-pause", "swiper-autoplay-stop", "force-aos-visible"], applied: { "css-animations-transitions": 1, "web-animations": 3, "video-pause": 1, "swiper-autoplay-stop": 0, "force-aos-visible": 2 }, unavailable: [], modifications: ["forced .aos-animate on 2 element(s) (not the page's original visibility)"], notFrozen: ["JS timers", "requestAnimationFrame loops", "WebGL/canvas rendering"] } },
           ...[1, 2, 3].map((k) => ({ type: "object", value: { w2f: "scroll", step: k, steps: 3, y: k * 33, scrollHeight: 700, viewportHeight: 600, maxGapPx: 33, coverageComplete: true, cappedByMaxPx: false } })),
-          { type: "object", value: states[0] },
-          { type: "object", value: states[1] },
+          ...split(states[0] as Record<string, unknown>),
+          ...split(states[1] as Record<string, unknown>),
           { type: "object", value: { w2f: "revert", seq: 1, reverted: opts.errorState ? 0 : 1, failed: opts.failRevert ? 1 : 0 } },
-          { type: "object", value: states[2] },
+          ...split(states[2] as Record<string, unknown>),
           { type: "object", value: { w2f: "revert", seq: 2, reverted: 1, failed: 0 } },
         ],
         screenshots: opts.dropScreenshot ? shots.slice(0, 2) : shots,

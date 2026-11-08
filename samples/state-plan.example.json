@@ -42,7 +42,8 @@
           ]
         }
       ],
-      "manual": []
+      "manual": [],
+      "settleMs": 600
     }
   ]
 }

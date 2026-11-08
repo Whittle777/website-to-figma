@@ -5,7 +5,7 @@
 // manual operator review only, with NO handler side-effect guarantee (see
 // scripts.ts). Provider cost of these requests is unknown and not estimated.
 import { parseHttpUrl } from "../security/urlGuard";
-import { FREEZE_JS, REVERT_JS, SCROLL_JS, STATE_JS } from "./scripts";
+import { APPLY_JS, FREEZE_JS, REVERT_JS, SCROLL_JS, STATE_JS } from "./scripts";
 
 export class StatePlanError extends Error {}
 
@@ -20,7 +20,7 @@ export class StatePlanError extends Error {}
 export const STATE_LIMITS = {
   providerMaxActions: 50,
   providerMaxCombinedWaitMs: 60_000,
-  defaultMaxActions: 20,
+  defaultMaxActions: 30,
   defaultMaxCombinedWaitMs: 30_000,
   maxPages: 3,
   maxStatesPerPage: 3, // TOTAL, baseline included
@@ -33,6 +33,8 @@ export const STATE_LIMITS = {
   maxLazyPx: 30_000,
   maxLazyStepWaitMs: 2_000,
   maxVisibilityMs: 5_000,
+  // provider wait between a state's apply (+ scroll into view) and its measurement
+  maxStateSettleMs: 5_000,
   // Request timeout = min(max, base + 2 x combined waits + per-state); the
   // combined wait never exceeds half of it (mirrors the provider's waitFor rule).
   requestTimeoutBaseMs: 20_000,
@@ -70,6 +72,8 @@ export interface PlannedState {
   mutations: Mutation[];
   trigger?: StateTrigger;
   selector?: string;
+  // scope whose bounds the measure step reports (no scrolling); defaults to scope
+  measureScope?: string | null;
 }
 
 export function provenanceOf(s: PlannedState): StateProvenance {
@@ -85,6 +89,7 @@ export interface ManualState {
 export interface PlannedPage {
   url: string;
   waitMs: number;
+  settleMs: number;
   lazy: { steps: number; maxPx: number; stepWaitMs: number; visibilityMs: number };
   states: PlannedState[]; // [0] is the implicit baseline "Default"
   manual: ManualState[];
@@ -180,7 +185,7 @@ export function parseStatePlan(json: unknown): StatePlan {
   const pages = json.pages.map((raw, i): PlannedPage => {
     const p = `pages[${i}]`;
     if (!isObj(raw)) throw new StatePlanError(`${p}: expected object`);
-    keys(raw, p, ["url", "waitMs", "lazy", "states", "manual"]);
+    keys(raw, p, ["url", "waitMs", "settleMs", "lazy", "states", "manual"]);
     let url: URL;
     try {
       url = parseHttpUrl(String(raw.url));
@@ -242,7 +247,9 @@ export function parseStatePlan(json: unknown): StatePlan {
     // top-of-page view, and scrolling a lower scope into view would itself
     // trigger scroll handlers, so it stays at the top (scope null).
     const reveal = states.find((x) => x.trigger === "scroll-reveal");
-    states[0]!.scope = reveal ? null : (states.find((x) => x.scope)?.scope ?? null);
+    const firstScope = states.find((x) => x.scope)?.scope ?? null;
+    states[0]!.scope = reveal ? null : firstScope;
+    states[0]!.measureScope = firstScope;
     if (reveal && lazy.steps === 0) throw new StatePlanError(`${p}: a "scroll-reveal" state needs lazy.steps >= 1`);
     if (states.length + manual.length > STATE_LIMITS.maxStatesPerPage) {
       throw new StatePlanError(`${p}: ${states.length} planned + ${manual.length} manual states exceed ${STATE_LIMITS.maxStatesPerPage} total (baseline included)`);
@@ -250,6 +257,7 @@ export function parseStatePlan(json: unknown): StatePlan {
     return {
       url: url.href,
       waitMs: int(raw.waitMs, `${p}.waitMs`, 2_000, 0, STATE_LIMITS.maxPageWaitMs),
+      settleMs: int(raw.settleMs, `${p}.settleMs`, 600, 1, STATE_LIMITS.maxStateSettleMs),
       lazy,
       states,
       manual,
@@ -286,7 +294,7 @@ export interface StateRequestBody {
   proxy: "basic";
 }
 
-export type ActionRole = "wait" | "freeze" | "scroll" | "state" | "screenshot" | "scrape" | "revert";
+export type ActionRole = "wait" | "freeze" | "scroll" | "apply" | "state" | "screenshot" | "scrape" | "revert";
 export interface RequestPreview {
   pageUrl: string;
   sent: false;
@@ -341,7 +349,11 @@ export function buildStateRequest(plan: StatePlan, page: PlannedPage): RequestPr
   page.states.forEach((s, seq) => {
     if (seq === revealAt) scrollSteps();
     const provenance = provenanceOf(s);
-    push("state", { type: "executeJavascript", script: fill(STATE_JS, { STATE: { seq, name: s.name, provenance, scope: s.scope, mutations: s.mutations, trigger: s.trigger ?? null, selector: s.selector ?? null }, MAX_RETURN_CHARS: STATE_LIMITS.maxStateReturnChars }) }, { state: s.name, seq });
+    const payload = { seq, name: s.name, provenance, scope: s.scope, mutations: s.mutations, trigger: s.trigger ?? null, selector: s.selector ?? null };
+    // apply (+ scope into view) -> provider wait -> measure+verify -> screenshot -> scrape
+    push("apply", { type: "executeJavascript", script: fill(APPLY_JS, { STATE: payload }) }, { state: s.name, seq });
+    wait(page.settleMs);
+    push("state", { type: "executeJavascript", script: fill(STATE_JS, { STATE: { seq, name: s.name, provenance, scope: s.measureScope ?? s.scope }, MAX_RETURN_CHARS: STATE_LIMITS.maxStateReturnChars }) }, { state: s.name, seq });
     push("screenshot", { type: "screenshot", fullPage: false }, { state: s.name, seq });
     push("scrape", { type: "scrape" }, { state: s.name, seq });
     states.push({ seq, name: s.name, provenance, review: REVIEW[provenance], screenshotIndex: shots, scrapeIndex: shots });

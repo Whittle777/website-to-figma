@@ -61,13 +61,49 @@ export function cropNodes(nodes: HifiNode[], frame: Rect, max: number): { nodes:
   return { nodes: out, dropped: keep.length - kept.length };
 }
 
-function frameOf(st: Obj, fallbackW: number): Rect {
+// Variant frame in page coordinates: the measured scope, else the visible
+// viewport at the measured scroll position. The CSS viewport height is NOT
+// used when it exceeds the document height (expanded action viewport): then
+// the frame is the top of the document, bounded by the per-frame limit.
+function frameOf(st: Obj): Rect {
   const scope = rectOf(st.scope);
-  if (scope) return { x: scope.x, y: scope.y, w: Math.min(scope.w, LIMITS.hifiMaxPageWidth), h: Math.min(scope.h, LIMITS.hifiMaxPageHeight) };
+  if (scope) return { x: scope.x, y: scope.y, w: Math.max(1, Math.min(scope.w, LIMITS.hifiMaxPageWidth)), h: Math.max(1, Math.min(scope.h, LIMITS.hifiMaxPageHeight)) };
   const vp = isObj(st.viewport) ? st.viewport : {};
-  const w = fin(vp.width) ?? fallbackW;
-  const h = fin(vp.height) ?? 800;
+  const w = fin(vp.width) ?? 1280;
+  const docH = fin(st.documentHeight);
+  const vh = fin(vp.height) ?? 800;
+  const h = docH !== null ? Math.min(vh, docH) : vh;
   return { x: 0, y: fin(st.screenshotScrollY) ?? 0, w: Math.max(1, Math.min(w, LIMITS.hifiMaxPageWidth)), h: Math.max(1, Math.min(h, LIMITS.hifiMaxPageHeight)) };
+}
+
+// Bounded crop of a measurement to a frame, in frame-local coordinates, so a
+// target far down a tall document converts with its nodes intact (the page
+// height cap never applies to it). Arrays are filtered, not copied per pixel.
+export function cropMeasured(m: Obj, frame: Rect): Obj {
+  const hit = (o: unknown) => {
+    const r = rectOf(o) ?? (isObj(o) ? { x: fin(o.x) ?? 0, y: fin(o.y) ?? 0, w: fin(o.w) ?? 0, h: fin(o.h) ?? 0 } : null);
+    return !!r && r.x < frame.x + frame.w && r.x + r.w > frame.x && r.y < frame.y + frame.h && r.y + r.h > frame.y;
+  };
+  const shift = (o: Obj): Obj => ({ ...o, x: (fin(o.x) ?? 0) - frame.x, y: (fin(o.y) ?? 0) - frame.y });
+  const list = (k: string, max: number) => (Array.isArray(m[k]) ? (m[k] as unknown[]).slice(0, max).filter(isObj).filter((o) => o.tag !== "body" && hit(o)).map(shift) : []);
+  const body = Array.isArray(m.elements) ? (m.elements as unknown[]).filter(isObj).find((e) => e.tag === "body") : undefined;
+  const vp = isObj(m.viewport) ? m.viewport : {};
+  return {
+    ...m,
+    viewport: { width: frame.w, height: fin(vp.height) ?? frame.h },
+    elements: [{ ...(body ?? { tag: "body", style: {} }), x: 0, y: 0, w: frame.w, h: frame.h }, ...list("elements", LIMITS.captureMaxElements)],
+    texts: list("texts", LIMITS.captureMaxTexts),
+    images: list("images", LIMITS.captureMaxImages),
+    svgs: list("svgs", LIMITS.captureMaxElements),
+  };
+}
+
+type Verified = "target-in-viewport" | "target-outside-viewport" | "unverifiable-expanded-viewport" | "no-target";
+function verifiedOf(v: unknown): Verified | undefined {
+  if (!isObj(v)) return undefined;
+  if (v.expandedViewport === true) return "unverifiable-expanded-viewport";
+  if (!isObj(v.target)) return "no-target";
+  return v.target.inViewport === true ? "target-in-viewport" : "target-outside-viewport";
 }
 
 export function attachStates(ctx: StateContext): void {
@@ -90,6 +126,7 @@ export function attachStates(ctx: StateContext): void {
 
     if (rawStates.length || stateRefs.length) {
       const variants: StateVariant[] = [];
+      const refSha = new Map<StateVariant, string>();
       const base = rawStates.find((s) => s.seq === 0) ?? null;
       const KINDS = ["synthetic", "scroll-triggered", "page-api"];
       const ordered = base ? [base, ...rawStates.filter((s) => s !== base && KINDS.includes(String(s.provenance)))] : [];
@@ -113,17 +150,17 @@ export function attachStates(ctx: StateContext): void {
           pw(`State "${name}" omitted: no measurement`);
           continue;
         }
+        // A baseline without its own scope uses the first state's scope rect when given.
+        const frame = frameOf(isBase && !rectOf(st.scope) && firstScope ? { ...st, scope: firstScope.scope } : st);
         let sub: HifiDoc;
         try {
-          sub = ctx.convertOne({ url: raw.url, measured: st.measured, ...(typeof st.html === "string" ? { html: st.html } : {}) });
+          sub = ctx.convertOne({ url: raw.url, measured: cropMeasured(st.measured, frame), ...(typeof st.html === "string" ? { html: st.html } : {}) });
         } catch (err) {
           pw(`State "${name}" omitted: ${err instanceof Error ? err.message : "conversion failed"}`);
           continue;
         }
         const subPage = sub.pages[0]!;
-        // A baseline without its own scope uses the first state's scope rect when given.
-        const frame = frameOf(isBase && !rectOf(st.scope) && firstScope ? { ...st, scope: firstScope.scope } : st, subPage.width);
-        const cropped = cropNodes(subPage.nodes, frame, Math.min(MAX_VARIANT_NODES, budget));
+        const cropped = cropNodes(subPage.nodes, { x: 0, y: 0, w: frame.w, h: frame.h }, Math.min(MAX_VARIANT_NODES, budget));
         // Re-home sub-document image assets onto the main document's asset list.
         const nodes = cropped.nodes.map((n) => {
           if (n.kind !== "image" || n.assetId === null) return n;
@@ -168,9 +205,10 @@ export function attachStates(ctx: StateContext): void {
           frame,
           nodes,
           referenceAssetId: ref ? ctx.assetIdFor(ref) : null,
-          screenshot: { association: assoc, scrollY: fin(st.screenshotScrollY), viewportW: fin(vp.width), viewportH: fin(vp.height) },
+          screenshot: { association: assoc, scrollY: fin(st.screenshotScrollY), viewportW: fin(vp.width), viewportH: fin(vp.height), ...(verifiedOf(st.verify) ? { verified: verifiedOf(st.verify) } : {}) },
           notes: notes.slice(0, 10).map(note),
         });
+        if (ref) refSha.set(variants[variants.length - 1]!, ref.sha256);
         if (ref && assoc !== "action-order") pw(`State "${name}": screenshot was not tied to this state by action order; check the operator's manifest label`);
       }
       // Manual (operator-captured) states: screenshot only, never measured.
@@ -204,7 +242,24 @@ export function attachStates(ctx: StateContext): void {
           screenshot: { association: "manual", scrollY: null, viewportW: null, viewportH: null },
           notes: [note("MANUAL state: operator-captured screenshot only; not measured, layers are not editable")],
         });
+        refSha.set(variants[variants.length - 1]!, ref.sha256);
         budget -= 1;
+      }
+      // Byte-identical screenshots across states are flagged: identical images
+      // must never be presented as visually distinct states.
+      const bySha = new Map<string, StateVariant[]>();
+      for (const v of variants) {
+        const sha = refSha.get(v);
+        if (sha) bySha.set(sha, [...(bySha.get(sha) ?? []), v]);
+      }
+      for (const [sha, vs] of bySha) {
+        if (vs.length < 2) continue;
+        for (const v of vs) if (v.screenshot) v.screenshot.distinct = false;
+        pw(`State screenshots for ${vs.map((v) => `"${v.name}"`).join(", ")} are byte-identical (sha256 ${sha.slice(0, 16)}...): no visual distinctness; the editable layers differ only where their measurements differ`);
+      }
+      for (const v of variants) {
+        const why = v.screenshot?.verified;
+        if (v.referenceAssetId && (why === "unverifiable-expanded-viewport" || why === "target-outside-viewport")) pw(`State "${v.name}": screenshot position ${why === "unverifiable-expanded-viewport" ? "unverifiable (expanded action viewport)" : "verified OUTSIDE the target"}; it is attached hidden as evidence only`);
       }
       if (variants.length) page.states = { reactions: variants.length > 1 ? ctx.reactions : "none", variants };
     }

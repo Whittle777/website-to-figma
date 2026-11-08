@@ -359,8 +359,32 @@ a cost and routing choice: the schema default `auto` may escalate.
 1. `wait` (page settle)
 2. freeze (sync)
 3. *n* × (sync `scrollTo` step, then `wait`); the last `wait` is the visibility settle
-4. for each state: sync apply + measure, `screenshot` (viewport), `scrape`, then a sync revert for
-   synthetic states
+4. for each state:
+   1. sync **apply**: the mutation or trigger, then `scrollIntoView` of the state's scope, or the
+      top for the baseline
+   2. provider `wait` (`settleMs`)
+   3. sync **measure + verify**
+   4. `screenshot` (viewport)
+   5. `scrape`
+   6. sync revert, for synthetic and page-api states
+
+**Verify record.** Each state records scrollY, the CSS viewport, the document height, and the
+target's viewport-relative bounds. A provider *action* viewport taller than the largest documented
+screenshot viewport (7680×4320) is flagged as **expanded**. A private hosted run observed
+1920×100000, with `scrollY` stuck at 0 and every screenshot showing the page top. When the
+viewport is expanded, screenshot position is marked **unverifiable**, and the converter treats it
+like this:
+- **Viewport vs document.** The CSS viewport is kept separate from the document height and a
+  warning is added (vh-based layout may be distorted).
+- **Variant crop.** Each variant is cropped in local coordinates before any height bound, so deep
+  targets keep their editable nodes.
+- **Tall pages.** Pages taller than 30,000 px are split into at most 4 segment pages.
+- **Identical screenshots.** Byte-identical state screenshots are flagged `distinct: false` and
+  are never presented as distinct visual states.
+
+The screenshot `viewport` option is documented only as "Max viewport resolution is 7680×4320". Its
+effect on layout is undocumented, so it is not used. Firecrawl's `scroll` action does not scroll a
+target into view: in `scrape-replay.ts` it scrolls by `innerHeight` or by a mouse wheel.
 
 **Timing.** The combined wait is exactly the provider's accounting: the sum of
 `wait.milliseconds`, with in-script sleep always 0. Firecrawl source
@@ -500,6 +524,46 @@ Samples:
 - **Scroll handlers.** These only toggle classes: AOS (`once: true, mirror: false`, 99 ms
   throttled scroll listener), header `scrolled`, `.scroll-top.active` and navmenu scrollspy.
 - **Not live.** None of this has been executed live.
+
+## Figma connector adapter ($fig): same renderer, planned host
+
+The native plugin and the connector adapter share **one renderer** (`plugin/src/render/`). The two
+hosts differ only in how nodes are made:
+- `NativeHost` uses `figma.create*`.
+- `PlannedHost` (`src/connector/`) uses only the connector's `$fig` plan constructors: `frame`,
+  `rectangle`, `text`, `svg`, `component`, `instance`, `ellipse`, `variants`, `get` and `done`,
+  plus the wrapper's `.append`, `.set`, `.query(...).set` and `.node`.
+
+`PlannedHost` follows these rules:
+- **Post-flush only.** Raw reads (width, height, child lookup, available fonts), raw font loads and
+  `ON_CLICK` → `CHANGE_TO` reactions happen only after `await $fig.done()`. Reading while plan
+  nodes are pending throws.
+- **Variants.** `$fig.variants` does not position variants, so they are laid out on an explicit
+  grid and the set is resized after a flush.
+
+```sh
+website-to-figma fig-plan --doc site-v2.json --renderer connector-dist/w2f-connector-renderer.js \
+  --renderer-sha256 <pinned sha256> [--max-job-chars 50000] [--image-hashes map.json] --out fig-jobs
+```
+
+`fig-plan` writes ordered job scripts and a `jobs.json` manifest, and makes **no Figma calls**:
+- **Jobs.** Each job embeds the pinned renderer bundle verbatim plus one bounded job input. The
+  jobs are root, page, phase-ordered node batches and edges.
+- **Order.** Run them yourself through the connector, in order. Later jobs find earlier frames by
+  deterministic unique names (`[bN]` and `[cN]` keys, plus `[w2f <docKey>]` on the root).
+- **Images.** Image fills are applied only when you supply `--image-hashes`. It maps asset sha256
+  to an **existing** Figma image hash that the origin obtained through a sanctioned upload route,
+  and those images get a standard `IMAGE` paint. Otherwise images become labelled placeholders.
+  There is no fetch, no image creation and no invented hash.
+
+Not supported and reported in every job result, never faked:
+- `pluginData` provenance (kept in names, descriptions and results instead)
+- vector networks (generated SVG polylines are used instead)
+- edge grouping
+
+Unverified here: the `$fig.variants(components, { name })` argument shape. The jobs have **not**
+been run against Figma; they are tested only with a fake connector that enforces plan and flush
+semantics.
 
 ## Figma plugin (development)
 

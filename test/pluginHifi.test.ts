@@ -192,7 +192,7 @@ describe("native hi-fi renderer (fake figma)", () => {
     expect(section).toMatchObject({ type: "SECTION", x: 500 });
     const pageFrame = section.children.find((c) => c.name === "Page / / (editable, measured)")!;
     expect(pageFrame).toMatchObject({ type: "FRAME", width: 800, height: 600, clipsContent: true });
-    const button = pageFrame.children.find((c) => c.name === "Button / Send")!;
+    const button = pageFrame.children.find((c) => c.name.startsWith("Button / Send [b"))!;
     expect(button).toMatchObject({ type: "FRAME", strokeWeight: 2, strokeAlign: "INSIDE", topLeftRadius: 5, bottomRightRadius: 8 });
     const sendLabel = button.children.find((c) => c.type === "TEXT")!;
     expect(sendLabel).toMatchObject({ characters: "Send", x: 48, y: 12, fontName: { family: "Roboto", style: "Bold" } });
@@ -207,7 +207,7 @@ describe("native hi-fi renderer (fake figma)", () => {
     const ref = section.children.find((c) => c.name === "Reference / /")!;
     expect(ref).toMatchObject({ x: 80 + 800 + 80, width: 800, height: 600 });
     // overflow clip frame holds the clipped code run
-    const clip = pageFrame.children.find((c) => c.name === "Overflow clip / pre")!;
+    const clip = pageFrame.children.find((c) => c.name === "Overflow clip / pre [c0]")!;
     expect(clip).toMatchObject({ type: "FRAME", clipsContent: true, x: 40, y: 440, width: 300, height: 50 });
     expect(clip.children.map((c) => c.characters)).toEqual(["const aVeryLongSyntheticLine = true;"]);
     // inferred list markers are right-aligned and never width-fitted
@@ -236,7 +236,7 @@ describe("native hi-fi renderer (fake figma)", () => {
     const firstCreate = events.findIndex((e) => e.startsWith("create:"));
     expect(lastLoad).toBeLessThan(firstCreate);
     const page = sections[0]!.children.find((c) => c.name === "Page / / (editable, measured)")!;
-    const send = page.children.find((c) => c.name === "Button / Send")!.children[0]!;
+    const send = page.children.find((c) => c.name.startsWith("Button / Send [b"))!.children[0]!;
     expect(send.fontName).toEqual({ family: "Inter", style: "Bold" });
     const notes = sections[0]!.children.find((c) => c.name === "Notes / /")!;
     expect(notes.characters).toMatch(/Font load failure: Roboto Bold failed to load/);

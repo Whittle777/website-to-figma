@@ -30,12 +30,14 @@ export function adaptTaggedReturns(data: Obj, name: string): AdaptedStates | nul
   const warnings: string[] = [];
   const out: AdaptedStates = { baseline: null, states: [], freeze: null, lazy: null, warnings, screenshotHints: [] };
   const reverts = new Map<number, Obj>();
+  const applies = new Map<number, Obj>();
   const bySeq = new Map<number, Obj>();
   for (const v of values) {
     if (v.w2f === "freeze" && !out.freeze) out.freeze = v;
     else if (v.w2f === "lazy" && !out.lazy) out.lazy = v;
     else if (v.w2f === "scroll") out.lazy = { w2f: "lazy", steps: v.steps, finalY: v.y, coverageComplete: v.coverageComplete === true && (out.lazy?.coverageComplete ?? true) !== false };
     else if (v.w2f === "revert" && typeof v.seq === "number") reverts.set(v.seq, v);
+    else if (v.w2f === "apply" && typeof v.seq === "number") applies.set(v.seq, v);
     else if (v.w2f === "state" && typeof v.seq === "number" && Number.isInteger(v.seq) && v.seq >= 0 && v.seq < STATE_LIMITS.maxStatesPerPage) {
       if (bySeq.has(v.seq)) {
         warnings.push(`${name}: duplicate state seq ${v.seq} ignored`);
@@ -61,7 +63,10 @@ export function adaptTaggedReturns(data: Obj, name: string): AdaptedStates | nul
   // A failed or missing revert taints every later state (possible residue).
   let tainted: number | null = null;
   for (const seq of [...bySeq.keys()].sort((a, b) => a - b)) {
-    const s = bySeq.get(seq)!;
+    const m = bySeq.get(seq)!;
+    const a = applies.get(seq);
+    // Separate apply step (current format) merged into the measurement.
+    const s: Obj = a ? { ...m, applied: a.applied, refused: a.refused, trigger: a.trigger, error: (typeof a.error === "string" && a.error) || m.error, missing: [...(Array.isArray(a.missing) ? a.missing : []), ...(Array.isArray(m.missing) ? m.missing : [])] } : m;
     const synthetic = s.provenance === "synthetic";
     const known = seq === 0 || ["synthetic", "scroll-triggered", "page-api"].includes(String(s.provenance));
     const needsRevert = synthetic || s.provenance === "page-api";
@@ -70,6 +75,8 @@ export function adaptTaggedReturns(data: Obj, name: string): AdaptedStates | nul
       name: typeof s.name === "string" ? s.name.slice(0, 40) : `State ${seq}`,
       provenance: seq === 0 ? "baseline" : ["synthetic", "scroll-triggered", "page-api"].includes(String(s.provenance)) ? s.provenance : "invalid",
       trigger: isObj(s.trigger) ? s.trigger : null,
+      verify: isObj(s.verify) ? s.verify : null,
+      documentHeight: typeof s.documentHeight === "number" ? s.documentHeight : null,
       scope: isObj(s.scope) ? s.scope : null,
       screenshotScrollY: typeof s.screenshotScrollY === "number" ? s.screenshotScrollY : null,
       viewport: isObj(s.viewport) ? s.viewport : null,

@@ -4,6 +4,8 @@ Built by `npm run dist` from this commit's sources; not hand-edited. Bundled inp
 
 - `plugin/src/code.ts`
 - `plugin/src/hifi.ts`
+- `plugin/src/render/nativeHost.ts`
+- `plugin/src/render/renderer.ts`
 - `src/shared/fonts.ts`
 - `src/shared/hifiSchema.ts`
 - `src/shared/imageInfo.ts`

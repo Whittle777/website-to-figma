@@ -110,6 +110,8 @@ var init_limits = __esm({
       refTileWorkerHeapMb: 512,
       hifiMaxPageWidth: 4096,
       hifiMaxPageHeight: 3e4,
+      // Taller documents are split into at most this many 30000px segment pages.
+      hifiMaxPageSegments: 4,
       hifiMaxTextChars: 2e3,
       hifiMaxFontStack: 16,
       hifiMaxWarnings: 50,
@@ -8823,9 +8825,11 @@ function checkStatesEtc(c, pg, p, assetIds, assetsById) {
         }
         total += checkNodeList(c, v.nodes, `${q}.nodes`, MAX_VARIANT_NODES, assetIds, 0);
         if (v.referenceAssetId !== null && (typeof v.referenceAssetId !== "string" || assetsById.get(v.referenceAssetId)?.kind !== "reference")) c.fail(`${q}.referenceAssetId`, "unknown reference asset");
-        if (v.screenshot !== null && c.obj(v.screenshot, `${q}.screenshot`, ["association", "scrollY", "viewportW", "viewportH"])) {
+        if (v.screenshot !== null && c.obj(v.screenshot, `${q}.screenshot`, ["association", "scrollY", "viewportW", "viewportH"], ["verified", "distinct"])) {
+          if (v.screenshot.verified !== void 0) c.oneOf(v.screenshot.verified, `${q}.screenshot.verified`, ["target-in-viewport", "target-outside-viewport", "unverifiable-expanded-viewport", "no-target"]);
+          if (v.screenshot.distinct !== void 0) c.bool(v.screenshot.distinct, `${q}.screenshot.distinct`);
           c.oneOf(v.screenshot.association, `${q}.screenshot.association`, ["action-order", "unassociated", "manual"]);
-          for (const k of ["scrollY", "viewportW", "viewportH"]) if (v.screenshot[k] !== null) c.num(v.screenshot[k], `${q}.screenshot.${k}`, 0, COORD);
+          for (const k of ["scrollY", "viewportW", "viewportH"]) if (v.screenshot[k] !== null) c.num(v.screenshot[k], `${q}.screenshot.${k}`, 0, 1e6);
         }
         c.labels(v.notes, `${q}.notes`, 10);
       });
@@ -8951,7 +8955,13 @@ function validateHifiDoc(input) {
     const ids = /* @__PURE__ */ new Set();
     d.pages.forEach((pg, i) => {
       const p = `$.pages[${i}]`;
-      if (!c.obj(pg, p, ["id", "url", "path", "title", "width", "height", "truncated", "referenceAssetId", "branding", "nodes", "warnings"], ["notes", "parentId", "clips", "instances", "normalization", "referenceTiles", "states", "freeze", "motion", "media"])) return;
+      if (!c.obj(pg, p, ["id", "url", "path", "title", "width", "height", "truncated", "referenceAssetId", "branding", "nodes", "warnings"], ["notes", "parentId", "clips", "instances", "normalization", "referenceTiles", "states", "freeze", "motion", "media", "segment"])) return;
+      if (pg.segment !== void 0 && c.obj(pg.segment, `${p}.segment`, ["index", "count", "offsetY", "sourceHeight"])) {
+        c.int(pg.segment.count, `${p}.segment.count`, 2, LIMITS.hifiMaxPageSegments);
+        c.int(pg.segment.index, `${p}.segment.index`, 0, LIMITS.hifiMaxPageSegments - 1);
+        c.num(pg.segment.offsetY, `${p}.segment.offsetY`, 0, LIMITS.hifiMaxPageHeight * LIMITS.hifiMaxPageSegments);
+        c.num(pg.segment.sourceHeight, `${p}.segment.sourceHeight`, 1, LIMITS.hifiMaxPageHeight * LIMITS.hifiMaxPageSegments);
+      }
       total += checkStatesEtc(c, pg, p, assetIds, assetsById);
       if (pg.referenceTiles !== void 0 && c.obj(pg.referenceTiles, `${p}.referenceTiles`, ["sourceSha256", "sourceWidth", "sourceHeight", "tiles"])) {
         const rt = pg.referenceTiles;
@@ -9389,13 +9399,39 @@ function cropNodes(nodes, frame, max) {
   });
   return { nodes: out, dropped: keep.length - kept.length };
 }
-function frameOf(st3, fallbackW) {
+function frameOf(st3) {
   const scope = rectOf(st3.scope);
-  if (scope) return { x: scope.x, y: scope.y, w: Math.min(scope.w, LIMITS.hifiMaxPageWidth), h: Math.min(scope.h, LIMITS.hifiMaxPageHeight) };
+  if (scope) return { x: scope.x, y: scope.y, w: Math.max(1, Math.min(scope.w, LIMITS.hifiMaxPageWidth)), h: Math.max(1, Math.min(scope.h, LIMITS.hifiMaxPageHeight)) };
   const vp = isObj(st3.viewport) ? st3.viewport : {};
-  const w = fin(vp.width) ?? fallbackW;
-  const h = fin(vp.height) ?? 800;
+  const w = fin(vp.width) ?? 1280;
+  const docH = fin(st3.documentHeight);
+  const vh = fin(vp.height) ?? 800;
+  const h = docH !== null ? Math.min(vh, docH) : vh;
   return { x: 0, y: fin(st3.screenshotScrollY) ?? 0, w: Math.max(1, Math.min(w, LIMITS.hifiMaxPageWidth)), h: Math.max(1, Math.min(h, LIMITS.hifiMaxPageHeight)) };
+}
+function cropMeasured(m, frame) {
+  const hit = (o) => {
+    const r = rectOf(o) ?? (isObj(o) ? { x: fin(o.x) ?? 0, y: fin(o.y) ?? 0, w: fin(o.w) ?? 0, h: fin(o.h) ?? 0 } : null);
+    return !!r && r.x < frame.x + frame.w && r.x + r.w > frame.x && r.y < frame.y + frame.h && r.y + r.h > frame.y;
+  };
+  const shift = (o) => ({ ...o, x: (fin(o.x) ?? 0) - frame.x, y: (fin(o.y) ?? 0) - frame.y });
+  const list = (k, max) => Array.isArray(m[k]) ? m[k].slice(0, max).filter(isObj).filter((o) => o.tag !== "body" && hit(o)).map(shift) : [];
+  const body = Array.isArray(m.elements) ? m.elements.filter(isObj).find((e2) => e2.tag === "body") : void 0;
+  const vp = isObj(m.viewport) ? m.viewport : {};
+  return {
+    ...m,
+    viewport: { width: frame.w, height: fin(vp.height) ?? frame.h },
+    elements: [{ ...body ?? { tag: "body", style: {} }, x: 0, y: 0, w: frame.w, h: frame.h }, ...list("elements", LIMITS.captureMaxElements)],
+    texts: list("texts", LIMITS.captureMaxTexts),
+    images: list("images", LIMITS.captureMaxImages),
+    svgs: list("svgs", LIMITS.captureMaxElements)
+  };
+}
+function verifiedOf(v) {
+  if (!isObj(v)) return void 0;
+  if (v.expandedViewport === true) return "unverifiable-expanded-viewport";
+  if (!isObj(v.target)) return "no-target";
+  return v.target.inViewport === true ? "target-in-viewport" : "target-outside-viewport";
 }
 function attachStates(ctx) {
   let budget = ctx.nodeBudget;
@@ -9416,6 +9452,7 @@ function attachStates(ctx) {
     const stateRefs = ctx.assets.filter((a) => a.kind === "reference" && a.state && a.pageUrl && canonicalizeUrl(a.pageUrl) === canonical);
     if (rawStates.length || stateRefs.length) {
       const variants = [];
+      const refSha = /* @__PURE__ */ new Map();
       const base2 = rawStates.find((s) => s.seq === 0) ?? null;
       const KINDS = ["synthetic", "scroll-triggered", "page-api"];
       const ordered = base2 ? [base2, ...rawStates.filter((s) => s !== base2 && KINDS.includes(String(s.provenance)))] : [];
@@ -9439,20 +9476,20 @@ function attachStates(ctx) {
           pw(`State "${name3}" omitted: no measurement`);
           continue;
         }
+        const frame = frameOf(isBase && !rectOf(st3.scope) && firstScope ? { ...st3, scope: firstScope.scope } : st3);
         let sub;
         try {
-          sub = ctx.convertOne({ url: raw.url, measured: st3.measured, ...typeof st3.html === "string" ? { html: st3.html } : {} });
+          sub = ctx.convertOne({ url: raw.url, measured: cropMeasured(st3.measured, frame), ...typeof st3.html === "string" ? { html: st3.html } : {} });
         } catch (err) {
           pw(`State "${name3}" omitted: ${err instanceof Error ? err.message : "conversion failed"}`);
           continue;
         }
         const subPage = sub.pages[0];
-        const frame = frameOf(isBase && !rectOf(st3.scope) && firstScope ? { ...st3, scope: firstScope.scope } : st3, subPage.width);
-        const cropped = cropNodes(subPage.nodes, frame, Math.min(MAX_VARIANT_NODES, budget));
+        const cropped = cropNodes(subPage.nodes, { x: 0, y: 0, w: frame.w, h: frame.h }, Math.min(MAX_VARIANT_NODES, budget));
         const nodes = cropped.nodes.map((n) => {
           if (n.kind !== "image" || n.assetId === null) return n;
-          const sha2 = sub.assets.find((a) => a.id === n.assetId)?.sha256;
-          const loaded = sha2 ? ctx.assets.find((a) => a.sha256 === sha2 && a.kind === "image") : void 0;
+          const sha3 = sub.assets.find((a) => a.id === n.assetId)?.sha256;
+          const loaded = sha3 ? ctx.assets.find((a) => a.sha256 === sha3 && a.kind === "image") : void 0;
           return { ...n, assetId: loaded ? ctx.assetIdFor(loaded) : null };
         });
         budget -= nodes.length;
@@ -9492,9 +9529,10 @@ function attachStates(ctx) {
           frame,
           nodes,
           referenceAssetId: ref ? ctx.assetIdFor(ref) : null,
-          screenshot: { association: assoc, scrollY: fin(st3.screenshotScrollY), viewportW: fin(vp.width), viewportH: fin(vp.height) },
+          screenshot: { association: assoc, scrollY: fin(st3.screenshotScrollY), viewportW: fin(vp.width), viewportH: fin(vp.height), ...verifiedOf(st3.verify) ? { verified: verifiedOf(st3.verify) } : {} },
           notes: notes.slice(0, 10).map(note)
         });
+        if (ref) refSha.set(variants[variants.length - 1], ref.sha256);
         if (ref && assoc !== "action-order") pw(`State "${name3}": screenshot was not tied to this state by action order; check the operator's manifest label`);
       }
       const plannedNames = new Set(rawStates.map((s) => typeof s.name === "string" ? s.name.toLowerCase() : ""));
@@ -9526,7 +9564,22 @@ function attachStates(ctx) {
           screenshot: { association: "manual", scrollY: null, viewportW: null, viewportH: null },
           notes: [note("MANUAL state: operator-captured screenshot only; not measured, layers are not editable")]
         });
+        refSha.set(variants[variants.length - 1], ref.sha256);
         budget -= 1;
+      }
+      const bySha = /* @__PURE__ */ new Map();
+      for (const v of variants) {
+        const sha3 = refSha.get(v);
+        if (sha3) bySha.set(sha3, [...bySha.get(sha3) ?? [], v]);
+      }
+      for (const [sha3, vs] of bySha) {
+        if (vs.length < 2) continue;
+        for (const v of vs) if (v.screenshot) v.screenshot.distinct = false;
+        pw(`State screenshots for ${vs.map((v) => `"${v.name}"`).join(", ")} are byte-identical (sha256 ${sha3.slice(0, 16)}...): no visual distinctness; the editable layers differ only where their measurements differ`);
+      }
+      for (const v of variants) {
+        const why = v.screenshot?.verified;
+        if (v.referenceAssetId && (why === "unverifiable-expanded-viewport" || why === "target-outside-viewport")) pw(`State "${v.name}": screenshot position ${why === "unverifiable-expanded-viewport" ? "unverifiable (expanded action viewport)" : "verified OUTSIDE the target"}; it is attached hidden as evidence only`);
       }
       if (variants.length) page.states = { reactions: variants.length > 1 ? ctx.reactions : "none", variants };
     }
@@ -9583,6 +9636,99 @@ var init_convertStates = __esm({
     isObj = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
     fin = (v) => typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= 1e5 ? v : null;
     note = (s) => cleanText(s, LIMITS.maxNoteChars);
+  }
+});
+
+// src/hifi/segments.ts
+function segOf(y, count) {
+  return Math.min(count - 1, Math.max(0, Math.floor(y / SEG)));
+}
+function splitTallPage(page) {
+  if (page.height <= SEG) return [page];
+  const count = Math.min(LIMITS.hifiMaxPageSegments, Math.ceil(page.height / SEG));
+  const clips = page.clips ?? [];
+  const clipSeg = clips.map((c) => segOf(c.y, count));
+  const out = [];
+  for (let k = 0; k < count; k++) {
+    const y0 = k * SEG;
+    const h = Math.min(SEG, page.height - y0);
+    const keep = [];
+    page.nodes.forEach((n, i) => {
+      if (segOf(n.y, count) === k) keep.push(i);
+    });
+    const index = new Map(keep.map((old, j) => [old, j]));
+    const segClips = clips.map((c, ci) => ({ c, ci })).filter((x) => clipSeg[x.ci] === k);
+    const clipIndex = new Map(segClips.map((x, j) => [x.ci, j]));
+    let spanning = 0;
+    const nodes = keep.map((i) => {
+      const n = { ...page.nodes[i], y: page.nodes[i].y - y0 };
+      if (n.y + n.h > h) spanning++;
+      if (n.clip !== void 0 && n.clip >= 0) {
+        const c = clipIndex.get(n.clip);
+        if (c === void 0) delete n.clip;
+        else n.clip = c;
+      }
+      if (n.kind === "text") n.button = n.button >= 0 ? index.get(n.button) ?? -1 : -1;
+      return n;
+    });
+    const note2 = cleanText(`Segment ${k + 1}/${count} of a ${Math.round(page.height)}px document (y ${y0}-${y0 + h}); split because page frames are bounded at ${SEG}px${spanning ? `; ${spanning} node(s) extend past this segment and are clipped` : ""}`, LIMITS.maxNoteChars);
+    const seg = {
+      ...page,
+      title: cleanText(`${page.title} (part ${k + 1}/${count})`, LIMITS.maxTitleChars),
+      height: h,
+      truncated: k === count - 1 ? page.truncated : false,
+      nodes,
+      warnings: k === 0 ? page.warnings : [],
+      notes: [...k === 0 ? page.notes ?? [] : [], note2].slice(0, LIMITS.hifiMaxWarnings),
+      segment: { index: k, count, offsetY: y0, sourceHeight: page.height }
+    };
+    if (segClips.length) seg.clips = segClips.map((x) => ({ ...x.c, y: x.c.y - y0 }));
+    else delete seg.clips;
+    const inst = (page.instances ?? []).filter((x) => segOf(x.y, count) === k).map((x) => ({ ...x, y: x.y - y0 }));
+    if (inst.length) seg.instances = inst;
+    else delete seg.instances;
+    const media2 = (page.media ?? []).filter((m) => segOf(m.y, count) === k).map((m) => ({ ...m, y: m.y - y0 }));
+    if (media2.length) seg.media = media2;
+    else delete seg.media;
+    if (k > 0) {
+      seg.referenceAssetId = null;
+      delete seg.referenceTiles;
+      delete seg.states;
+      delete seg.freeze;
+      delete seg.motion;
+      delete seg.normalization;
+    }
+    out.push(seg);
+  }
+  return out;
+}
+function splitTallPages(pages, warn) {
+  const out = [];
+  for (const p of pages) {
+    const segs = splitTallPage(p);
+    segs.forEach((s, i) => out.push({ page: s, oldId: p.id, first: i === 0 }));
+  }
+  if (out.length > LIMITS.hifiMaxPages) {
+    warn(`Page segments exceed the ${LIMITS.hifiMaxPages}-page bound; ${out.length - LIMITS.hifiMaxPages} trailing segment(s) omitted`);
+    out.length = LIMITS.hifiMaxPages;
+  }
+  const newId = /* @__PURE__ */ new Map();
+  out.forEach((x, i) => {
+    if (x.first) newId.set(x.oldId, `p${i}`);
+  });
+  return out.map((x, i) => ({
+    ...x.page,
+    id: `p${i}`,
+    parentId: x.first ? x.page.parentId ? newId.get(x.page.parentId) ?? null : null : newId.get(x.oldId) ?? null
+  }));
+}
+var SEG;
+var init_segments = __esm({
+  "src/hifi/segments.ts"() {
+    "use strict";
+    init_limits();
+    init_text();
+    SEG = LIMITS.hifiMaxPageHeight;
   }
 });
 
@@ -9779,10 +9925,15 @@ function convertCapture(input) {
     const clips = containers.map((c) => ({ x: c.x, y: c.y, w: c.w, h: c.h, name: `Overflow clip / ${c.tag}` }));
     const clipOf = (src2, r) => src2 ? memberOf(src2, r, containers, facts) : innermost(r, containers);
     if (clips.length) notes.push(`${clips.length} measured container(s) clip horizontally overflowing content (static; not scrollable)`);
-    if (height > LIMITS.hifiMaxPageHeight) {
-      warn(warnings, `Height ${height}px exceeds ${LIMITS.hifiMaxPageHeight}px; content below is truncated`);
-      height = LIMITS.hifiMaxPageHeight;
+    const maxH = LIMITS.hifiMaxPageHeight * LIMITS.hifiMaxPageSegments;
+    if (height > maxH) {
+      warn(warnings, `Height ${height}px exceeds ${maxH}px (${LIMITS.hifiMaxPageSegments} segments); content below is truncated`);
+      height = maxH;
       truncated = true;
+    }
+    const vhMeasured = isObj2(m.viewport) ? fin2(m.viewport.height) : null;
+    if (vhMeasured !== null && vhMeasured > 4320) {
+      warn(warnings, `Measured CSS viewport ${round(vw)}x${round(vhMeasured)} is taller than any documented screenshot viewport (7680x4320): the provider's action viewport was expanded, so viewport-relative (vh) layout may be distorted and viewport screenshots show only the page top; document height ${height}px is used for the frame`);
     }
     const inPage = (r) => r.y < height;
     const boxC = [];
@@ -10086,6 +10237,7 @@ function convertCapture(input) {
       warn: (w) => warn(docWarnings, w)
     });
   }
+  if (!input.nested) doc.pages = splitTallPages(doc.pages, (w) => warn(docWarnings, w));
   const v = validateHifiDoc(doc);
   if (!v.ok) throw new CaptureError(`Internal error: converted document failed validation:
 ${v.errors.join("\n")}`);
@@ -10181,6 +10333,7 @@ var init_convert = __esm({
     init_canonicalize();
     init_build();
     init_convertStates();
+    init_segments();
     CaptureError = class extends Error {
     };
     isObj2 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -10361,7 +10514,7 @@ var init_hifiSynthetic = __esm({
 });
 
 // src/states/scripts.ts
-var FREEZE_JS, SCROLL_JS, STATE_JS, REVERT_JS;
+var FREEZE_JS, SCROLL_JS, APPLY_JS, STATE_JS, REVERT_JS;
 var init_scripts = __esm({
   "src/states/scripts.ts"() {
     "use strict";
@@ -10396,11 +10549,10 @@ var init_scripts = __esm({
   const gap = Math.round(maxY / n);
   return { w2f: "scroll", step: k, steps: n, y, scrollHeight: document.documentElement.scrollHeight, viewportHeight: vh, maxGapPx: gap, coverageComplete: gap <= vh, cappedByMaxPx: document.documentElement.scrollHeight - vh > maxPx };
 })();`;
-    STATE_JS = String.raw`(function w2fState() {
+    APPLY_JS = String.raw`(function w2fApply() {
   const STATE = __STATE__;
-  const MAX = { elements: 20000, texts: 20000, images: 500, svgs: 200, rules: 200, media: 50, fixed: 50, match: 5 };
-  const MAX_RETURN_CHARS = __MAX_RETURN_CHARS__;
-  const out = { w2f: "state", seq: STATE.seq, name: STATE.name, provenance: STATE.provenance, applied: [], missing: [], refused: [], trigger: null };
+  const MAX = { match: 5 };
+  const out = { w2f: "apply", seq: STATE.seq, name: STATE.name, provenance: STATE.provenance, applied: [], missing: [], refused: [], trigger: null, error: null, scrollY: null };
   const ATTRS = { "open": ["details"], "aria-expanded": null, "aria-selected": null, "aria-hidden": null, "hidden": null, "data-state": null };
   window.__w2fRevert = [];
   const revertNow = () => { let n = 0; const list = window.__w2fRevert || []; window.__w2fRevert = []; for (const op of list.reverse()) { try { if (op[0] === "attr") { if (op[3] === null) op[1].removeAttribute(op[2]); else op[1].setAttribute(op[2], op[3]); } else if (op[0] === "class") op[1].classList.remove(op[2]); else if (op[0] === "swiper") op[1].slidePrev(0); n++; } catch (e) {} } return n; };
@@ -10429,8 +10581,6 @@ var init_scripts = __esm({
       out.applied.push({ selector: m.selector, mechanism: m.mechanism });
     }
   }
-  const imgsAll = Array.from(document.images).slice(0, 5000);
-  const readiness = { readyState: document.readyState, fontsStatus: document.fonts ? document.fonts.status : null, images: imgsAll.length, imagesIncomplete: imgsAll.filter((i) => !i.complete).length, lazyImages: imgsAll.filter((i) => i.loading === "lazy").length };
   if (STATE.trigger === "swiper-next") {
     // Page API only: exactly one element, bound to its own Swiper instance by
     // Swiper's mount (el.swiper === instance, instance.el === el), not inside a
@@ -10464,6 +10614,27 @@ var init_scripts = __esm({
       if (!t.moved) out.refused.push({ selector: STATE.selector, reason: "slideNext did not move the slider" });
     }
   }
+  let target = null;
+  if (STATE.scope) { try { target = document.querySelector(STATE.scope); } catch (e) { out.refused.push({ selector: STATE.scope, reason: "invalid scope selector" }); } if (!target) out.missing.push(STATE.scope); }
+  if (target && typeof target.scrollIntoView === "function") target.scrollIntoView({ block: "start", inline: "nearest" });
+  else if (target) { const r = target.getBoundingClientRect(); window.scrollTo(0, Math.max(0, r.top + (window.scrollY || 0))); }
+  else window.scrollTo(0, 0);
+  out.scrollY = window.scrollY || 0;
+  return out;
+  } catch (e) {
+    // Apply failed: revert immediately so later steps see the pre-state page.
+    return { ...out, error: String(e && e.message || e).slice(0, 200), reverted: revertNow() };
+  }
+})();`;
+    STATE_JS = String.raw`(function w2fState() {
+  const STATE = __STATE__;
+  const MAX = { elements: 20000, texts: 20000, images: 500, svgs: 200, rules: 200, media: 50, fixed: 50 };
+  const MAX_RETURN_CHARS = __MAX_RETURN_CHARS__;
+  const MAX_SCREENSHOT_VIEWPORT_H = 4320;
+  const out = { w2f: "state", seq: STATE.seq, name: STATE.name, provenance: STATE.provenance, missing: [] };
+  try {
+  const imgsAll = Array.from(document.images).slice(0, 5000);
+  const readiness = { readyState: document.readyState, fontsStatus: document.fonts ? document.fonts.status : null, images: imgsAll.length, imagesIncomplete: imgsAll.filter((i) => !i.complete).length, lazyImages: imgsAll.filter((i) => i.loading === "lazy").length };
   const bounds = (e) => { const b = e.getBoundingClientRect(); return { x: b.x + scrollX, y: b.y + scrollY, w: b.width, h: b.height }; };
   const props = ["backgroundColor","color","fontFamily","fontSize","fontWeight","fontStyle","lineHeight","textDecorationLine","borderTopWidth","borderRightWidth","borderBottomWidth","borderLeftWidth","borderTopColor","borderRightColor","borderBottomColor","borderLeftColor","borderRadius","opacity","display","visibility","position","paddingTop","paddingRight","paddingBottom","paddingLeft","objectFit"];
   const styles = (e) => { const c = getComputedStyle(e); const o = {}; for (const k of props) o[k] = c[k]; return o; };
@@ -10512,19 +10683,25 @@ var init_scripts = __esm({
   mediaOf("canvas", "canvas", (e) => { let webgl = false; try { webgl = !!(e.getContext && (e.getContext("webgl2") || e.getContext("webgl"))); } catch (x) {} return { webgl }; });
   mediaOf("lottie-player, dotlottie-player, [data-animation-path]", "lottie", () => ({}));
   mediaOf("iframe", "iframe", (e) => ({ src: String(e.src || "").slice(0, 2048) || null }));
-  let scope = null, shotY = 0;
-  if (STATE.scope) { const s = document.querySelector(STATE.scope); if (s) { scope = bounds(s); window.scrollTo(0, Math.max(0, scope.y - 40)); shotY = window.scrollY || 0; } else out.missing.push(STATE.scope); }
-  if (!scope) { window.scrollTo(0, 0); shotY = window.scrollY || 0; }
-  const result = { ...out, readiness, scope, screenshotScrollY: shotY, viewport: { width: innerWidth, height: innerHeight }, measured: { url: location.href, viewport: { width: innerWidth, height: innerHeight }, title: document.title, elements, texts, images, svgs }, fixed, motion, media, truncated: false };
+  const vh = window.innerHeight || 0, vw = window.innerWidth || 0;
+  const docH = Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0);
+  const expanded = vh > MAX_SCREENSHOT_VIEWPORT_H;
+  let scope = null, target = null;
+  if (STATE.scope) {
+    let s = null; try { s = document.querySelector(STATE.scope); } catch (e) {}
+    if (s) { scope = bounds(s); const r = s.getBoundingClientRect(); target = { selector: STATE.scope, viewTop: r.top, viewBottom: r.bottom, inViewport: !expanded && r.top >= -1 && r.bottom <= vh + 1, partiallyVisible: !expanded && r.bottom > 0 && r.top < vh }; }
+    else out.missing.push(STATE.scope);
+  }
+  const verify = { scrollY: window.scrollY || 0, viewport: { width: vw, height: vh }, documentHeight: docH, expandedViewport: expanded, target };
+  const result = { ...out, readiness, scope, verify, screenshotScrollY: verify.scrollY, viewport: { width: vw, height: vh }, documentHeight: docH, measured: { url: location.href, viewport: { width: vw, height: vh }, documentHeight: docH, title: document.title, elements, texts, images, svgs }, fixed, motion, media, truncated: false };
   // Byte bound: drop measurement tails (largest first) until the return fits.
   for (const k of ["texts", "elements", "svgs", "images"]) {
     while (JSON.stringify(result).length > MAX_RETURN_CHARS && result.measured[k].length) { result.measured[k].length = Math.floor(result.measured[k].length / 2); result.truncated = true; }
   }
-  if (JSON.stringify(result).length > MAX_RETURN_CHARS) return { ...out, error: "return exceeds byte bound", reverted: revertNow() };
+  if (JSON.stringify(result).length > MAX_RETURN_CHARS) return { ...out, error: "return exceeds byte bound" };
   return result;
   } catch (e) {
-    // Apply/measure failed: revert immediately so later steps see the baseline.
-    return { ...out, error: String(e && e.message || e).slice(0, 200), reverted: revertNow() };
+    return { ...out, error: String(e && e.message || e).slice(0, 200) };
   }
 })();`;
     REVERT_JS = String.raw`(function w2fRevert() {
@@ -10603,7 +10780,7 @@ function parseStatePlan(json) {
   const pages = json.pages.map((raw, i) => {
     const p = `pages[${i}]`;
     if (!isObj3(raw)) throw new StatePlanError(`${p}: expected object`);
-    keys(raw, p, ["url", "waitMs", "lazy", "states", "manual"]);
+    keys(raw, p, ["url", "waitMs", "settleMs", "lazy", "states", "manual"]);
     let url2;
     try {
       url2 = parseHttpUrl(String(raw.url));
@@ -10661,7 +10838,9 @@ function parseStatePlan(json) {
       return { name: name(m.name, `${q}.name`), selector: selector(m.selector, `${q}.selector`), reason };
     });
     const reveal = states.find((x) => x.trigger === "scroll-reveal");
-    states[0].scope = reveal ? null : states.find((x) => x.scope)?.scope ?? null;
+    const firstScope = states.find((x) => x.scope)?.scope ?? null;
+    states[0].scope = reveal ? null : firstScope;
+    states[0].measureScope = firstScope;
     if (reveal && lazy.steps === 0) throw new StatePlanError(`${p}: a "scroll-reveal" state needs lazy.steps >= 1`);
     if (states.length + manual.length > STATE_LIMITS.maxStatesPerPage) {
       throw new StatePlanError(`${p}: ${states.length} planned + ${manual.length} manual states exceed ${STATE_LIMITS.maxStatesPerPage} total (baseline included)`);
@@ -10669,6 +10848,7 @@ function parseStatePlan(json) {
     return {
       url: url2.href,
       waitMs: int(raw.waitMs, `${p}.waitMs`, 2e3, 0, STATE_LIMITS.maxPageWaitMs),
+      settleMs: int(raw.settleMs, `${p}.settleMs`, 600, 1, STATE_LIMITS.maxStateSettleMs),
       lazy,
       states,
       manual
@@ -10712,7 +10892,10 @@ function buildStateRequest(plan, page) {
   page.states.forEach((s, seq) => {
     if (seq === revealAt) scrollSteps();
     const provenance = provenanceOf(s);
-    push("state", { type: "executeJavascript", script: fill(STATE_JS, { STATE: { seq, name: s.name, provenance, scope: s.scope, mutations: s.mutations, trigger: s.trigger ?? null, selector: s.selector ?? null }, MAX_RETURN_CHARS: STATE_LIMITS.maxStateReturnChars }) }, { state: s.name, seq });
+    const payload = { seq, name: s.name, provenance, scope: s.scope, mutations: s.mutations, trigger: s.trigger ?? null, selector: s.selector ?? null };
+    push("apply", { type: "executeJavascript", script: fill(APPLY_JS, { STATE: payload }) }, { state: s.name, seq });
+    wait(page.settleMs);
+    push("state", { type: "executeJavascript", script: fill(STATE_JS, { STATE: { seq, name: s.name, provenance, scope: s.measureScope ?? s.scope }, MAX_RETURN_CHARS: STATE_LIMITS.maxStateReturnChars }) }, { state: s.name, seq });
     push("screenshot", { type: "screenshot", fullPage: false }, { state: s.name, seq });
     push("scrape", { type: "scrape" }, { state: s.name, seq });
     states.push({ seq, name: s.name, provenance, review: REVIEW[provenance], screenshotIndex: shots, scrapeIndex: shots });
@@ -10763,7 +10946,7 @@ var init_plan = __esm({
     STATE_LIMITS = {
       providerMaxActions: 50,
       providerMaxCombinedWaitMs: 6e4,
-      defaultMaxActions: 20,
+      defaultMaxActions: 30,
       defaultMaxCombinedWaitMs: 3e4,
       maxPages: 3,
       maxStatesPerPage: 3,
@@ -10777,6 +10960,8 @@ var init_plan = __esm({
       maxLazyPx: 3e4,
       maxLazyStepWaitMs: 2e3,
       maxVisibilityMs: 5e3,
+      // provider wait between a state's apply (+ scroll into view) and its measurement
+      maxStateSettleMs: 5e3,
       // Request timeout = min(max, base + 2 x combined waits + per-state); the
       // combined wait never exceeds half of it (mirrors the provider's waitFor rule).
       requestTimeoutBaseMs: 2e4,
@@ -10833,12 +11018,14 @@ function adaptTaggedReturns(data, name3) {
   const warnings = [];
   const out = { baseline: null, states: [], freeze: null, lazy: null, warnings, screenshotHints: [] };
   const reverts = /* @__PURE__ */ new Map();
+  const applies = /* @__PURE__ */ new Map();
   const bySeq = /* @__PURE__ */ new Map();
   for (const v of values) {
     if (v.w2f === "freeze" && !out.freeze) out.freeze = v;
     else if (v.w2f === "lazy" && !out.lazy) out.lazy = v;
     else if (v.w2f === "scroll") out.lazy = { w2f: "lazy", steps: v.steps, finalY: v.y, coverageComplete: v.coverageComplete === true && (out.lazy?.coverageComplete ?? true) !== false };
     else if (v.w2f === "revert" && typeof v.seq === "number") reverts.set(v.seq, v);
+    else if (v.w2f === "apply" && typeof v.seq === "number") applies.set(v.seq, v);
     else if (v.w2f === "state" && typeof v.seq === "number" && Number.isInteger(v.seq) && v.seq >= 0 && v.seq < STATE_LIMITS.maxStatesPerPage) {
       if (bySeq.has(v.seq)) {
         warnings.push(`${name3}: duplicate state seq ${v.seq} ignored`);
@@ -10861,7 +11048,9 @@ function adaptTaggedReturns(data, name3) {
   if (!htmlAssociated && scrapes.length) warnings.push(`${name3}: ${scrapes.length} scrape(s) for ${n} state return(s); per-state HTML NOT associated`);
   let tainted = null;
   for (const seq of [...bySeq.keys()].sort((a, b) => a - b)) {
-    const s = bySeq.get(seq);
+    const m = bySeq.get(seq);
+    const a = applies.get(seq);
+    const s = a ? { ...m, applied: a.applied, refused: a.refused, trigger: a.trigger, error: typeof a.error === "string" && a.error || m.error, missing: [...Array.isArray(a.missing) ? a.missing : [], ...Array.isArray(m.missing) ? m.missing : []] } : m;
     const synthetic = s.provenance === "synthetic";
     const known = seq === 0 || ["synthetic", "scroll-triggered", "page-api"].includes(String(s.provenance));
     const needsRevert = synthetic || s.provenance === "page-api";
@@ -10870,6 +11059,8 @@ function adaptTaggedReturns(data, name3) {
       name: typeof s.name === "string" ? s.name.slice(0, 40) : `State ${seq}`,
       provenance: seq === 0 ? "baseline" : ["synthetic", "scroll-triggered", "page-api"].includes(String(s.provenance)) ? s.provenance : "invalid",
       trigger: isObj4(s.trigger) ? s.trigger : null,
+      verify: isObj4(s.verify) ? s.verify : null,
+      documentHeight: typeof s.documentHeight === "number" ? s.documentHeight : null,
       scope: isObj4(s.scope) ? s.scope : null,
       screenshotScrollY: typeof s.screenshotScrollY === "number" ? s.screenshotScrollY : null,
       viewport: isObj4(s.viewport) ? s.viewport : null,
@@ -11029,6 +11220,18 @@ function syntheticStateResponse(opts = {}) {
     opts.errorState ? { w2f: "state", seq: 1, name: "FAQ open", provenance: "synthetic", applied: [], missing: [], refused: [], error: "boom", reverted: 1 } : state(1, "FAQ open", "faq", { ...faqScope, h: 140 }, [{ selector: "#faq details", mechanism: "details-open" }]),
     state(2, "Tab two", "tab", null, [{ selector: "#tab2", mechanism: "attribute-set" }])
   ];
+  const split = (v) => {
+    const { applied, refused, missing, error, reverted: _r, trigger, ...rest } = v;
+    const apply = { w2f: "apply", seq: v.seq, name: v.name, provenance: v.provenance, applied: applied ?? [], refused: refused ?? [], missing: missing ?? [], trigger: trigger ?? null, error: error ?? null, scrollY: v.screenshotScrollY ?? 0 };
+    const scope = v.scope;
+    const sy = typeof v.screenshotScrollY === "number" ? v.screenshotScrollY : 0;
+    const measure = error ? { w2f: "state", seq: v.seq, name: v.name, provenance: v.provenance, missing: [], ...synthMeasure(v.seq) } : { ...rest, w2f: "state", missing: [], verify: { scrollY: sy, viewport: { width: 800, height: 600 }, documentHeight: 700, expandedViewport: false, target: scope ? { selector: "#scope", viewTop: scope.y - sy, viewBottom: scope.y + scope.h - sy, inViewport: true, partiallyVisible: true } : null }, documentHeight: 700 };
+    return [{ type: "object", value: apply }, { type: "object", value: measure }];
+  };
+  const synthMeasure = (seq) => {
+    const m = state(seq, "x", "none", null, []);
+    return { measured: m.measured, viewport: m.viewport, screenshotScrollY: 0, scope: null, readiness: m.readiness, truncated: false };
+  };
   const shots = ["https://example.com/shot-0.png", "https://example.com/shot-1.png", "https://example.com/shot-2.png"];
   return {
     success: true,
@@ -11039,10 +11242,10 @@ function syntheticStateResponse(opts = {}) {
         javascriptReturns: [
           { type: "object", value: { w2f: "freeze", attempted: ["css-animations-transitions", "web-animations", "video-pause", "swiper-autoplay-stop", "force-aos-visible"], applied: { "css-animations-transitions": 1, "web-animations": 3, "video-pause": 1, "swiper-autoplay-stop": 0, "force-aos-visible": 2 }, unavailable: [], modifications: ["forced .aos-animate on 2 element(s) (not the page's original visibility)"], notFrozen: ["JS timers", "requestAnimationFrame loops", "WebGL/canvas rendering"] } },
           ...[1, 2, 3].map((k) => ({ type: "object", value: { w2f: "scroll", step: k, steps: 3, y: k * 33, scrollHeight: 700, viewportHeight: 600, maxGapPx: 33, coverageComplete: true, cappedByMaxPx: false } })),
-          { type: "object", value: states[0] },
-          { type: "object", value: states[1] },
+          ...split(states[0]),
+          ...split(states[1]),
           { type: "object", value: { w2f: "revert", seq: 1, reverted: opts.errorState ? 0 : 1, failed: opts.failRevert ? 1 : 0 } },
-          { type: "object", value: states[2] },
+          ...split(states[2]),
           { type: "object", value: { w2f: "revert", seq: 2, reverted: 1, failed: 0 } }
         ],
         screenshots: opts.dropScreenshot ? shots.slice(0, 2) : shots,
@@ -41338,13 +41541,13 @@ async function validateStateResponse(doc, r, resolver) {
   const returns = actions && Array.isArray(actions.javascriptReturns) ? actions.javascriptReturns : null;
   const shots = actions && Array.isArray(actions.screenshots) ? actions.screenshots : null;
   const scrapes = actions && Array.isArray(actions.scrapes) ? actions.scrapes : null;
-  const jsRoles = r.roles.filter((x) => x.role === "freeze" || x.role === "scroll" || x.role === "state" || x.role === "revert");
+  const jsRoles = r.roles.filter((x) => x.role === "freeze" || x.role === "scroll" || x.role === "apply" || x.role === "state" || x.role === "revert");
   const scrolls = [];
   if (!returns || returns.length !== jsRoles.length) return reject("ambiguous", `expected ${jsRoles.length} javascriptReturns, got ${returns ? returns.length : "none"} (possibly a partial run or unawaited async script)`);
   for (const [i, role2] of jsRoles.entries()) {
     const v = isObj6(returns[i]) ? returns[i].value : void 0;
     if (!isObj6(v) || v.w2f !== role2.role) return reject("ambiguous", `javascriptReturns[${i}] is not the expected "${role2.role}" result`);
-    if ((role2.role === "state" || role2.role === "revert") && v.seq !== role2.seq) return reject("ambiguous", `javascriptReturns[${i}] has seq ${String(v.seq)}, expected ${role2.seq}`);
+    if ((role2.role === "apply" || role2.role === "state" || role2.role === "revert") && v.seq !== role2.seq) return reject("ambiguous", `javascriptReturns[${i}] has seq ${String(v.seq)}, expected ${role2.seq}`);
     if (role2.role === "freeze") out.freeze = v;
     if (role2.role === "scroll") scrolls.push(v);
   }
@@ -41356,7 +41559,9 @@ async function validateStateResponse(doc, r, resolver) {
   if (!shots || shots.length !== r.states.length || !shots.every((s) => typeof s === "string" && s.length <= LIMITS.maxUrlChars)) return reject("ambiguous", `expected ${r.states.length} screenshots`);
   if (!scrapes || scrapes.length !== r.states.length) return reject("ambiguous", `expected ${r.states.length} scrapes`);
   for (const s of r.states) {
-    const v = returns.find((x) => isObj6(x) && isObj6(x.value) && x.value.w2f === "state" && x.value.seq === s.seq).value;
+    const measuredV = returns.find((x) => isObj6(x) && isObj6(x.value) && x.value.w2f === "state" && x.value.seq === s.seq).value;
+    const applyV = returns.find((x) => isObj6(x) && isObj6(x.value) && x.value.w2f === "apply" && x.value.seq === s.seq).value;
+    const v = { ...measuredV, applied: applyV.applied, refused: applyV.refused, trigger: applyV.trigger, error: typeof applyV.error === "string" && applyV.error || measuredV.error, missing: [...Array.isArray(applyV.missing) ? applyV.missing : [], ...Array.isArray(measuredV.missing) ? measuredV.missing : []] };
     const rv = returns.find((x) => isObj6(x) && isObj6(x.value) && x.value.w2f === "revert" && x.value.seq === s.seq);
     const rvv = rv && isObj6(rv.value) ? rv.value : null;
     if (v.name !== s.name) return reject("ambiguous", `state ${s.seq} returned name ${String(v.name)}`);
@@ -41368,6 +41573,9 @@ async function validateStateResponse(doc, r, resolver) {
       if (!t || t.valid !== true) out.warnings.push(`state "${s.name}": page-API trigger refused (${t && typeof t.reason === "string" ? t.reason : "no trigger report"}); this variant equals the pre-trigger page`);
       else if (t.moved !== true) out.warnings.push(`state "${s.name}": Swiper did not move`);
     }
+    const vf = isObj6(v.verify) ? v.verify : null;
+    if (vf && vf.expandedViewport === true) out.warnings.push(`state "${s.name}": action viewport ${isObj6(vf.viewport) ? `${String(vf.viewport.width)}x${String(vf.viewport.height)}` : "?"} is taller than any documented screenshot viewport; screenshot position cannot be verified (likely shows the page top)`);
+    else if (vf && isObj6(vf.target) && vf.target.inViewport !== true) out.warnings.push(`state "${s.name}": target ${String(vf.target.selector)} was not fully inside the viewport after scrolling (viewTop ${String(vf.target.viewTop)})`);
     if (s.seq === 0 && isObj6(v.readiness)) {
       out.readiness = v.readiness;
       if (typeof v.readiness.imagesIncomplete === "number" && v.readiness.imagesIncomplete > 0) out.warnings.push(`${v.readiness.imagesIncomplete} image(s) still incomplete at baseline measurement`);
@@ -41688,6 +41896,147 @@ var init_acquire = __esm({
         });
       }
     };
+  }
+});
+
+// plugin/src/render/renderer.ts
+var buttonLabelOf;
+var init_renderer = __esm({
+  "plugin/src/render/renderer.ts"() {
+    "use strict";
+    init_svgSanitize();
+    init_fonts();
+    buttonLabelOf = (nodes, i) => nodes.find((t) => t.kind === "text" && t.button === i)?.text.trim() ?? null;
+  }
+});
+
+// src/connector/jobs.ts
+import { createHash as createHash6 } from "node:crypto";
+function prune(doc, pages, keepComponents) {
+  const used = /* @__PURE__ */ new Set();
+  const nodeAssets = (nodes) => {
+    for (const n of nodes) if (n.kind === "image" && n.assetId) used.add(n.assetId);
+  };
+  if (keepComponents) for (const c of doc.components ?? []) nodeAssets(c.nodes);
+  for (const p of pages) {
+    nodeAssets(p.nodes);
+    for (const v of p.states?.variants ?? []) nodeAssets(v.nodes);
+    for (const m of p.media ?? []) if (m.stillAssetId) used.add(m.stillAssetId);
+    if (p.referenceAssetId) used.add(p.referenceAssetId);
+    for (const t of p.referenceTiles?.tiles ?? []) used.add(t.assetId);
+    for (const v of p.states?.variants ?? []) if (v.referenceAssetId) used.add(v.referenceAssetId);
+  }
+  return {
+    ...doc,
+    assets: doc.assets.filter((a) => used.has(a.id)).map((a) => ({ ...a, dataBase64: "" })),
+    pages,
+    ...keepComponents && doc.components ? { components: doc.components } : { components: void 0 }
+  };
+}
+function docKey(doc) {
+  return sha2(JSON.stringify({ ...doc, assets: doc.assets.map((a) => a.sha256) })).slice(0, 12);
+}
+function phaseIndices(page) {
+  const clipOf = (n) => n.clip !== void 0 && n.clip >= 0 ? n.clip : -1;
+  const un = [];
+  const cl = [];
+  const tx = [];
+  page.nodes.forEach((n, i) => (n.kind === "text" ? tx : clipOf(n) >= 0 ? cl : un).push(i));
+  return [
+    { phase: "unclipped", indices: un },
+    { phase: "clipped", indices: cl },
+    { phase: "text", indices: tx }
+  ];
+}
+function parseImageHashMap(json) {
+  const o = json;
+  if (o?.schema !== "website-to-figma/connector-image-hashes" || o.schemaVersion !== 1 || typeof o.hashes !== "object" || o.hashes === null || Array.isArray(o.hashes)) {
+    throw new Error('image hash map: expected { schema: "website-to-figma/connector-image-hashes", schemaVersion: 1, hashes: { "<asset sha256>": "<40-hex Figma image hash>" } }');
+  }
+  const out = {};
+  for (const [k, v] of Object.entries(o.hashes)) {
+    if (!/^[0-9a-f]{64}$/.test(k) || typeof v !== "string" || !/^[0-9a-f]{40}$/.test(v)) throw new Error(`image hash map: invalid entry ${JSON.stringify(k)}`);
+    out[k] = v;
+  }
+  return out;
+}
+function planConnectorJobs(doc, bundle, opts = {}) {
+  const max = opts.maxJobChars ?? DEFAULT_MAX_JOB_CHARS;
+  const key = docKey(doc);
+  const rootName = `website-to-figma \xB7 Hi-fi (measured) \xB7 ${doc.site.host} [w2f ${key}]`;
+  const jobs = [];
+  const mk = (input, note2) => {
+    const bySha = opts.imageHashesBySha ?? {};
+    const mapped = {};
+    for (const a of input.doc.assets) if (bySha[a.sha256]) mapped[a.id] = bySha[a.sha256];
+    if (Object.keys(mapped).length) input = { ...input, imageHashes: mapped };
+    const script = `${bundle}
+return await W2F.runJob(${JSON.stringify(input)}, $fig, figma);
+`;
+    const n = jobs.length + 1;
+    const file = `job-${String(n).padStart(3, "0")}-${input.kind}${input.pageId ? `-${input.pageId}` : ""}${input.batch ? `-${input.batch.phase}` : ""}.js`;
+    return { file, kind: input.kind, pageId: input.pageId ?? null, chars: script.length, sha256: sha2(script), script, note: note2 };
+  };
+  const base = { schema: "website-to-figma/connector-job", schemaVersion: 1, rootName, originX: opts.originX ?? 0 };
+  const push = (j) => {
+    if (j.chars > max) throw new Error(`${j.file}: ${j.chars} chars exceeds --max-job-chars ${max} (the renderer bundle alone is ${bundle.length})`);
+    jobs.push(j);
+  };
+  push(mk({ ...base, kind: "root", doc: prune(doc, [], true) }, "root frame, intro, shared components"));
+  for (const page of doc.pages) {
+    const d = prune(doc, [page], true);
+    const whole = mk({ ...base, kind: "page", pageId: page.id, withNodes: true, doc: d }, `page ${page.path}${page.segment ? ` part ${page.segment.index + 1}` : ""} (shell, nodes, states)`);
+    if (whole.chars <= max) {
+      push(whole);
+      continue;
+    }
+    const shellPage = { ...page, nodes: [] };
+    push(mk({ ...base, kind: "page", pageId: page.id, withNodes: false, doc: prune(doc, [shellPage], true) }, `page ${page.path} shell`));
+    let firstClipped = true;
+    for (const ph of phaseIndices(page)) {
+      if (ph.phase === "clipped" && ph.indices.length === 0 && (page.clips?.length ?? 0) > 0) {
+        push(mk({ ...base, kind: "nodes", pageId: page.id, doc: prune(doc, [{ ...page, nodes: [], states: void 0, instances: void 0, media: void 0 }], false), batch: { phase: "clipped", orig: [], createClips: true, buttonLabels: {}, buttonBoxes: {} } }, `page ${page.path} clip frames`));
+        firstClipped = false;
+        continue;
+      }
+      let start = 0;
+      while (start < ph.indices.length) {
+        let end = Math.min(ph.indices.length, start + 400);
+        let job;
+        for (; ; ) {
+          const orig = ph.indices.slice(start, end);
+          const sub = orig.map((i) => page.nodes[i]);
+          const buttonLabels = {};
+          const buttonBoxes = {};
+          for (const [k, n] of sub.entries()) {
+            if (n.kind === "box" && n.role === "button") buttonLabels[String(orig[k])] = buttonLabelOf(page.nodes, orig[k]);
+            if (n.kind === "text" && n.button >= 0) {
+              const box3 = page.nodes[n.button];
+              buttonLabels[String(n.button)] = buttonLabelOf(page.nodes, n.button);
+              buttonBoxes[String(n.button)] = { x: box3.x, y: box3.y };
+            }
+          }
+          const batchPage = { ...page, nodes: sub, states: void 0, instances: void 0, media: void 0 };
+          job = mk({ ...base, kind: "nodes", pageId: page.id, doc: prune(doc, [batchPage], false), batch: { phase: ph.phase, orig, createClips: ph.phase === "clipped" && firstClipped, buttonLabels, buttonBoxes } }, `page ${page.path} ${ph.phase} nodes ${start}-${end - 1}`);
+          if (job.chars <= max || end - start <= 1) break;
+          end = start + Math.max(1, Math.floor((end - start) / 2));
+        }
+        push(job);
+        if (ph.phase === "clipped") firstClipped = false;
+        start = end;
+      }
+    }
+  }
+  push(mk({ ...base, kind: "edges", doc: prune(doc, doc.pages.map((p) => ({ ...p, nodes: [], states: void 0 })), false) }, "sitemap edges and final root size"));
+  return { jobs, rootName, key };
+}
+var DEFAULT_MAX_JOB_CHARS, sha2;
+var init_jobs = __esm({
+  "src/connector/jobs.ts"() {
+    "use strict";
+    init_renderer();
+    DEFAULT_MAX_JOB_CHARS = 5e4;
+    sha2 = (s) => createHash6("sha256").update(s).digest("hex");
   }
 });
 
@@ -42048,6 +42397,7 @@ var init_firecrawl = __esm({
 var cli_exports = {};
 import { existsSync, mkdirSync as mkdirSync2, readdirSync, writeFileSync } from "node:fs";
 import { dirname as dirname3, join as join2, resolve as resolve4 } from "node:path";
+import { createHash as createHash7 } from "node:crypto";
 function parseFlags(args) {
   const positional = [];
   const flags = /* @__PURE__ */ new Map();
@@ -42058,7 +42408,7 @@ function parseFlags(args) {
     const a = args[i];
     if (a === "--yes" || a === "--help" || a === "-h" || a === "--no-map" || a === "--confirm-existing-credits" || a === "--confirm-no-topup" || a === "--acknowledge-synthetic-modifications") {
       flags.set(a.replace(/^-+/, ""), true);
-    } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label" || a === "--font-map" || a === "--normalize-reference" || a === "--plan" || a === "--state-reactions" || a === "--preview" || a === "--ledger" || a === "--operator-credits-per-request" || a === "--reviewed-continuation" || a === "--run" || a === "--prior-credits" || a === "--note" || a === "--id" || a === "--credits") {
+    } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label" || a === "--font-map" || a === "--normalize-reference" || a === "--plan" || a === "--state-reactions" || a === "--preview" || a === "--ledger" || a === "--operator-credits-per-request" || a === "--reviewed-continuation" || a === "--run" || a === "--prior-credits" || a === "--note" || a === "--id" || a === "--credits" || a === "--doc" || a === "--renderer" || a === "--renderer-sha256" || a === "--max-job-chars" || a === "--image-hashes") {
       const v = args[++i];
       if (v === void 0) throw new UsageError(`${a} needs a value`);
       if (a === "--exclude") excludes.push(v);
@@ -42273,6 +42623,45 @@ async function main2(argv) {
     console.log(`Wrote ${dir} (PRIVATE; ${assets.length} saved, ${failed} need manual download)`);
     return failed ? 4 : 0;
   }
+  if (cmd === "fig-plan") {
+    const docPath = flags.get("doc");
+    const renderer = flags.get("renderer");
+    const out = flags.get("out");
+    if (typeof docPath !== "string" || typeof renderer !== "string" || typeof out !== "string") throw new UsageError("fig-plan needs --doc FILE --renderer FILE --out DIR");
+    const parsed = parseImportJson(new TextDecoder().decode(readBoundedFile(docPath, LIMITS.hifiMaxJsonBytes)));
+    if (!parsed.ok) throw new UsageError(`--doc is not a valid import file:
+  ${parsed.errors.slice(0, 10).join("\n  ")}`);
+    if (parsed.version !== 2) throw new UsageError("--doc must be a schemaVersion 2 (hi-fi) document");
+    const bundle = new TextDecoder().decode(readBoundedFile(renderer, 2e6));
+    const bundleSha = createHash7("sha256").update(bundle).digest("hex");
+    const pinned = flags.get("renderer-sha256");
+    if (typeof pinned === "string" && pinned.toLowerCase() !== bundleSha) throw new UsageError(`renderer sha256 ${bundleSha} does not match --renderer-sha256 ${pinned}`);
+    if (!/^("use strict";)?var W2F=/.test(bundle)) throw new UsageError("--renderer is not the website-to-figma connector renderer bundle");
+    const maxChars = intFlag(flags.get("max-job-chars"), "max-job-chars", DEFAULT_MAX_JOB_CHARS);
+    const hashFile = flags.get("image-hashes");
+    const imageHashesBySha = typeof hashFile === "string" ? parseImageHashMap(readBoundedJson(hashFile, 1e6, "image hash map")) : void 0;
+    const plan = planConnectorJobs(parsed.doc, bundle, { maxJobChars: maxChars, imageHashesBySha });
+    const mappedCount = imageHashesBySha ? parsed.doc.assets.filter((a) => imageHashesBySha[a.sha256]).length : 0;
+    const dir = createExclusiveDir(out, `fig-plan-${plan.key}-${Date.now()}`);
+    for (const j of plan.jobs) writeExclusive(join2(dir, j.file), j.script);
+    const manifest = {
+      schema: "website-to-figma/connector-plan",
+      schemaVersion: 1,
+      rootName: plan.rootName,
+      docKey: plan.key,
+      rendererSha256: bundleSha,
+      maxJobChars: maxChars,
+      run: "Run each job's script with the Figma connector, strictly in this order; stop at the first error. Each job returns { rootId, ids, created, unsupported, warnings }.",
+      imageFills: mappedCount ? `${mappedCount} asset(s) mapped to origin-supplied existing Figma image hashes (IMAGE paints); others are placeholders` : "none mapped: every image is a labelled placeholder (supply --image-hashes from a sanctioned upload to fill them)",
+      notSupported: ["image fills without an origin-supplied hash mapping", "pluginData provenance", "vector networks (SVG polylines)", "edge grouping"],
+      unverified: ["$fig.variants(components, { name }) argument shape", "these jobs have not been run against Figma"],
+      jobs: plan.jobs.map((j) => ({ file: j.file, kind: j.kind, pageId: j.pageId, chars: j.chars, sha256: j.sha256, note: j.note }))
+    };
+    writeExclusive(join2(dir, "jobs.json"), JSON.stringify(manifest, null, 2) + "\n");
+    console.log(`Wrote ${dir}: ${plan.jobs.length} job(s), renderer sha256 ${bundleSha}; NO Figma calls were made`);
+    for (const j of plan.jobs) console.log(`  ${j.file} (${j.chars} chars) ${j.note}`);
+    return 0;
+  }
   if (cmd === "hifi") {
     const capturePath = flags.get("capture");
     const manifestPath = flags.get("assets");
@@ -42422,6 +42811,7 @@ var init_cli = __esm({
     init_ledger();
     init_runFiles();
     init_acquire();
+    init_jobs();
     init_adapt();
     init_build();
     init_firecrawl();
@@ -42473,6 +42863,10 @@ var init_cli = __esm({
   website-to-figma ledger init|show|resolve|record --ledger FILE [...]
       init --prior-credits N --note TEXT | resolve --id ID --credits N|unknown --note TEXT
       | record --credits N --note TEXT (other attributable project spend)
+  website-to-figma fig-plan --doc site-v2.json --renderer connector-dist/w2f-connector-renderer.js
+        [--renderer-sha256 HEX] [--max-job-chars N] [--image-hashes MAP.json] --out DIR
+      Offline: write ordered Figma-connector job scripts ($fig plan constructors only) that embed the
+      SAME shared renderer as the native plugin. Makes NO Figma calls; run the jobs yourself, in order.
   website-to-figma validate <FILE>
       Validate a site map JSON file (schemaVersion 1 or 2).`;
     UsageError = class extends Error {

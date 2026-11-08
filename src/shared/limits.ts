@@ -54,6 +54,8 @@ export const LIMITS = {
   refTileWorkerHeapMb: 512,
   hifiMaxPageWidth: 4096,
   hifiMaxPageHeight: 30_000,
+  // Taller documents are split into at most this many 30000px segment pages.
+  hifiMaxPageSegments: 4,
   hifiMaxTextChars: 2_000,
   hifiMaxFontStack: 16,
   hifiMaxWarnings: 50,

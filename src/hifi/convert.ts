@@ -18,6 +18,7 @@ import { canonicalizeUrl, displayPath } from "../normalize/canonicalize";
 import { GENERATOR_VERSION } from "../normalize/build";
 import type { ImageMime } from "../shared/imageInfo";
 import { attachStates } from "../states/convertStates";
+import { splitTallPages } from "./segments";
 
 export class CaptureError extends Error {}
 
@@ -313,10 +314,18 @@ export function convertCapture(input: ConvertInput): HifiDoc {
     const clipOf = (src: Obj | null, r: { x: number; y: number; w: number; h: number }) => (src ? memberOf(src, r, containers, facts) : innermost(r, containers));
     if (clips.length) notes.push(`${clips.length} measured container(s) clip horizontally overflowing content (static; not scrollable)`);
 
-    if (height > LIMITS.hifiMaxPageHeight) {
-      warn(warnings, `Height ${height}px exceeds ${LIMITS.hifiMaxPageHeight}px; content below is truncated`);
-      height = LIMITS.hifiMaxPageHeight;
+    // Taller pages are split into segments after conversion (segments.ts);
+    // beyond the segment bound, content is truncated.
+    const maxH = LIMITS.hifiMaxPageHeight * LIMITS.hifiMaxPageSegments;
+    if (height > maxH) {
+      warn(warnings, `Height ${height}px exceeds ${maxH}px (${LIMITS.hifiMaxPageSegments} segments); content below is truncated`);
+      height = maxH;
       truncated = true;
+    }
+    // The CSS viewport of the measurement is separate from the document height.
+    const vhMeasured = isObj(m.viewport) ? fin(m.viewport.height) : null;
+    if (vhMeasured !== null && vhMeasured > 4320) {
+      warn(warnings, `Measured CSS viewport ${round(vw)}x${round(vhMeasured)} is taller than any documented screenshot viewport (7680x4320): the provider's action viewport was expanded, so viewport-relative (vh) layout may be distorted and viewport screenshots show only the page top; document height ${height}px is used for the frame`);
     }
     const inPage = (r: { y: number }) => r.y < height;
 
@@ -647,6 +656,7 @@ export function convertCapture(input: ConvertInput): HifiDoc {
       warn: (w) => warn(docWarnings, w),
     });
   }
+  if (!input.nested) doc.pages = splitTallPages(doc.pages, (w) => warn(docWarnings, w));
   const v = validateHifiDoc(doc);
   if (!v.ok) throw new CaptureError(`Internal error: converted document failed validation:\n${v.errors.join("\n")}`);
   return v.doc;

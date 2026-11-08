@@ -79,7 +79,7 @@ describe("state variants in schema v2", () => {
     expect(tab!.notes.join(" ")).toMatch(/1 mutation\(s\) refused/);
     expect(base!.notes.join(" ")).toMatch(/Baseline/);
     expect(faq!.referenceAssetId).not.toBeNull();
-    expect(faq!.screenshot).toEqual({ association: "action-order", scrollY: 60, viewportW: 800, viewportH: 600 });
+    expect(faq!.screenshot).toEqual({ association: "action-order", scrollY: 60, viewportW: 800, viewportH: 600, verified: "target-in-viewport" });
     // nodes are frame-relative
     const q = faq!.nodes.find((n) => n.kind === "text" && n.text === "Synthetic question?")!;
     expect([q.x, q.y]).toEqual([16, 26]);

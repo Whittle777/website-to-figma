@@ -7,12 +7,27 @@
     {
       "url": "https://bootstrapmade.com/content/demo/Bootslander/",
       "waitMs": 2000,
-      "lazy": { "steps": 3, "maxPx": 20000, "stepWaitMs": 500, "visibilityMs": 1500 },
+      "lazy": {
+        "steps": 3,
+        "maxPx": 20000,
+        "stepWaitMs": 500,
+        "visibilityMs": 1500
+      },
       "states": [
-        { "name": "AOS revealed", "trigger": "scroll-reveal", "scope": "#features" },
-        { "name": "Testimonial next", "trigger": "swiper-next", "selector": "#testimonials .swiper.init-swiper", "scope": "#testimonials" }
+        {
+          "name": "AOS revealed",
+          "trigger": "scroll-reveal",
+          "scope": "#features"
+        },
+        {
+          "name": "Testimonial next",
+          "trigger": "swiper-next",
+          "selector": "#testimonials .swiper.init-swiper",
+          "scope": "#testimonials"
+        }
       ],
-      "manual": []
+      "manual": [],
+      "settleMs": 800
     }
   ]
 }

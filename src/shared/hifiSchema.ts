@@ -147,7 +147,16 @@ export interface StateVariant {
   nodes: HifiNode[]; // relative to frame
   referenceAssetId: string | null;
   // how the provider screenshot was tied to this state, and where it was taken
-  screenshot: { association: "action-order" | "unassociated" | "manual"; scrollY: number | null; viewportW: number | null; viewportH: number | null } | null;
+  screenshot: {
+    association: "action-order" | "unassociated" | "manual";
+    scrollY: number | null;
+    viewportW: number | null;
+    viewportH: number | null;
+    // in-page verification before the screenshot (optional; newer captures)
+    verified?: "target-in-viewport" | "target-outside-viewport" | "unverifiable-expanded-viewport" | "no-target";
+    // false when this state's screenshot bytes equal another state's
+    distinct?: boolean;
+  } | null;
   notes: string[];
 }
 
@@ -183,6 +192,8 @@ export interface HifiPage {
   // tall reference screenshot reassembled from <=4096px tiles at their offsets
   referenceTiles?: { sourceSha256: string; sourceWidth: number; sourceHeight: number; tiles: { assetId: string; y: number; h: number }[] };
   states?: { reactions: "none" | "click-cycle"; variants: StateVariant[] };
+  // present when a tall document was split into consecutive segment pages
+  segment?: { index: number; count: number; offsetY: number; sourceHeight: number };
   // freeze report: what was attempted/applied/unavailable; notFrozen is listed verbatim
   freeze?: { attempted: string[]; applied: { name: string; count: number }[]; unavailable: string[]; modifications: string[]; notFrozen: string[] };
   motion?: { rules: { selector: string; kind: "transition" | "animation" | "hover"; detail: string }[]; inaccessibleSheets: number };
@@ -391,9 +402,11 @@ function checkStatesEtc(c: C, pg: Record<string, unknown>, p: string, assetIds: 
         }
         total += checkNodeList(c, v.nodes, `${q}.nodes`, MAX_VARIANT_NODES, assetIds, 0);
         if (v.referenceAssetId !== null && (typeof v.referenceAssetId !== "string" || assetsById.get(v.referenceAssetId)?.kind !== "reference")) c.fail(`${q}.referenceAssetId`, "unknown reference asset");
-        if (v.screenshot !== null && c.obj(v.screenshot, `${q}.screenshot`, ["association", "scrollY", "viewportW", "viewportH"])) {
+        if (v.screenshot !== null && c.obj(v.screenshot, `${q}.screenshot`, ["association", "scrollY", "viewportW", "viewportH"], ["verified", "distinct"])) {
+          if (v.screenshot.verified !== undefined) c.oneOf(v.screenshot.verified, `${q}.screenshot.verified`, ["target-in-viewport", "target-outside-viewport", "unverifiable-expanded-viewport", "no-target"]);
+          if (v.screenshot.distinct !== undefined) c.bool(v.screenshot.distinct, `${q}.screenshot.distinct`);
           c.oneOf(v.screenshot.association, `${q}.screenshot.association`, ["action-order", "unassociated", "manual"]);
-          for (const k of ["scrollY", "viewportW", "viewportH"] as const) if (v.screenshot[k] !== null) c.num(v.screenshot[k], `${q}.screenshot.${k}`, 0, COORD);
+          for (const k of ["scrollY", "viewportW", "viewportH"] as const) if (v.screenshot[k] !== null) c.num(v.screenshot[k], `${q}.screenshot.${k}`, 0, 1_000_000);
         }
         c.labels(v.notes, `${q}.notes`, 10);
       });
@@ -522,7 +535,13 @@ export function validateHifiDoc(input: unknown): { ok: true; doc: HifiDoc } | { 
     const ids = new Set<string>();
     d.pages.forEach((pg, i) => {
       const p = `$.pages[${i}]`;
-      if (!c.obj(pg, p, ["id", "url", "path", "title", "width", "height", "truncated", "referenceAssetId", "branding", "nodes", "warnings"], ["notes", "parentId", "clips", "instances", "normalization", "referenceTiles", "states", "freeze", "motion", "media"])) return;
+      if (!c.obj(pg, p, ["id", "url", "path", "title", "width", "height", "truncated", "referenceAssetId", "branding", "nodes", "warnings"], ["notes", "parentId", "clips", "instances", "normalization", "referenceTiles", "states", "freeze", "motion", "media", "segment"])) return;
+      if (pg.segment !== undefined && c.obj(pg.segment, `${p}.segment`, ["index", "count", "offsetY", "sourceHeight"])) {
+        c.int(pg.segment.count, `${p}.segment.count`, 2, LIMITS.hifiMaxPageSegments);
+        c.int(pg.segment.index, `${p}.segment.index`, 0, LIMITS.hifiMaxPageSegments - 1);
+        c.num(pg.segment.offsetY, `${p}.segment.offsetY`, 0, LIMITS.hifiMaxPageHeight * LIMITS.hifiMaxPageSegments);
+        c.num(pg.segment.sourceHeight, `${p}.segment.sourceHeight`, 1, LIMITS.hifiMaxPageHeight * LIMITS.hifiMaxPageSegments);
+      }
       total += checkStatesEtc(c, pg, p, assetIds, assetsById);
       if (pg.referenceTiles !== undefined && c.obj(pg.referenceTiles, `${p}.referenceTiles`, ["sourceSha256", "sourceWidth", "sourceHeight", "tiles"])) {
         const rt = pg.referenceTiles;

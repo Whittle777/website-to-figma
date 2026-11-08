@@ -3,7 +3,7 @@
 import { JSDOM, VirtualConsole } from "jsdom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildStatePreview, buildStateRequest, parseStatePlan, STATE_LIMITS, StatePlanError, type StatePlan } from "../src/states/plan";
-import { FREEZE_JS, REVERT_JS, SCROLL_JS, STATE_JS } from "../src/states/scripts";
+import { APPLY_JS, FREEZE_JS, REVERT_JS, SCROLL_JS, STATE_JS } from "../src/states/scripts";
 
 const SITE = "https://example.com";
 const basePlan = (extra: Record<string, unknown> = {}, pageExtra: Record<string, unknown> = {}) => ({
@@ -38,10 +38,18 @@ function dom(html: string) {
     return { x, y: 20, width: 8, height: 16, top: 20, left: x, right: x + 8, bottom: 36 };
   };
   w.scrollTo = () => {};
+  w.Element.prototype.scrollIntoView = function () {};
   return { d, w, run: (script: string) => w.eval(script) as unknown };
 }
 
-const stateScript = (state: Record<string, unknown>, maxChars: number = STATE_LIMITS.maxStateReturnChars) => fill(STATE_JS, { STATE: { seq: 1, scope: null, trigger: null, selector: null, provenance: (state.mutations as unknown[] | undefined)?.length ? "synthetic" : "baseline", ...state }, MAX_RETURN_CHARS: maxChars });
+// apply (+ into view) then measure+verify, merged the way the executor merges them
+const stateScript = (state: Record<string, unknown>, maxChars: number = STATE_LIMITS.maxStateReturnChars) => {
+  const payload: Record<string, unknown> = { seq: 1, scope: null, trigger: null, selector: null, provenance: (state.mutations as unknown[] | undefined)?.length ? "synthetic" : "baseline", mutations: [], ...state };
+  const strip = (x: string) => x.replace(/;\s*$/, "");
+  const a = strip(fill(APPLY_JS, { STATE: payload }));
+  const m = strip(fill(STATE_JS, { STATE: { seq: payload.seq, name: payload.name, provenance: payload.provenance, scope: payload.scope }, MAX_RETURN_CHARS: maxChars }));
+  return `(function(){ const a = ${a}; const m = ${m}; return Object.assign({}, m, { applied: a.applied, refused: a.refused, trigger: a.trigger, error: a.error || m.error, reverted: a.reverted, applyScrollY: a.scrollY, missing: [].concat(a.missing || [], m.missing || []) }); })()`;
+};
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -49,7 +57,7 @@ describe("state plan validation (offline)", () => {
   it("accepts declarative mechanisms and adds the implicit baseline", () => {
     const p = parseStatePlan(basePlan());
     expect(p.pages[0]!.states.map((s) => s.name)).toEqual(["Default", "FAQ open", "Tab two"]);
-    expect(p.maxActions).toBe(20);
+    expect(p.maxActions).toBe(30);
     expect(p.maxCombinedWaitMs).toBe(30_000);
     expect(p.forceAos).toBe(false);
     expect(p.pages[0]!.states[0]!.scope).toBe("#faq");
@@ -113,16 +121,17 @@ describe("request previews (nothing sent)", () => {
     expect(doc.notice.join(" ")).toMatch(/cost .* UNKNOWN/i);
     const r = doc.requests[0]!;
     // wait, freeze, 3 x (sync scroll + provider wait), then per state: state+screenshot+scrape (+revert)
-    expect(r.roles.map((x) => x.role)).toEqual(["wait", "freeze", "scroll", "wait", "scroll", "wait", "scroll", "wait", "state", "screenshot", "scrape", "state", "screenshot", "scrape", "revert", "state", "screenshot", "scrape", "revert"]);
-    expect(r.actionCount).toBe(19);
+    // per state: apply (+ into view) -> provider wait -> measure+verify -> screenshot -> scrape (-> revert)
+    expect(r.roles.map((x) => x.role)).toEqual(["wait", "freeze", "scroll", "wait", "scroll", "wait", "scroll", "wait", "apply", "wait", "state", "screenshot", "scrape", "apply", "wait", "state", "screenshot", "scrape", "revert", "apply", "wait", "state", "screenshot", "scrape", "revert"]);
+    expect(r.actionCount).toBe(25);
     expect(r.actionCount).toBeLessThanOrEqual(STATE_LIMITS.providerMaxActions);
     // exactly the provider's accounting: sum of wait.milliseconds; no in-script sleep
     const waitSum = r.body.actions.filter((a) => a.type === "wait").reduce((n, a) => n + (a.milliseconds as number), 0);
-    expect(r.combinedWaitMs).toBe(2000 + 500 + 500 + 1500);
+    expect(r.combinedWaitMs).toBe(2000 + 500 + 500 + 1500 + 3 * 600);
     expect(waitSum).toBe(r.combinedWaitMs);
     expect(r.body.actions.filter((a) => a.type === "wait").every((a) => Number.isInteger(a.milliseconds) && (a.milliseconds as number) >= 1)).toBe(true);
-    expect(r.timing).toEqual({ requestTimeoutMs: 20_000 + 2 * 4500 + 3 * 10_000, sdkHttpTimeoutMs: 64_000, wallClockMs: 89_000, combinedWaitMs: 4500, inScriptSleepMs: 0 });
-    expect(r.body.timeout).toBe(59_000);
+    expect(r.timing).toEqual({ requestTimeoutMs: 20_000 + 2 * 6300 + 3 * 10_000, sdkHttpTimeoutMs: 67_600, wallClockMs: 92_600, combinedWaitMs: 6300, inScriptSleepMs: 0 });
+    expect(r.body.timeout).toBe(62_600);
     expect(r.combinedWaitMs * 2).toBeLessThanOrEqual(r.body.timeout);
     // minimal body: rawHtml only, basic proxy; NO vendor/account safety option is sent
     expect(r.body.formats).toEqual(["rawHtml"]);
@@ -148,7 +157,7 @@ describe("request previews (nothing sent)", () => {
 
   it("refuses requests over the action or combined-wait budget", () => {
     const plan: StatePlan = parseStatePlan(basePlan({ maxActions: 10 }));
-    expect(() => buildStateRequest(plan, plan.pages[0]!)).toThrow(/19 actions exceed/);
+    expect(() => buildStateRequest(plan, plan.pages[0]!)).toThrow(/25 actions exceed/);
     const slow = parseStatePlan(basePlan({ maxCombinedWaitMs: 5_000 }, { waitMs: 4_000 }));
     expect(() => buildStateRequest(slow, slow.pages[0]!)).toThrow(/combined waits/);
   });
@@ -268,16 +277,25 @@ describe("browser scripts in jsdom (synthetic markup)", () => {
     expect(w.document.getElementById("d").hasAttribute("onclick")).toBe(false);
   });
 
-  it("reverts immediately when measurement throws", async () => {
-    const { w, run } = dom("<details id=d><summary>s</summary></details>");
-    w.getComputedStyle = () => {
+  it("apply failure reverts inline; measure failure is reported and the planned revert restores", async () => {
+    const { w, run } = dom('<details id=d><summary>s</summary></details><div id="c" class="x"></div>');
+    const origAdd = w.DOMTokenList.prototype.add;
+    w.DOMTokenList.prototype.add = function () {
       throw new Error("boom");
     };
-    const r = (await run(stateScript({ name: "X", mutations: [{ mechanism: "details-open", selector: "#d" }] }))) as any;
+    const r = (await run(stateScript({ name: "X", mutations: [{ mechanism: "details-open", selector: "#d" }, { mechanism: "class-add", selector: "#c", className: "y" }] }))) as any;
+    w.DOMTokenList.prototype.add = origAdd;
     expect(r.error).toBe("boom");
-    expect(r.reverted).toBe(1);
+    expect(r.reverted).toBe(2);
     expect(w.document.getElementById("d").hasAttribute("open")).toBe(false);
-    expect((run(fill(REVERT_JS, { SEQ: 1 })) as any).reverted).toBe(0);
+    w.getComputedStyle = () => {
+      throw new Error("measure boom");
+    };
+    const r2 = (await run(stateScript({ name: "X", mutations: [{ mechanism: "details-open", selector: "#d" }] }))) as any;
+    expect(r2.error).toBe("measure boom");
+    expect(w.document.getElementById("d").hasAttribute("open")).toBe(true);
+    expect((run(fill(REVERT_JS, { SEQ: 1 })) as any).reverted).toBe(1);
+    expect(w.document.getElementById("d").hasAttribute("open")).toBe(false);
   });
 
   it("bounds the per-state return size", async () => {

@@ -104,9 +104,22 @@ describe("converter: measured capture -> schemaVersion 2", () => {
     cap.pages[0].measured.texts.push({ text: "deep", x: 10, y: 40_000, w: 40, h: 20, tag: "p", style: {} });
     cap.pages.push({ url: "https://other.example.org/x", measured: { viewport: { width: 100 }, elements: [], texts: [], images: [] } });
     const out = convertCapture({ capture: cap, assets: syntheticAssets(), assetWarnings: [] });
-    expect(out.pages[0]).toMatchObject({ height: LIMITS.hifiMaxPageHeight, truncated: true });
-    expect(out.pages[0]!.warnings.join("\n")).toMatch(/exceeds 30000px; content below is truncated/);
+    // 50000px -> two segment pages; the deep text is preserved (segment-local y)
+    expect(out.pages[0]).toMatchObject({ height: LIMITS.hifiMaxPageHeight, truncated: false, segment: { index: 0, count: 2, offsetY: 0, sourceHeight: 50_000 } });
+    expect(out.pages[1]).toMatchObject({ path: "/", height: 20_000, segment: { index: 1, count: 2, offsetY: 30_000 }, parentId: "p0" });
     expect(out.pages[0]!.nodes.some((n) => n.kind === "text" && n.text === "deep")).toBe(false);
+    expect(out.pages[1]!.nodes.find((n) => n.kind === "text" && n.text === "deep")).toMatchObject({ y: 10_000 });
+    expect(out.pages[1]!.notes!.join(" ")).toMatch(/Segment 2\/2 of a 50000px document/);
+    // the 100000px measured-coordinate bound (e.g. an expanded 1920x100000 action
+    // viewport) splits into 4 segments with the deepest node preserved
+    const huge = clone(syntheticCapture()) as any;
+    huge.pages[0].measured.elements[0].h = 100_000;
+    huge.pages[0].measured.texts.push({ text: "very deep", x: 10, y: 95_000, w: 40, h: 20, tag: "p", style: {} });
+    const hout = convertCapture({ capture: huge, assets: syntheticAssets(), assetWarnings: [] });
+    const segs = hout.pages.filter((p) => p.path === "/");
+    expect(segs.map((p) => [p.height, p.segment!.offsetY])).toEqual([[30_000, 0], [30_000, 30_000], [30_000, 60_000], [10_000, 90_000]]);
+    expect(segs[3]!.nodes.find((n) => n.kind === "text" && n.text === "very deep")).toMatchObject({ y: 5_000 });
+    expect(segs.slice(1).every((p) => p.parentId === segs[0]!.id && p.referenceAssetId === null)).toBe(true);
     expect(out.warnings.join("\n")).toMatch(/Skipped https:\/\/other\.example\.org\/x: not on the same site/);
     for (const url of ["http://10.0.0.1/", "http://198.18.0.1/", "file:///etc/passwd", "https://u:p@example.com/"]) {
       const bad = clone(syntheticCapture()) as any;

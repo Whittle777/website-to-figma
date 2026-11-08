@@ -167,3 +167,55 @@ const pdFiles = ["manifest.json", "code.js", "ui.html", "README.md", "THIRD_PART
 writeFileSync(`${PD}/SHA256SUMS`, pdFiles.map((f) => `${sha(`${PD}/${f}`)}  ${f}`).join("\n") + "\n");
 console.log(`Built ${PD}/ (${pcode.length} bytes code.js; third-party inputs: ${thirdParty.length})`);
 console.log(readFileSync(`${PD}/SHA256SUMS`, "utf8").trimEnd());
+
+// ---------------------------------------------------------------------------
+// Connector ($fig) renderer bundle (public, code-only, deterministic): the
+// SAME shared renderer (plugin/src/render) with the planned host
+// (src/connector/plannedHost.ts). Embedded verbatim by `fig-plan` job scripts.
+//   connector-dist/w2f-connector-renderer.js, README.md, SHA256SUMS
+const CD = "connector-dist";
+mkdirSync(CD, { recursive: true });
+const conn = await build({
+  entryPoints: ["src/connector/entry.ts"],
+  charset: "ascii",
+  outfile: `${CD}/w2f-connector-renderer.js`,
+  bundle: true,
+  minify: true,
+  platform: "neutral",
+  format: "iife",
+  globalName: "W2F",
+  target: "es2020",
+  legalComments: "none",
+  metafile: true,
+  logLevel: "warning",
+});
+escapeControls(`${CD}/w2f-connector-renderer.js`);
+const connInputs = Object.keys(conn.metafile.inputs).sort();
+if (connInputs.some((p) => p.includes("node_modules/"))) throw new Error("connector bundle must not include third-party packages");
+const ccode = readFileSync(`${CD}/w2f-connector-renderer.js`, "utf8");
+for (const forbidden of ["require(", "process.", "import(", "eval(", "new Function", "fetch(", "XMLHttpRequest", "figma.create", "createImage", "combineAsVariants", "setVectorNetwork", "setPluginData"]) {
+  if (ccode.includes(forbidden)) throw new Error(`${CD}/w2f-connector-renderer.js contains forbidden token: ${forbidden}`);
+}
+writeFileSync(
+  `${CD}/README.md`,
+  [
+    "# website-to-figma connector renderer (planned $fig host)",
+    "",
+    "The same shared renderer as the native plugin (plugin/src/render), driven by a host that only uses",
+    "the Figma connector's $fig plan constructors (frame, rectangle, text, svg, component, instance, ellipse,",
+    "variants, get, done) and wrapper .append/.set/.query(...).set/.node. Raw reads, raw font loads and",
+    "ON_CLICK -> CHANGE_TO reactions run only after `await $fig.done()`.",
+    "",
+    "Do not run this file directly: `website-to-figma fig-plan --doc site-v2.json --out DIR` writes",
+    "ordered job scripts that embed this file verbatim plus one job input each.",
+    "",
+    "Not supported by this host (reported in every job result, never faked): image fills (placeholders",
+    "with sha256 instead), pluginData provenance, vector networks (SVG polylines instead), edge grouping.",
+    "UNVERIFIED here: the argument shape of $fig.variants(components, { name }). Not run against Figma.",
+    "",
+  ].join("\n"),
+);
+const cdFiles = ["w2f-connector-renderer.js", "README.md"];
+writeFileSync(`${CD}/SHA256SUMS`, cdFiles.map((f) => `${sha(`${CD}/${f}`)}  ${f}`).join("\n") + "\n");
+console.log(`Built ${CD}/ (${ccode.length} bytes renderer bundle)`);
+console.log(readFileSync(`${CD}/SHA256SUMS`, "utf8").trimEnd());

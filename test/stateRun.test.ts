@@ -92,7 +92,7 @@ describe("pre-execution validation (no network, no key)", () => {
     const p = plan();
     const v = validateForExecution(p, previewOf(p));
     expect(v.requests).toHaveLength(1);
-    expect(v.requests[0]!.preview.actionCount).toBe(19);
+    expect(v.requests[0]!.preview.actionCount).toBe(25);
     expect(v.requests[0]!.requestSha256).toMatch(/^[0-9a-f]{64}$/);
     const tampered = (mut: (d: any) => void) => {
       const d = previewOf(p) as any;
@@ -229,9 +229,10 @@ describe("executor with a fake client (one attempt, ledger before/after)", () =>
     const f = fakeClient(() => partial, []);
     const r = await executeStateRun({ validated, gates, resolver: publicDns(), getApiKey: () => KEY, createClient: async () => f.client });
     expect(r.pages.map((p) => p.status)).toEqual(["ambiguous", "not-attempted"]);
-    expect(r.pages[0]!.reason).toMatch(/expected 9 javascriptReturns, got 4/);
+    expect(r.pages[0]!.reason).toMatch(/expected 12 javascriptReturns, got 4/);
     expect(f.calls).toHaveLength(1);
     const swapped = doc("https://example.com/");
+    // swap the baseline's apply and measure returns
     [swapped.actions.javascriptReturns[4], swapped.actions.javascriptReturns[5]] = [swapped.actions.javascriptReturns[5], swapped.actions.javascriptReturns[4]];
     const s = setup();
     const r2 = await executeStateRun({ validated: s.validated, gates: s.gates, resolver: publicDns(), getApiKey: () => KEY, createClient: async () => fakeClient(() => swapped, []).client });
@@ -354,7 +355,7 @@ describe("bounded screenshot acquisition (fake transport only)", () => {
 });
 
 describe("sample plans", () => {
-  it("committed previews equal the rebuilt previews; Bootslander is 1 page, 3 states, 18 actions", () => {
+  it("committed previews equal the rebuilt previews; Bootslander is 1 page, 3 states, 24 actions", () => {
     for (const [planFile, previewFile] of [["samples/state-plan.example.json", "samples/state-plan.example.preview.json"], ["samples/state-plan.bootslander.json", "samples/state-plan.bootslander.preview.json"]]) {
       const v = validateForExecution(JSON.parse(readFileSync(planFile!, "utf8")), JSON.parse(readFileSync(previewFile!, "utf8")));
       expect(v.requests.length).toBe(1);
@@ -362,10 +363,14 @@ describe("sample plans", () => {
     const b = validateForExecution(JSON.parse(readFileSync("samples/state-plan.bootslander.json", "utf8")), JSON.parse(readFileSync("samples/state-plan.bootslander.preview.json", "utf8")));
     const p = b.requests[0]!.preview;
     // baseline BEFORE any scrolling; scroll steps immediately before the scroll-reveal state
-    expect(p.roles.map((r) => r.role)).toEqual(["wait", "freeze", "state", "screenshot", "scrape", "scroll", "wait", "scroll", "wait", "scroll", "wait", "state", "screenshot", "scrape", "state", "screenshot", "scrape", "revert"]);
+    expect(p.roles.map((r) => r.role)).toEqual(["wait", "freeze", "apply", "wait", "state", "screenshot", "scrape", "scroll", "wait", "scroll", "wait", "scroll", "wait", "apply", "wait", "state", "screenshot", "scrape", "apply", "wait", "state", "screenshot", "scrape", "revert"]);
     expect(p.states.map((x) => [x.name, x.provenance])).toEqual([["Default", "baseline"], ["AOS revealed", "scroll-triggered"], ["Testimonial next", "page-api"]]);
-    expect(p.combinedWaitMs).toBe(2000 + 500 + 500 + 1500);
-    expect(p.timing.requestTimeoutMs).toBe(20_000 + 2 * 4500 + 3 * 10_000);
+    expect(p.combinedWaitMs).toBe(2000 + 500 + 500 + 1500 + 3 * 800);
+    expect(p.timing.requestTimeoutMs).toBe(20_000 + 2 * 6900 + 3 * 10_000);
+    // baseline is applied at the top (no scroll into view) but MEASURES the AOS scope bounds
+    const scripts = p.roles.map((r) => [r.role, (b.requests[0]!.preview.body.actions[r.index] as any).script as string | undefined]);
+    expect(scripts[2]![1]).toMatch(/"seq":0,"name":"Default","provenance":"baseline","scope":null/);
+    expect(scripts[4]![1]).toMatch(/"seq":0,"name":"Default","provenance":"baseline","scope":"#features"/);
     // page-API trigger requires the acknowledgement
     const dir = tmp();
     initLedger(join(dir, "l.json"), 15, "prior");
@@ -376,15 +381,19 @@ describe("sample plans", () => {
     const bp = JSON.parse(readFileSync("samples/state-plan.bootslander.json", "utf8"));
     const s = setup(bp);
     const pageUrl = "https://bootstrapmade.com/content/demo/Bootslander/";
-    const make = (moved: boolean) => {
+    const make = (moved: boolean, opts: { expanded?: boolean } = {}) => {
       const d = doc(pageUrl);
-      const byName = (n: string) => d.actions.javascriptReturns.find((r: any) => r.value.w2f === "state" && r.value.name === n).value;
-      const base = byName("Default"), aos = byName("FAQ open"), sw = byName("Tab two");
-      const freeze = d.actions.javascriptReturns[0];
+      const R = d.actions.javascriptReturns as any[];
+      const measureOf = (seq: number) => R.find((r) => r.value.w2f === "state" && r.value.seq === seq).value;
+      const freeze = R[0];
       const scroll = (k: number) => ({ type: "object", value: { w2f: "scroll", step: k, steps: 3, y: k * 33, coverageComplete: true } });
-      Object.assign(aos, { name: "AOS revealed", provenance: "scroll-triggered", seq: 1, applied: [], refused: [] });
-      Object.assign(sw, { name: "Testimonial next", provenance: "page-api", seq: 2, refused: [], applied: moved ? [{ selector: "#testimonials .swiper.init-swiper", mechanism: "swiper-next" }] : [], trigger: { kind: "swiper-next", valid: true, moved, before: { realIndex: 0 }, after: { realIndex: moved ? 1 : 0 }, listeners: ["init"] } });
-      d.actions.javascriptReturns = [freeze, { type: "object", value: base }, scroll(1), scroll(2), scroll(3), { type: "object", value: aos }, { type: "object", value: sw }, { type: "object", value: { w2f: "revert", seq: 2, reverted: 1, failed: 0 } }];
+      const verify = (target: boolean) => (opts.expanded ? { scrollY: 0, viewport: { width: 1920, height: 100000 }, documentHeight: 100000, expandedViewport: true, target: target ? { selector: "#x", viewTop: 70813, viewBottom: 71203, inViewport: false, partiallyVisible: false } : null } : { scrollY: 0, viewport: { width: 800, height: 600 }, documentHeight: 700, expandedViewport: false, target: target ? { selector: "#x", viewTop: 0, viewBottom: 80, inViewport: true, partiallyVisible: true } : null });
+      const m0 = { ...measureOf(0), seq: 0, name: "Default", provenance: "baseline", verify: verify(true) };
+      const m1 = { ...measureOf(1), seq: 1, name: "AOS revealed", provenance: "scroll-triggered", verify: verify(true) };
+      const m2 = { ...measureOf(2), seq: 2, name: "Testimonial next", provenance: "page-api", verify: verify(true) };
+      const apply = (seq: number, name: string, provenance: string, extra: Record<string, unknown> = {}) => ({ type: "object", value: { w2f: "apply", seq, name, provenance, applied: [], refused: [], missing: [], trigger: null, error: null, scrollY: 0, ...extra } });
+      const trig = { kind: "swiper-next", valid: true, moved, before: { realIndex: 0 }, after: { realIndex: moved ? 1 : 0 }, listeners: ["init"] };
+      d.actions.javascriptReturns = [freeze, apply(0, "Default", "baseline"), { type: "object", value: m0 }, scroll(1), scroll(2), scroll(3), apply(1, "AOS revealed", "scroll-triggered"), { type: "object", value: m1 }, apply(2, "Testimonial next", "page-api", { trigger: trig, applied: moved ? [{ selector: "#testimonials .swiper.init-swiper", mechanism: "swiper-next" }] : [] }), { type: "object", value: m2 }, { type: "object", value: { w2f: "revert", seq: 2, reverted: 1, failed: 0 } }];
       return d;
     };
     const saved: any[] = [];
@@ -434,7 +443,7 @@ describe("CLI holds (no key read, nothing sent)", () => {
     const base = ["states-run", "--plan", join(d, "plan.json"), "--preview", join(d, "preview.json"), "--out", join(d, "out"), "--ledger", join(d, "ledger.json"), "--operator-credits-per-request", "1", "--operator-reported-balance", "900", "--confirm-existing-credits", "--confirm-no-topup", "--acknowledge-synthetic-modifications"];
     const r = cli(base, { FIRECRAWL_API_KEY: KEY });
     expect(r.code).toBe(3);
-    expect(r.out).toMatch(/POST \/v2\/scrape https:\/\/example\.com\/: 19 actions/);
+    expect(r.out).toMatch(/POST \/v2\/scrape https:\/\/example\.com\/: 25 actions/);
     expect(r.out).toMatch(/Stop conditions:/);
     expect(r.out).toMatch(/HOLD: nothing was sent and no key was read/);
     expect(r.out).not.toContain(KEY);
