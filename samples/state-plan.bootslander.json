@@ -1,0 +1,15 @@
+{
+  "schema": "website-to-figma/state-plan",
+  "schemaVersion": 1,
+  "site": "https://bootstrapmade.com",
+  "forceAos": true,
+  "pages": [
+    {
+      "url": "https://bootstrapmade.com/content/demo/Bootslander/",
+      "waitMs": 2000,
+      "lazy": { "steps": 8, "maxPx": 20000, "stepWaitMs": 400, "visibilityMs": 2000 },
+      "states": [],
+      "manual": []
+    }
+  ]
+}

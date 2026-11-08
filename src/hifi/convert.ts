@@ -577,6 +577,11 @@ export function convertCapture(input: ConvertInput): HifiDoc {
     else if (refId && !refRejected) warn(warnings, `Reference screenshot "${refId}" not available (missing or rejected asset; see document warnings)`);
     else if (!refId && !refRejected) warn(warnings, "No reference screenshot supplied for this page");
 
+    if (isObj(rp.run)) {
+      const r = rp.run;
+      notes.push(`Hosted state run ${str(r.runId, 32)}: 1 request, attempts ${String(r.attempts)}, no retries; request sha256 ${str(r.requestSha256, 64).slice(0, 16)}...; request-specific credits ${typeof r.reportedCreditsUsed === "number" ? r.reportedCreditsUsed : "NOT reported (unknown)"}`);
+      if (Array.isArray(r.warnings)) for (const w of r.warnings.slice(0, 10)) if (typeof w === "string") warn(warnings, `State run: ${w}`);
+    }
     regionsByPage.push({
       nav: elements.map(rectWithTag).find((e) => e?.tag === "nav")?.r ?? null,
       footer: elements.map(rectWithTag).find((e) => e?.tag === "footer")?.r ?? null,

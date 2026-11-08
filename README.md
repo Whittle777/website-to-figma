@@ -20,7 +20,7 @@ Early development. What has and has not been verified:
 | CLI + plugin typecheck and build | `npm run typecheck`, `npm run build` |
 | Firecrawl live crawl | **Never run yet.** It requires operator-confirmed account prerequisites, which the CLI doesn't verify. Request code is typed against `@mendable/firecrawl-js` 4.52.0 and tested with fake clients only. |
 | Hi-fi (schemaVersion 2) converter and renderer | Unit-tested with synthetic captures and a fake `figma` object; **not** imported into real Figma from this repo. |
-| Interactive states / motion | **Planner only.** `states-plan` writes request *previews* and sends nothing. There is **no automatic state-capture pipeline and no safe-click support**: only declarative synthetic DOM modifications are planned, and they come with **no guarantee against handler side effects**. Provider cost is **unknown**. The converter and plugin variants are tested with synthetic data only. |
+| Interactive states / motion | **Planner plus gated executor; never run live.** `states-plan` writes request previews and sends nothing. `states-run` executes exactly those previews, one hosted request per page with one attempt. It is tested only with fake clients. There is **no click or real-interaction support**: only declarative synthetic DOM modifications, which are labelled synthetic and carry **no handler side-effect guarantee**. Provider cost is **unknown**. The local ledger is an operator-asserted allowance, **not a provider credit cap**. |
 | Importing into Figma | **Not verified yet.** The plugin builds and typechecks against `@figma/plugin-typings`, but nobody has imported it into Figma from this repo yet. |
 
 ## Requirements
@@ -269,20 +269,24 @@ translated or guessed.
   - Importing into real Figma has **not** been verified from this repo. The renderer is tested
     against a fake `figma` object only.
 
-## Interactive states and motion (offline planner; NOT an automatic capture pipeline)
+## Interactive states and motion (planner + gated hosted executor)
 
 > **Limitations, stated up front**
-> - **Planner only.** `states-plan` validates a state plan and writes exact Firecrawl `/v2/scrape`
->   request **previews**. It sends nothing, reads no key, makes no account call and resolves no DNS.
->   This tool has no executor: **automatic state capture is not supported.**
-> - **No clicks.** A selector does not prove that a click handler is safe: it could submit a form,
->   log in, make a purchase, follow an outbound link or navigate. So `click`, `hover`, `focus`,
->   typing, key presses, submit, navigation and arbitrary JavaScript are refused. Put such states
->   under `manual` and capture them yourself.
-> - **Synthetic, not observed.** The only planned mechanisms are declarative DOM modifications:
->   `details-open`, `attribute-set` (`open` on `<details>`, `aria-expanded`, `aria-selected`,
->   `aria-hidden`, `hidden`, `data-state`) and `class-add`. Variants built from them are labelled
->   **synthetic**, not the page's observed original state.
+> - **Never run live from this repo.** The executor (`states-run`) is code plus fake-client tests
+>   only. No live request, key read or account call was made while building it.
+> - **No real interactions.** A selector does not prove that a click handler is safe: it could
+>   submit a form, log in, make a purchase, follow an outbound link or navigate. So `click`,
+>   `hover`, `focus`, typing, key presses, submit, navigation and arbitrary JavaScript are
+>   refused. Put such states under `manual` and capture them yourself. Actual interactive
+>   behaviour is **unsupported**.
+> - **Synthetic, not observed.** The only states are declarative DOM modifications:
+>   - `details-open`
+>   - `attribute-set`, limited to `open` on `<details>`, `aria-expanded`, `aria-selected`,
+>     `aria-hidden`, `hidden` and `data-state`
+>   - `class-add`
+>
+>   Optional forced AOS visibility (`forceAos`) is also a modification. All of these are labelled
+>   **synthetic** everywhere, never as observed original states.
 > - **No handler side-effect guarantee.** Attribute, class and `open` changes can still run page
 >   code: MutationObservers, `toggle` listeners and custom-element callbacks. The scripts do what
 >   they can:
@@ -290,60 +294,137 @@ translated or guessed.
 >   - stop `toggle` in the capture phase
 >   - revert after measuring (including on error)
 >
->   Page observers cannot be prevented, which is why previews exist for manual operator review only.
-> - **Cost unknown.** Firecrawl documents 1 credit per scrape and no per-action price. No estimate
->   is given and no paid command is provided.
+>   Page observers cannot be prevented. The operator must pass
+>   `--acknowledge-synthetic-modifications`.
+> - **Cost unknown.** Firecrawl documents 1 credit per scrape (cached results still cost 1) and +4
+>   for JSON mode. It publishes no price for actions, screenshots or multiple screenshots, and
+>   threat-scan and redirect charges are unresolved. This tool sets **no price**:
+>   `--operator-credits-per-request` is the operator's own asserted reservation, and actual
+>   charges may exceed it.
+> - **The ledger is not a hard cap.** It is a local file holding a 1000-credit *project budget
+>   ceiling*: an operator-asserted reservation and accepted-risk allowance. It gives no pre-send
+>   guarantee and is not a provider-enforced cap.
 > - **Freeze is partial.** CSS animations and transitions, Web Animations, `<video>` and Swiper
 >   autoplay are paused where present. JS timers, `requestAnimationFrame` loops and WebGL/canvas
->   rendering are **not** frozen. Forcing `.aos-animate` (`forceAos`) is optional and recorded as a
->   modification.
+>   rendering are **not** frozen.
+> - **Undocumented runtime semantics.** Firecrawl's docs do not say whether `executeJavascript`
+>   awaits promises, and the lazy and state scripts are async. If returns are missing or out of
+>   order, the run stops as *ambiguous*. It is never retried.
 > - **Bounds.**
 >   - 1 site, ≤ 3 pages, and ≤ 3 states per page *including* the baseline and manual states.
->   - ≤ 50 actions per request (the provider maximum; default budget 20). Every wait, freeze,
->     lazy-scroll, state, screenshot, scrape and revert step counts.
->   - Combined waits ≤ 60 s (default 30 s), including in-script sleeps.
+>   - ≤ 50 actions per request (default budget 20). Every wait, freeze, lazy/visibility-settle,
+>     state, screenshot, scrape and revert step counts.
+>   - Combined waits ≤ 60 s (default 30 s), including in-script sleeps and the visibility settle.
 >   - Each state's measurement is ≤ 6,000,000 chars, and screenshots are viewport-only.
 
+### 1. Plan and review (offline)
+
 ```sh
-website-to-figma states-plan --plan state-plan.json --out out/state-requests.preview.json
+website-to-figma states-plan --plan samples/state-plan.bootslander.json --out preview.json
 ```
 
-```json
-{
-  "schema": "website-to-figma/state-plan", "schemaVersion": 1,
-  "site": "https://example.com",
-  "pages": [{
-    "url": "https://example.com/",
-    "states": [
-      { "name": "FAQ open", "scope": "#faq",
-        "mutations": [{ "mechanism": "details-open", "selector": "#faq details" }] }
-    ],
-    "manual": [{ "name": "Menu open", "selector": "#burger", "reason": "JS click handler" }]
-  }]
-}
+The preview is the exact `/v2/scrape` body for each page:
+- `formats` is exactly `["rawHtml"]`; no JSON or LLM formats.
+- `proxy` is `basic`, and every documented surcharge option is off.
+- There is no `threatProtection` override, so the team's vendor default applies.
+- Actions run in this order:
+  1. `wait`
+  2. freeze
+  3. lazy scroll + visibility settle (fonts ready, images complete; bounded)
+  4. for each state: state apply + measure, viewport `screenshot`, `scrape`, then a revert for
+     synthetic states
+
+### 2. Execute (paid, gated; one request per page)
+
+```sh
+website-to-figma ledger init --ledger ledger.json --prior-credits 15 --note "operator-attributed prior project spend"
+website-to-figma states-run --plan PLAN --preview preview.json --out private-runs --ledger ledger.json \
+  --operator-credits-per-request N --operator-reported-balance N --confirm-existing-credits \
+  --confirm-no-topup --acknowledge-synthetic-modifications          # prints plan + stop conditions, HOLDS
+#   ... add --yes only after review
 ```
 
-How the rest of the path works once a response exists:
+**Order.** Every step below completes before the API key is requested:
+1. The preview file must equal the plan's rebuilt preview byte for byte (canonical JSON).
+2. Every request is re-validated semantically.
+3. Every operator gate is checked.
+4. The ledger is checked: no unresolved, ambiguous or overrun entry, no identical earlier request
+   (unless `--reviewed-continuation <entry id>`), and room within the ceiling.
+5. The hosted URL guard runs. The exact `simplecss.org` and `bootstrapmade.com` DNS exceptions
+   still apply, along with every structural rule.
 
-- **Adapter.** If an operator obtains a response for such a request by their own means,
-  `hifi-capture` reads the tagged returns (`freeze`, `lazy`, `state`, `revert`). It ties
-  `actions.screenshots[i]` and `actions.scrapes[i]` to state *i* only when every state returned and
-  the counts match. Otherwise screenshots stay unassociated. A failed revert marks the later states.
-- **Screenshots.** Screenshot URLs are listed and never downloaded. To use one, add the local PNG to
-  the asset manifest with `"kind": "reference"`, `pageUrl` and `"state": "<name>"`. A screenshot
-  named after a state that is not in the response becomes a **manual** variant (image only, not
-  measured).
-- **Converter.** `hifi` converts each state from its own measurement and crops it to the state's
-  scope. It writes the optional schema v2 fields `states`, `freeze`, `motion` and `media`, and
-  older v2 files stay valid. Failed states are omitted with a warning. Media gets a still only
-  from an operator-supplied local image whose `sourceUrl` equals the observed poster URL. Otherwise
-  it is reported as `poster-url-observed-not-downloaded` or `unavailable`. Unreadable cross-origin
-  stylesheets are counted and warned about.
-- **Plugin.** The plugin builds native component variants (`State=<name>`) with
-  `figma.combineAsVariants`, each carrying its provenance. `hifi --state-reactions click-cycle`
-  optionally adds `ON_CLICK` → `CHANGE_TO` reactions (`setReactionsAsync`). Media becomes a
-  labelled still or placeholder. Every node is tracked, and any failure rolls back the whole import.
-- **Fixture.** `website-to-figma fixture hifi-states` writes a SYNTHETIC sample.
+**One attempt.** The SDK is called with `maxRetries: 1` (total attempts in 4.52) and
+`autoResume: false`. That disables the SDK's automatic re-POST on `408 processing_continues`.
+There is no fallback to one request per state, and no retry or duplicate after a partial or
+ambiguous response.
+
+**Ledger.** The paid attempt is written *before* sending and the result *after*. A crash leaves an
+`attempting` entry that blocks every later paid request until `ledger resolve`.
+- Only request-specific `metadata.creditsUsed` is recorded. Account-wide deltas are never used.
+- If no `creditsUsed` is reported, the entry stays **ambiguous** and is never settled at an assumed
+  price. The remaining pages are stopped.
+- If `creditsUsed` exceeds the reservation, an **overrun** is recorded. The remaining pages are
+  stopped, and later runs are blocked until the operator resolves it.
+
+**Responses.** A response is accepted only when:
+- the final URL passes the hosted URL guard, is on the same site, and equals the requested URL
+  (redirects are refused)
+- the status is 2xx and the content is HTML
+- every tagged return, screenshot and scrape is present and in order
+
+Each page records checkpoints, the applied freeze, per-state applied, refused and missing counts,
+and revert results.
+
+**Files.** Output goes to a new owner-only run directory (`0700` directory, `0600` files,
+`O_EXCL`, symlinks refused, never overwritten). It holds raw page content, so keep it private and
+never commit it. The ledger is written atomically and locked. The API key is never written or
+printed, and error text is redacted.
+
+**Stop conditions:**
+- the preview does not match or fails validation
+- a gate is missing
+- the ledger is unresolved, would be exceeded, or already holds the same request
+- a URL guard fails, or the page redirected, went off-site, returned non-2xx or was not HTML
+- SDK error: 4xx means failed; timeout, network, 5xx and 408 mean ambiguous
+- tagged returns, screenshots or scrapes are missing or out of order
+- `creditsUsed` is missing or above the reservation
+- an earlier page was not accepted
+
+### 3. Screenshots (bounded local download, optional)
+
+```sh
+website-to-figma states-screenshots --run private-runs/state-run-<id> --out private-assets   # lists, HOLDS
+#   ... add --yes to download
+```
+
+- **Eligible URLs.** Only screenshot URLs listed by an *accepted* run and tied to a state by action
+  order are fetched.
+- **Guard.** This is a local fetch, so the full local URL and DNS guard applies, with **no hosted
+  exception**. The connection is pinned to the validated address. Each redirect is re-checked
+  (https only, ≤ 3 hops).
+- **Bounds.** The image is limited to 12 MB, must be PNG or JPEG, and must fit ≤ 4096 px wide,
+  ≤ 65,536 px tall and ≤ 40M pixels. Its SHA-256 is written to an asset manifest
+  (`kind: "reference"`, `pageUrl`, `state`).
+- **Failures.** Under a FakeIP resolver every download fails closed. Download the images yourself
+  and add them to the manifest. Screenshot URLs expire after 24 h.
+
+### 4. Convert
+
+- `hifi-capture --scrape private-runs/state-run-<id>/page-0.response.json` accepts only
+  `accepted` runs. It carries run provenance (request hash, attempts, request-specific credits)
+  into page notes.
+- `hifi` builds the optional schema v2 `states`, `freeze`, `motion` and `media` fields:
+  - Each state is converted from its own measurement.
+  - Failed states are omitted.
+  - Media stills come only from operator-local images.
+- The plugin builds native component variants (`State=<name>`) with `figma.combineAsVariants`.
+  `--state-reactions click-cycle` optionally adds `ON_CLICK` → `CHANGE_TO` reactions, and any
+  failure rolls back the whole import.
+
+Synthetic samples: `website-to-figma fixture hifi-states`, `samples/state-plan.example.json`
+(3 states, 14 actions) and `samples/state-plan.bootslander.json` (1 page, baseline only, forced
+AOS recorded as a modification, 6 actions). Synthetic states for Bootslander need selectors that
+an operator has verified; none are invented here.
 
 ## Figma plugin (development)
 
@@ -421,7 +502,7 @@ URL checks (`src/security/urlGuard.ts`) run on the start URL and on every page's
     (https://docs.firecrawl.dev/security). This project has not independently verified those
     controls. Every other host, and any local fetch, keeps the full local DNS check.
   - The first planned state/motion candidate is `https://bootstrapmade.com/content/demo/Bootslander/`
-    (documentation only: nothing has been fetched or sent for it).
+    (`samples/state-plan.bootslander.json`; nothing has been fetched or sent for it).
 - same-site means the same hostname, with one leading `www.` treated as equivalent. There is no
   suffix matching, so `evil.example.com` and `example.com.evil.net` are both different sites.
 

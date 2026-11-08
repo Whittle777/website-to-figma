@@ -41,9 +41,10 @@ export const FREEZE_JS = String.raw`(() => {
   return r;
 })()`;
 
-// Bounded lazy-load scroll, then back to the top.
+// Bounded lazy-load scroll, back to the top, then a bounded visibility settle
+// (web fonts ready, <img> elements complete). Reports what did not settle.
 export const LAZY_JS = String.raw`(async () => {
-  const maxSteps = __MAX_STEPS__, maxPx = __MAX_PX__, stepWait = __STEP_WAIT_MS__;
+  const maxSteps = __MAX_STEPS__, maxPx = __MAX_PX__, stepWait = __STEP_WAIT_MS__, settleMs = __VISIBILITY_MS__;
   const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
   let steps = 0, y = 0;
   const step = Math.max(200, Math.min(window.innerHeight || 800, 2000));
@@ -54,7 +55,13 @@ export const LAZY_JS = String.raw`(async () => {
   }
   const reachedBottom = y + (window.innerHeight || 800) >= document.documentElement.scrollHeight;
   window.scrollTo(0, 0); await sleep(stepWait);
-  return { w2f: "lazy", steps, scrolledTo: y, reachedBottom, capped: !reachedBottom };
+  const t0 = Date.now();
+  let fontsReady = null;
+  try { if (document.fonts && document.fonts.ready) fontsReady = await Promise.race([document.fonts.ready.then(() => true), sleep(settleMs).then(() => false)]); } catch (e) { fontsReady = false; }
+  const imgs = Array.from(document.images).slice(0, 2000);
+  while (Date.now() - t0 < settleMs && imgs.some((i) => !i.complete)) await sleep(100);
+  const imagesPending = imgs.filter((i) => !i.complete).length;
+  return { w2f: "lazy", steps, scrolledTo: y, reachedBottom, capped: !reachedBottom, settle: { fontsReady, images: imgs.length, imagesPending, waitedMs: Date.now() - t0, settled: fontsReady !== false && imagesPending === 0 } };
 })()`;
 
 // Apply one declarative state (or the baseline), measure the page and the

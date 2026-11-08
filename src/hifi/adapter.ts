@@ -36,6 +36,20 @@ export function captureFromScrapeResponses(responses: { name: string; json: unkn
   const warnings: string[] = [];
   for (const { name, json } of responses) {
     const root = isObj(json) ? json : null;
+    // Responses saved by states-run carry a run record; only accepted runs are usable.
+    let run: Obj | null = null;
+    if (root && root.w2fRun !== undefined) {
+      const r = root.w2fRun;
+      if (!isObj(r) || r.schema !== "website-to-figma/state-run" || r.schemaVersion !== 1) throw new CaptureError(`${name}: malformed w2fRun record`);
+      if (r.status !== "accepted") throw new CaptureError(`${name}: state run status "${String(r.status)}" (${String(r.reason ?? "")}); not usable. Review it manually; nothing is retried automatically.`);
+      run = {
+        runId: String(r.runId).slice(0, 32),
+        requestSha256: String(r.requestSha256).slice(0, 64),
+        attempts: r.attempts,
+        reportedCreditsUsed: typeof r.reportedCreditsUsed === "number" ? r.reportedCreditsUsed : null,
+        warnings: Array.isArray(r.warnings) ? r.warnings.filter((w): w is string => typeof w === "string").slice(0, 10) : [],
+      };
+    }
     const data = root && isObj(root.data) ? root.data : root;
     if (!data) throw new CaptureError(`${name}: expected a JSON object`);
     // Tagged state-plan returns (baseline + synthetic states) take precedence.
@@ -47,6 +61,7 @@ export function captureFromScrapeResponses(responses: { name: string; json: unkn
     const url = [measured.url, meta.url, meta.sourceURL].find((u): u is string => typeof u === "string" && u.length > 0);
     if (!url) throw new CaptureError(`${name}: no page URL (measured.url or metadata.url)`);
     const page: Obj = { url, measured };
+    if (run) page.run = run;
     if (tagged) {
       page.states = tagged.states;
       if (tagged.freeze) page.freeze = tagged.freeze;

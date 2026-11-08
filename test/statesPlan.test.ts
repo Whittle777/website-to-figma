@@ -96,15 +96,19 @@ describe("request previews (nothing sent)", () => {
     const doc = buildStatePreview(parseStatePlan(basePlan()));
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(doc.sent).toBe(false);
-    expect(doc.executor).toBe("none");
-    expect(doc.notice.join(" ")).toMatch(/automatic state capture is unsupported/);
+    expect(doc.executor).toBe("states-run (separate, gated)");
+    expect(doc.notice.join(" ")).toMatch(/NOT SENT.*never retries/);
     expect(doc.notice.join(" ")).toMatch(/cost .* UNKNOWN/i);
     const r = doc.requests[0]!;
     // wait, freeze, lazy, then per state: state+screenshot+scrape (+revert for synthetic)
     expect(r.roles.map((x) => x.role)).toEqual(["wait", "freeze", "lazy", "state", "screenshot", "scrape", "state", "screenshot", "scrape", "revert", "state", "screenshot", "scrape", "revert"]);
     expect(r.actionCount).toBe(14);
     expect(r.actionCount).toBeLessThanOrEqual(STATE_LIMITS.providerMaxActions);
-    expect(r.combinedWaitMs).toBe(2000 + 7 * 300 + 3 * 300);
+    expect(r.combinedWaitMs).toBe(2000 + 7 * 300 + 1500 + 3 * 300);
+    // standard-only body: rawHtml only, no JSON/LLM formats, no threatProtection override
+    expect(r.body.formats).toEqual(["rawHtml"]);
+    expect(Object.keys(r.body).sort()).toEqual(["actions", "blockAds", "checkPromptInjection", "formats", "lockdown", "mobile", "onlyMainContent", "parsers", "proxy", "redactPII", "removeBase64Images", "timeout", "url"]);
+    expect(r.body).toMatchObject({ proxy: "basic", checkPromptInjection: false, parsers: [] });
     expect(r.states.map((s) => [s.name, s.provenance, s.screenshotIndex])).toEqual([["Default", "baseline", 0], ["FAQ open", "synthetic", 1], ["Tab two", "synthetic", 2]]);
     expect(r.states[1]!.review).toMatch(/no handler side-effect guarantee/);
     expect(r.body.actions.every((a) => ["wait", "executeJavascript", "screenshot", "scrape"].includes(a.type as string))).toBe(true);
@@ -246,10 +250,20 @@ describe("browser scripts in jsdom (synthetic markup)", () => {
     expect(r.media[1].webgl).toBe(false);
   });
 
+  it("visibility settle is bounded and reports pending images", async () => {
+    const { w, run } = dom('<img src="https://example.com/never.png">');
+    Object.defineProperty(w.HTMLImageElement.prototype, "complete", { get: () => false });
+    const t0 = Date.now();
+    const r = (await run(fill(LAZY_JS, { MAX_STEPS: 0, MAX_PX: 0, STEP_WAIT_MS: 0, VISIBILITY_MS: 120 }))) as any;
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(r.settle).toMatchObject({ images: 1, imagesPending: 1, settled: false });
+  });
+
   it("lazy scroll is step-bounded", async () => {
     const { w, run } = dom("<div></div>");
     Object.defineProperty(w.document.documentElement, "scrollHeight", { get: () => 1_000_000 });
-    const r = (await run(fill(LAZY_JS, { MAX_STEPS: 3, MAX_PX: 100_000, STEP_WAIT_MS: 0 }))) as any;
+    const r = (await run(fill(LAZY_JS, { MAX_STEPS: 3, MAX_PX: 100_000, STEP_WAIT_MS: 0, VISIBILITY_MS: 50 }))) as any;
     expect(r).toMatchObject({ w2f: "lazy", steps: 3, reachedBottom: false, capped: true });
+    expect(r.settle).toMatchObject({ images: 0, imagesPending: 0 });
   });
 });

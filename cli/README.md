@@ -22,9 +22,15 @@ Hi-fi (schemaVersion 2), offline only:
 (offline adapter for saved scrape responses; also reads tagged state returns) and
 `node website-to-figma.mjs fixture hifi` / `fixture hifi-states`.
 
-State PLANNER (previews only; sends nothing; no executor, so automatic state capture is
-unsupported; no clicks; synthetic DOM modifications only, with no handler side-effect guarantee;
-provider cost unknown): `node website-to-figma.mjs states-plan --plan state-plan.json --out preview.json`.
+State planner + gated hosted executor (see the repository README, "Interactive states"):
+`states-plan --plan P --out preview.json` (sends nothing);
+`states-run --plan P --preview preview.json --out DIR --ledger L --operator-credits-per-request N
+--operator-reported-balance N --confirm-existing-credits --confirm-no-topup
+[--acknowledge-synthetic-modifications] [--yes]`. This makes one request per page with one attempt
+and no retries, and HOLDS without `--yes`. N is your asserted reservation, not a price; provider
+cost is unknown. The local ledger is a 1000-credit project budget ceiling, NOT a provider cap.
+`ledger init|show|resolve|record`; `states-screenshots --run DIR --out DIR [--yes]`. No clicks;
+synthetic DOM modifications only, with no handler side-effect guarantee.
 Optional: `hifi ... --state-reactions click-cycle` adds ON_CLICK -> CHANGE_TO prototype reactions
 between state variants. For the input formats, bounds and limits, see "Hi-fi
 import" in the repository README. Nothing is fetched; assets are local, hash-pinned PNG/JPEG/GIF

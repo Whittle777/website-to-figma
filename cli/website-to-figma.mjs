@@ -377,7 +377,7 @@ function workerSpec() {
   return self2.endsWith(".ts") ? { url: new URL("./buildWorker.ts", self2), execArgv: ["--import", "tsx"] } : { url: new URL("./buildWorker.js", self2), execArgv: [] };
 }
 function buildSiteMapBounded(input, deadlineMs = LIMITS.extractDeadlineMs) {
-  return new Promise((resolve4, reject) => {
+  return new Promise((resolve5, reject) => {
     const spec2 = workerSpec();
     const worker = new Worker(spec2.url, {
       execArgv: spec2.execArgv,
@@ -399,7 +399,7 @@ function buildSiteMapBounded(input, deadlineMs = LIMITS.extractDeadlineMs) {
     worker.once("message", (msg) => {
       if (!msg.ok) return finish(() => reject(new Error(msg.error ?? "Extraction failed")));
       const r = validateSiteMap(msg.doc);
-      finish(() => r.ok ? resolve4(r.doc) : reject(new Error(`Worker output failed validation: ${r.errors[0]}`)));
+      finish(() => r.ok ? resolve5(r.doc) : reject(new Error(`Worker output failed validation: ${r.errors[0]}`)));
     });
     worker.once("error", (err) => finish(() => reject(new Error(`Extraction worker failed: ${err instanceof Error ? err.message : String(err)}`))));
     worker.once("exit", (code) => finish(() => reject(new Error(`Extraction worker exited early (code ${code})`))));
@@ -624,7 +624,7 @@ function tileReference(bytes, opts = {}) {
   const count = Math.ceil(facts.height / tileH);
   if (count > LIMITS.refTileMaxTiles) return Promise.reject(new Error(`would need ${count} tiles (max ${LIMITS.refTileMaxTiles})`));
   const timeoutMs = opts.timeoutMs ?? LIMITS.refTileTimeoutMs;
-  return new Promise((resolve4, reject) => {
+  return new Promise((resolve5, reject) => {
     const s = spec();
     const worker = new Worker2(s.url, {
       execArgv: s.execArgv,
@@ -653,7 +653,7 @@ function tileReference(bytes, opts = {}) {
             if (b.length > LIMITS.hifiMaxAssetBytes) throw new Error(`tile ${i} larger than ${LIMITS.hifiMaxAssetBytes} bytes`);
             return { y: t.y, h: t.h, bytes: b, sha256: sha(b) };
           });
-          resolve4({ sourceSha256: sha(bytes), width: facts.width, height: facts.height, tiles });
+          resolve5({ sourceSha256: sha(bytes), width: facts.width, height: facts.height, tiles });
         } catch (err) {
           reject(err);
         }
@@ -6090,19 +6090,19 @@ function parseHttpUrl(raw) {
   }
   return url2;
 }
-async function assertHostedFirecrawlUrl(raw, resolve4 = systemResolver, cache) {
+async function assertHostedFirecrawlUrl(raw, resolve5 = systemResolver, cache) {
   const url2 = parseHttpUrl(raw);
   if (HOSTED_DNS_CHECK_EXEMPT_HOSTNAMES.has(url2.hostname)) return url2;
-  return assertPublicHttpUrl(raw, resolve4, cache);
+  return assertPublicHttpUrl(raw, resolve5, cache);
 }
-async function assertPublicHttpUrl(raw, resolve4 = systemResolver, cache) {
+async function assertPublicHttpUrl(raw, resolve5 = systemResolver, cache) {
   const url2 = parseHttpUrl(raw);
   const host = url2.hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "").toLowerCase();
   if (isIP(host) !== 0) return url2;
   const check = async () => {
     let addrs;
     try {
-      addrs = await resolve4(host);
+      addrs = await resolve5(host);
     } catch (err) {
       if (err instanceof UnsafeUrlError) throw err;
       throw new UnsafeUrlError(`Could not resolve ${host}`);
@@ -6857,7 +6857,7 @@ var require_crc = __commonJS({
 var require_parser = __commonJS({
   "node_modules/pngjs/lib/parser.js"(exports2, module) {
     "use strict";
-    var constants2 = require_constants();
+    var constants4 = require_constants();
     var CrcCalculator = require_crc();
     var Parser = module.exports = function(options, dependencies2) {
       this._options = options;
@@ -6868,12 +6868,12 @@ var require_parser = __commonJS({
       this._palette = [];
       this._colorType = 0;
       this._chunks = {};
-      this._chunks[constants2.TYPE_IHDR] = this._handleIHDR.bind(this);
-      this._chunks[constants2.TYPE_IEND] = this._handleIEND.bind(this);
-      this._chunks[constants2.TYPE_IDAT] = this._handleIDAT.bind(this);
-      this._chunks[constants2.TYPE_PLTE] = this._handlePLTE.bind(this);
-      this._chunks[constants2.TYPE_tRNS] = this._handleTRNS.bind(this);
-      this._chunks[constants2.TYPE_gAMA] = this._handleGAMA.bind(this);
+      this._chunks[constants4.TYPE_IHDR] = this._handleIHDR.bind(this);
+      this._chunks[constants4.TYPE_IEND] = this._handleIEND.bind(this);
+      this._chunks[constants4.TYPE_IDAT] = this._handleIDAT.bind(this);
+      this._chunks[constants4.TYPE_PLTE] = this._handlePLTE.bind(this);
+      this._chunks[constants4.TYPE_tRNS] = this._handleTRNS.bind(this);
+      this._chunks[constants4.TYPE_gAMA] = this._handleGAMA.bind(this);
       this.read = dependencies2.read;
       this.error = dependencies2.error;
       this.metadata = dependencies2.metadata;
@@ -6888,10 +6888,10 @@ var require_parser = __commonJS({
       };
     };
     Parser.prototype.start = function() {
-      this.read(constants2.PNG_SIGNATURE.length, this._parseSignature.bind(this));
+      this.read(constants4.PNG_SIGNATURE.length, this._parseSignature.bind(this));
     };
     Parser.prototype._parseSignature = function(data) {
-      let signature = constants2.PNG_SIGNATURE;
+      let signature = constants4.PNG_SIGNATURE;
       for (let i = 0; i < signature.length; i++) {
         if (data[i] !== signature[i]) {
           this.error(new Error("Invalid file signature"));
@@ -6908,7 +6908,7 @@ var require_parser = __commonJS({
         name3 += String.fromCharCode(data[i]);
       }
       let ancillary = Boolean(data[4] & 32);
-      if (!this._hasIHDR && type2 !== constants2.TYPE_IHDR) {
+      if (!this._hasIHDR && type2 !== constants4.TYPE_IHDR) {
         this.error(new Error("Expected IHDR on beggining"));
         return;
       }
@@ -6956,7 +6956,7 @@ var require_parser = __commonJS({
         this.error(new Error("Unsupported bit depth " + depth));
         return;
       }
-      if (!(colorType in constants2.COLORTYPE_TO_BPP_MAP)) {
+      if (!(colorType in constants4.COLORTYPE_TO_BPP_MAP)) {
         this.error(new Error("Unsupported color type"));
         return;
       }
@@ -6973,16 +6973,16 @@ var require_parser = __commonJS({
         return;
       }
       this._colorType = colorType;
-      let bpp = constants2.COLORTYPE_TO_BPP_MAP[this._colorType];
+      let bpp = constants4.COLORTYPE_TO_BPP_MAP[this._colorType];
       this._hasIHDR = true;
       this.metadata({
         width,
         height,
         depth,
         interlace: Boolean(interlace),
-        palette: Boolean(colorType & constants2.COLORTYPE_PALETTE),
-        color: Boolean(colorType & constants2.COLORTYPE_COLOR),
-        alpha: Boolean(colorType & constants2.COLORTYPE_ALPHA),
+        palette: Boolean(colorType & constants4.COLORTYPE_PALETTE),
+        color: Boolean(colorType & constants4.COLORTYPE_COLOR),
+        alpha: Boolean(colorType & constants4.COLORTYPE_ALPHA),
         bpp,
         colorType
       });
@@ -7006,7 +7006,7 @@ var require_parser = __commonJS({
     };
     Parser.prototype._parseTRNS = function(data) {
       this._crc.write(data);
-      if (this._colorType === constants2.COLORTYPE_PALETTE_COLOR) {
+      if (this._colorType === constants4.COLORTYPE_PALETTE_COLOR) {
         if (this._palette.length === 0) {
           this.error(new Error("Transparency chunk must be after palette"));
           return;
@@ -7020,10 +7020,10 @@ var require_parser = __commonJS({
         }
         this.palette(this._palette);
       }
-      if (this._colorType === constants2.COLORTYPE_GRAYSCALE) {
+      if (this._colorType === constants4.COLORTYPE_GRAYSCALE) {
         this.transColor([data.readUInt16BE(0)]);
       }
-      if (this._colorType === constants2.COLORTYPE_COLOR) {
+      if (this._colorType === constants4.COLORTYPE_COLOR) {
         this.transColor([
           data.readUInt16BE(0),
           data.readUInt16BE(2),
@@ -7037,7 +7037,7 @@ var require_parser = __commonJS({
     };
     Parser.prototype._parseGAMA = function(data) {
       this._crc.write(data);
-      this.gamma(data.readUInt32BE(0) / constants2.GAMMA_DIVISION);
+      this.gamma(data.readUInt32BE(0) / constants4.GAMMA_DIVISION);
       this._handleChunkEnd();
     };
     Parser.prototype._handleIDAT = function(length) {
@@ -7049,7 +7049,7 @@ var require_parser = __commonJS({
     };
     Parser.prototype._parseIDAT = function(length, data) {
       this._crc.write(data);
-      if (this._colorType === constants2.COLORTYPE_PALETTE_COLOR && this._palette.length === 0) {
+      if (this._colorType === constants4.COLORTYPE_PALETTE_COLOR && this._palette.length === 0) {
         throw new Error("Expected palette not found");
       }
       this.inflateData(data);
@@ -7537,9 +7537,9 @@ var require_parser_async = __commonJS({
 var require_bitpacker = __commonJS({
   "node_modules/pngjs/lib/bitpacker.js"(exports2, module) {
     "use strict";
-    var constants2 = require_constants();
+    var constants4 = require_constants();
     module.exports = function(dataIn, width, height, options) {
-      let outHasAlpha = [constants2.COLORTYPE_COLOR_ALPHA, constants2.COLORTYPE_ALPHA].indexOf(
+      let outHasAlpha = [constants4.COLORTYPE_COLOR_ALPHA, constants4.COLORTYPE_ALPHA].indexOf(
         options.colorType
       ) !== -1;
       if (options.colorType === options.inputColorType) {
@@ -7559,11 +7559,11 @@ var require_bitpacker = __commonJS({
       }
       let data = options.bitDepth !== 16 ? dataIn : new Uint16Array(dataIn.buffer);
       let maxValue = 255;
-      let inBpp = constants2.COLORTYPE_TO_BPP_MAP[options.inputColorType];
+      let inBpp = constants4.COLORTYPE_TO_BPP_MAP[options.inputColorType];
       if (inBpp === 4 && !options.inputHasAlpha) {
         inBpp = 3;
       }
-      let outBpp = constants2.COLORTYPE_TO_BPP_MAP[options.colorType];
+      let outBpp = constants4.COLORTYPE_TO_BPP_MAP[options.colorType];
       if (options.bitDepth === 16) {
         maxValue = 65535;
         outBpp *= 2;
@@ -7587,24 +7587,24 @@ var require_bitpacker = __commonJS({
         let blue;
         let alpha = maxValue;
         switch (options.inputColorType) {
-          case constants2.COLORTYPE_COLOR_ALPHA:
+          case constants4.COLORTYPE_COLOR_ALPHA:
             alpha = data[inIndex + 3];
             red = data[inIndex];
             green = data[inIndex + 1];
             blue = data[inIndex + 2];
             break;
-          case constants2.COLORTYPE_COLOR:
+          case constants4.COLORTYPE_COLOR:
             red = data[inIndex];
             green = data[inIndex + 1];
             blue = data[inIndex + 2];
             break;
-          case constants2.COLORTYPE_ALPHA:
+          case constants4.COLORTYPE_ALPHA:
             alpha = data[inIndex + 1];
             red = data[inIndex];
             green = red;
             blue = red;
             break;
-          case constants2.COLORTYPE_GRAYSCALE:
+          case constants4.COLORTYPE_GRAYSCALE:
             red = data[inIndex];
             green = red;
             blue = red;
@@ -7637,8 +7637,8 @@ var require_bitpacker = __commonJS({
         for (let x = 0; x < width; x++) {
           let rgba = getRGBA(data, inIndex);
           switch (options.colorType) {
-            case constants2.COLORTYPE_COLOR_ALPHA:
-            case constants2.COLORTYPE_COLOR:
+            case constants4.COLORTYPE_COLOR_ALPHA:
+            case constants4.COLORTYPE_COLOR:
               if (options.bitDepth === 8) {
                 outData[outIndex] = rgba.red;
                 outData[outIndex + 1] = rgba.green;
@@ -7655,8 +7655,8 @@ var require_bitpacker = __commonJS({
                 }
               }
               break;
-            case constants2.COLORTYPE_ALPHA:
-            case constants2.COLORTYPE_GRAYSCALE: {
+            case constants4.COLORTYPE_ALPHA:
+            case constants4.COLORTYPE_GRAYSCALE: {
               let grayscale = (rgba.red + rgba.green + rgba.blue) / 3;
               if (options.bitDepth === 8) {
                 outData[outIndex] = grayscale;
@@ -7829,7 +7829,7 @@ var require_filter_pack = __commonJS({
 var require_packer = __commonJS({
   "node_modules/pngjs/lib/packer.js"(exports2, module) {
     "use strict";
-    var constants2 = require_constants();
+    var constants4 = require_constants();
     var CrcStream = require_crc();
     var bitPacker = require_bitpacker();
     var filter3 = require_filter_pack();
@@ -7842,23 +7842,23 @@ var require_packer = __commonJS({
       options.inputHasAlpha = options.inputHasAlpha != null ? options.inputHasAlpha : true;
       options.deflateFactory = options.deflateFactory || zlib2.createDeflate;
       options.bitDepth = options.bitDepth || 8;
-      options.colorType = typeof options.colorType === "number" ? options.colorType : constants2.COLORTYPE_COLOR_ALPHA;
-      options.inputColorType = typeof options.inputColorType === "number" ? options.inputColorType : constants2.COLORTYPE_COLOR_ALPHA;
+      options.colorType = typeof options.colorType === "number" ? options.colorType : constants4.COLORTYPE_COLOR_ALPHA;
+      options.inputColorType = typeof options.inputColorType === "number" ? options.inputColorType : constants4.COLORTYPE_COLOR_ALPHA;
       if ([
-        constants2.COLORTYPE_GRAYSCALE,
-        constants2.COLORTYPE_COLOR,
-        constants2.COLORTYPE_COLOR_ALPHA,
-        constants2.COLORTYPE_ALPHA
+        constants4.COLORTYPE_GRAYSCALE,
+        constants4.COLORTYPE_COLOR,
+        constants4.COLORTYPE_COLOR_ALPHA,
+        constants4.COLORTYPE_ALPHA
       ].indexOf(options.colorType) === -1) {
         throw new Error(
           "option color type:" + options.colorType + " is not supported at present"
         );
       }
       if ([
-        constants2.COLORTYPE_GRAYSCALE,
-        constants2.COLORTYPE_COLOR,
-        constants2.COLORTYPE_COLOR_ALPHA,
-        constants2.COLORTYPE_ALPHA
+        constants4.COLORTYPE_GRAYSCALE,
+        constants4.COLORTYPE_COLOR,
+        constants4.COLORTYPE_COLOR_ALPHA,
+        constants4.COLORTYPE_ALPHA
       ].indexOf(options.inputColorType) === -1) {
         throw new Error(
           "option input color type:" + options.inputColorType + " is not supported at present"
@@ -7882,7 +7882,7 @@ var require_packer = __commonJS({
     };
     Packer.prototype.filterData = function(data, width, height) {
       let packedData = bitPacker(data, width, height, this._options);
-      let bpp = constants2.COLORTYPE_TO_BPP_MAP[this._options.colorType];
+      let bpp = constants4.COLORTYPE_TO_BPP_MAP[this._options.colorType];
       let filteredData = filter3(packedData, width, height, this._options, bpp);
       return filteredData;
     };
@@ -7902,8 +7902,8 @@ var require_packer = __commonJS({
     };
     Packer.prototype.packGAMA = function(gamma) {
       let buf = Buffer.alloc(4);
-      buf.writeUInt32BE(Math.floor(gamma * constants2.GAMMA_DIVISION), 0);
-      return this._packChunk(constants2.TYPE_gAMA, buf);
+      buf.writeUInt32BE(Math.floor(gamma * constants4.GAMMA_DIVISION), 0);
+      return this._packChunk(constants4.TYPE_gAMA, buf);
     };
     Packer.prototype.packIHDR = function(width, height) {
       let buf = Buffer.alloc(13);
@@ -7914,13 +7914,13 @@ var require_packer = __commonJS({
       buf[10] = 0;
       buf[11] = 0;
       buf[12] = 0;
-      return this._packChunk(constants2.TYPE_IHDR, buf);
+      return this._packChunk(constants4.TYPE_IHDR, buf);
     };
     Packer.prototype.packIDAT = function(data) {
-      return this._packChunk(constants2.TYPE_IDAT, data);
+      return this._packChunk(constants4.TYPE_IDAT, data);
     };
     Packer.prototype.packIEND = function() {
-      return this._packChunk(constants2.TYPE_IEND, null);
+      return this._packChunk(constants4.TYPE_IEND, null);
     };
   }
 });
@@ -7931,7 +7931,7 @@ var require_packer_async = __commonJS({
     "use strict";
     var util5 = __require("util");
     var Stream = __require("stream");
-    var constants2 = require_constants();
+    var constants4 = require_constants();
     var Packer = require_packer();
     var PackerAsync = module.exports = function(opt) {
       Stream.call(this);
@@ -7942,7 +7942,7 @@ var require_packer_async = __commonJS({
     };
     util5.inherits(PackerAsync, Stream);
     PackerAsync.prototype.pack = function(data, width, height, gamma) {
-      this.emit("data", Buffer.from(constants2.PNG_SIGNATURE));
+      this.emit("data", Buffer.from(constants4.PNG_SIGNATURE));
       this.emit("data", this._packer.packIHDR(width, height));
       if (gamma) {
         this.emit("data", this._packer.packGAMA(gamma));
@@ -8270,7 +8270,7 @@ var require_packer_sync = __commonJS({
     if (!zlib2.deflateSync) {
       hasSyncZlib = false;
     }
-    var constants2 = require_constants();
+    var constants4 = require_constants();
     var Packer = require_packer();
     module.exports = function(metaData, opt) {
       if (!hasSyncZlib) {
@@ -8281,7 +8281,7 @@ var require_packer_sync = __commonJS({
       let options = opt || {};
       let packer = new Packer(options);
       let chunks = [];
-      chunks.push(Buffer.from(constants2.PNG_SIGNATURE));
+      chunks.push(Buffer.from(constants4.PNG_SIGNATURE));
       chunks.push(packer.packIHDR(metaData.width, metaData.height));
       if (metaData.gamma) {
         chunks.push(packer.packGAMA(metaData.gamma));
@@ -10004,6 +10004,13 @@ function convertCapture(input) {
     } else if (refAsset && refAsset.kind === "reference") referenceAssetId = assetIdFor(refAsset);
     else if (refId && !refRejected) warn(warnings, `Reference screenshot "${refId}" not available (missing or rejected asset; see document warnings)`);
     else if (!refId && !refRejected) warn(warnings, "No reference screenshot supplied for this page");
+    if (isObj2(rp.run)) {
+      const r = rp.run;
+      notes.push(`Hosted state run ${str(r.runId, 32)}: 1 request, attempts ${String(r.attempts)}, no retries; request sha256 ${str(r.requestSha256, 64).slice(0, 16)}...; request-specific credits ${typeof r.reportedCreditsUsed === "number" ? r.reportedCreditsUsed : "NOT reported (unknown)"}`);
+      if (Array.isArray(r.warnings)) {
+        for (const w of r.warnings.slice(0, 10)) if (typeof w === "string") warn(warnings, `State run: ${w}`);
+      }
+    }
     regionsByPage.push({
       nav: elements.map(rectWithTag).find((e2) => e2?.tag === "nav")?.r ?? null,
       footer: elements.map(rectWithTag).find((e2) => e2?.tag === "footer")?.r ?? null
@@ -10366,7 +10373,7 @@ var init_scripts = __esm({
   return r;
 })()`;
     LAZY_JS = String.raw`(async () => {
-  const maxSteps = __MAX_STEPS__, maxPx = __MAX_PX__, stepWait = __STEP_WAIT_MS__;
+  const maxSteps = __MAX_STEPS__, maxPx = __MAX_PX__, stepWait = __STEP_WAIT_MS__, settleMs = __VISIBILITY_MS__;
   const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
   let steps = 0, y = 0;
   const step = Math.max(200, Math.min(window.innerHeight || 800, 2000));
@@ -10377,7 +10384,13 @@ var init_scripts = __esm({
   }
   const reachedBottom = y + (window.innerHeight || 800) >= document.documentElement.scrollHeight;
   window.scrollTo(0, 0); await sleep(stepWait);
-  return { w2f: "lazy", steps, scrolledTo: y, reachedBottom, capped: !reachedBottom };
+  const t0 = Date.now();
+  let fontsReady = null;
+  try { if (document.fonts && document.fonts.ready) fontsReady = await Promise.race([document.fonts.ready.then(() => true), sleep(settleMs).then(() => false)]); } catch (e) { fontsReady = false; }
+  const imgs = Array.from(document.images).slice(0, 2000);
+  while (Date.now() - t0 < settleMs && imgs.some((i) => !i.complete)) await sleep(100);
+  const imagesPending = imgs.filter((i) => !i.complete).length;
+  return { w2f: "lazy", steps, scrolledTo: y, reachedBottom, capped: !reachedBottom, settle: { fontsReady, images: imgs.length, imagesPending, waitedMs: Date.now() - t0, settled: fontsReady !== false && imagesPending === 0 } };
 })()`;
     STATE_JS = String.raw`(async () => {
   const STATE = __STATE__;
@@ -10558,11 +10571,12 @@ function parseStatePlan(json) {
     seenUrls.add(url2.href);
     const lazyRaw = raw.lazy === void 0 ? {} : raw.lazy;
     if (!isObj3(lazyRaw)) throw new StatePlanError(`${p}.lazy: expected object`);
-    keys(lazyRaw, `${p}.lazy`, ["steps", "maxPx", "stepWaitMs"]);
+    keys(lazyRaw, `${p}.lazy`, ["steps", "maxPx", "stepWaitMs", "visibilityMs"]);
     const lazy = {
       steps: int(lazyRaw.steps, `${p}.lazy.steps`, 6, 0, STATE_LIMITS.maxLazySteps),
       maxPx: int(lazyRaw.maxPx, `${p}.lazy.maxPx`, 2e4, 0, STATE_LIMITS.maxLazyPx),
-      stepWaitMs: int(lazyRaw.stepWaitMs, `${p}.lazy.stepWaitMs`, 300, 0, STATE_LIMITS.maxLazyStepWaitMs)
+      stepWaitMs: int(lazyRaw.stepWaitMs, `${p}.lazy.stepWaitMs`, 300, 0, STATE_LIMITS.maxLazyStepWaitMs),
+      visibilityMs: int(lazyRaw.visibilityMs, `${p}.lazy.visibilityMs`, 1500, 0, STATE_LIMITS.maxVisibilityMs)
     };
     const rawStates = raw.states === void 0 ? [] : raw.states;
     if (!Array.isArray(rawStates) || rawStates.length > STATE_LIMITS.maxStatesPerPage - 1) {
@@ -10621,10 +10635,8 @@ function buildStateRequest(plan, page) {
     waits += page.waitMs;
   }
   push("freeze", { type: "executeJavascript", script: fill(FREEZE_JS, { FORCE_AOS: plan.forceAos }) });
-  if (page.lazy.steps > 0) {
-    push("lazy", { type: "executeJavascript", script: fill(LAZY_JS, { MAX_STEPS: page.lazy.steps, MAX_PX: page.lazy.maxPx, STEP_WAIT_MS: page.lazy.stepWaitMs }) });
-    waits += (page.lazy.steps + 1) * page.lazy.stepWaitMs;
-  }
+  push("lazy", { type: "executeJavascript", script: fill(LAZY_JS, { MAX_STEPS: page.lazy.steps, MAX_PX: page.lazy.maxPx, STEP_WAIT_MS: page.lazy.stepWaitMs, VISIBILITY_MS: page.lazy.visibilityMs }) });
+  waits += (page.lazy.steps + 1) * page.lazy.stepWaitMs + page.lazy.visibilityMs;
   const states = [];
   let shots = 0;
   page.states.forEach((s, seq) => {
@@ -10641,7 +10653,7 @@ function buildStateRequest(plan, page) {
   return {
     pageUrl: page.url,
     sent: false,
-    body: { url: page.url, formats: ["rawHtml"], onlyMainContent: false, timeout: STATE_LIMITS.requestTimeoutMs, actions },
+    body: { url: page.url, formats: ["rawHtml"], timeout: STATE_LIMITS.requestTimeoutMs, actions, ...STATE_SCRAPE_OPTIONS, parsers: [] },
     roles,
     actionCount: actions.length,
     combinedWaitMs: waits,
@@ -10658,7 +10670,7 @@ function buildStatePreview(plan) {
     schema: "website-to-figma/state-request-preview",
     schemaVersion: 1,
     sent: false,
-    executor: "none",
+    executor: "states-run (separate, gated)",
     notice: PREVIEW_NOTICE,
     site: plan.site,
     budgets: { maxActions: plan.maxActions, maxCombinedWaitMs: plan.maxCombinedWaitMs, maxPages: STATE_LIMITS.maxPages, maxStatesPerPage: STATE_LIMITS.maxStatesPerPage, maxStateReturnChars: STATE_LIMITS.maxStateReturnChars },
@@ -10666,7 +10678,7 @@ function buildStatePreview(plan) {
     manualRoute
   };
 }
-var StatePlanError, STATE_LIMITS, ATTRIBUTES, REFUSED_MECHANISMS, NAME, CLASS, isObj3, SYNTHETIC_REVIEW, PREVIEW_NOTICE;
+var StatePlanError, STATE_LIMITS, ATTRIBUTES, REFUSED_MECHANISMS, NAME, CLASS, isObj3, STATE_SCRAPE_OPTIONS, SYNTHETIC_REVIEW, PREVIEW_NOTICE;
 var init_plan = __esm({
   "src/states/plan.ts"() {
     "use strict";
@@ -10691,6 +10703,7 @@ var init_plan = __esm({
       maxLazySteps: 10,
       maxLazyPx: 3e4,
       maxLazyStepWaitMs: 1e3,
+      maxVisibilityMs: 5e3,
       requestTimeoutMs: 9e4,
       maxStateReturnChars: 6e6
       // per measured state, enforced in-browser and by the adapter
@@ -10709,11 +10722,22 @@ var init_plan = __esm({
     NAME = /^[A-Za-z0-9][A-Za-z0-9 _-]{0,39}$/;
     CLASS = /^[A-Za-z_-][A-Za-z0-9_-]{0,63}$/;
     isObj3 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+    STATE_SCRAPE_OPTIONS = {
+      onlyMainContent: false,
+      blockAds: true,
+      removeBase64Images: true,
+      parsers: [],
+      proxy: "basic",
+      lockdown: false,
+      checkPromptInjection: false,
+      redactPII: false,
+      mobile: false
+    };
     SYNTHETIC_REVIEW = "SYNTHETIC modification (not the page's observed original state); NOT executed; operator review required: attribute/class/open changes can run page MutationObservers, toggle listeners or custom-element callbacks - no handler side-effect guarantee";
     PREVIEW_NOTICE = [
-      "NOT SENT. This tool has no executor: automatic state capture is unsupported. Nothing was fetched, no key was read, no account API was called.",
+      "NOT SENT. Planning sends nothing. Execution is a separate, operator-gated command (states-run) that fails closed without explicit operator pricing, ledger and credit confirmations, and never retries.",
       "Synthetic states are DOM modifications (not observed original states) for manual operator review; no handler side-effect guarantee.",
-      "Provider cost of these requests is UNKNOWN: Firecrawl documents 1 credit per scrape but no per-action price; no estimate is given.",
+      "Provider cost of these requests is UNKNOWN: Firecrawl documents 1 credit per scrape but no per-action/screenshot price; no estimate is given (only the operator's own asserted price is used, to reserve ledger budget).",
       "Screenshot URLs in a provider response expire (documented 24 h) and are never downloaded by this tool.",
       "Not frozen: JS timers, requestAnimationFrame loops, WebGL/canvas rendering. Cross-origin stylesheets cannot be read (reported as inaccessible)."
     ];
@@ -10825,6 +10849,19 @@ function captureFromScrapeResponses(responses, label) {
   const warnings = [];
   for (const { name: name3, json } of responses) {
     const root = isObj5(json) ? json : null;
+    let run = null;
+    if (root && root.w2fRun !== void 0) {
+      const r = root.w2fRun;
+      if (!isObj5(r) || r.schema !== "website-to-figma/state-run" || r.schemaVersion !== 1) throw new CaptureError(`${name3}: malformed w2fRun record`);
+      if (r.status !== "accepted") throw new CaptureError(`${name3}: state run status "${String(r.status)}" (${String(r.reason ?? "")}); not usable. Review it manually; nothing is retried automatically.`);
+      run = {
+        runId: String(r.runId).slice(0, 32),
+        requestSha256: String(r.requestSha256).slice(0, 64),
+        attempts: r.attempts,
+        reportedCreditsUsed: typeof r.reportedCreditsUsed === "number" ? r.reportedCreditsUsed : null,
+        warnings: Array.isArray(r.warnings) ? r.warnings.filter((w) => typeof w === "string").slice(0, 10) : []
+      };
+    }
     const data = root && isObj5(root.data) ? root.data : root;
     if (!data) throw new CaptureError(`${name3}: expected a JSON object`);
     const tagged = adaptTaggedReturns(data, name3);
@@ -10835,6 +10872,7 @@ function captureFromScrapeResponses(responses, label) {
     const url2 = [measured2.url, meta.url, meta.sourceURL].find((u) => typeof u === "string" && u.length > 0);
     if (!url2) throw new CaptureError(`${name3}: no page URL (measured.url or metadata.url)`);
     const page = { url: url2, measured: measured2 };
+    if (run) page.run = run;
     if (tagged) {
       page.states = tagged.states;
       if (tagged.freeze) page.freeze = tagged.freeze;
@@ -11136,109 +11174,190 @@ var init_assets = __esm({
   }
 });
 
-// src/crawl/plan.ts
-function normalizeExcludePrefix(raw) {
-  if (typeof raw !== "string" || !raw.startsWith("/")) throw new CrawlPolicyError(`--exclude must be a path starting with "/" (got ${JSON.stringify(raw)})`);
-  if (raw.length > 200) throw new CrawlPolicyError("--exclude path is too long");
-  if (!/^[A-Za-z0-9._~\-/]+$/.test(raw)) throw new CrawlPolicyError(`--exclude ${raw}: only letters, digits, "._~-/" are allowed`);
-  if (raw.includes("//") || raw.split("/").some((s) => s === "." || s === "..")) {
-    throw new CrawlPolicyError(`--exclude ${raw}: empty, "." or ".." segments are not allowed`);
+// src/states/ledger.ts
+import { closeSync as closeSync2, constants as constants2, fchmodSync, fstatSync as fstatSync2, fsyncSync, lstatSync, openSync as openSync2, readSync as readSync2, renameSync, unlinkSync, writeSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+function parseLedger(text) {
+  let j;
+  try {
+    j = JSON.parse(text);
+  } catch {
+    throw new LedgerError("ledger: not valid JSON");
   }
-  const p = raw.replace(/\/+$/, "");
-  if (p === "") throw new CrawlPolicyError('--exclude "/" would exclude the whole site');
-  return p;
-}
-function normalizeExcludes(raw) {
-  if (raw.length > MAX_EXCLUDES) throw new CrawlPolicyError(`At most ${MAX_EXCLUDES} --exclude values`);
-  return [...new Set(raw.map(normalizeExcludePrefix))].sort();
-}
-function escapeRegex2(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-function excludeRegex(prefix) {
-  return `^/?${escapeRegex2(prefix.slice(1))}(?:/.*)?$`;
-}
-function isExcludedPath(pathname, prefixes) {
-  return prefixes.some((p) => pathname === p || pathname.startsWith(p + "/"));
-}
-function buildCrawlRequest(limit, excludes) {
-  const req = {
-    limit,
-    allowSubdomains: false,
-    allowExternalLinks: false,
-    crawlEntireDomain: false,
-    maxDiscoveryDepth: 3,
-    // "skip" uses HTML links only (docs: features/crawl): the site's sitemap,
-    // including any private/odd hosts it lists, is never used for discovery.
-    sitemap: "skip",
-    ignoreQueryParameters: true,
-    deduplicateSimilarURLs: true,
-    regexOnFullURL: false,
-    zeroDataRetention: false,
-    scrapeOptions: { ...SCRAPE_OPTIONS }
-  };
-  if (excludes.length > 0) req.excludePaths = excludes.map(excludeRegex);
-  return req;
-}
-function buildMapRequest() {
-  return {
-    limit: LIMITS.maxMapLinks,
-    sitemap: "skip",
-    includeSubdomains: false,
-    ignoreQueryParameters: true,
-    timeout: 3e4
-  };
-}
-function standardEstimate(limit, useMap) {
-  return (useMap ? CREDITS_PER_MAP_CALL : 0) + limit * MAX_CREDITS_PER_PAGE;
-}
-function assertOperatorPrerequisites(limit, useMap, a) {
-  const estimate = standardEstimate(limit, useMap);
-  const { maxCredits, reportedBalance } = a;
-  if (maxCredits === void 0) throw new CrawlPolicyError(`Refusing: --max-credits (accepted-risk budget) is required (standard estimate ${estimate}, not a guarantee)`);
-  if (!Number.isInteger(maxCredits) || maxCredits < 1) throw new CrawlPolicyError("--max-credits must be a positive integer");
-  if (estimate > maxCredits) throw new CrawlPolicyError(`Refusing: standard estimate ${estimate} credits already exceeds --max-credits ${maxCredits}`);
-  if (reportedBalance === void 0) {
-    throw new CrawlPolicyError("Refusing: --operator-reported-balance N is required (a recent remaining-credit balance the operator obtained and verified; this CLI does not check it)");
+  const l = j;
+  if (l?.schema !== "website-to-figma/credit-ledger" || l.schemaVersion !== 1 || !Array.isArray(l.entries)) throw new LedgerError("ledger: expected website-to-figma/credit-ledger v1");
+  if (!nonNegInt(l.capCredits) || l.capCredits > LEDGER_CAP) throw new LedgerError(`ledger: capCredits must be <= ${LEDGER_CAP}`);
+  if (l.entries.length > MAX_ENTRIES) throw new LedgerError("ledger: too many entries");
+  const ids = /* @__PURE__ */ new Set();
+  for (const [i, e2] of l.entries.entries()) {
+    const ok = e2 && typeof e2.id === "string" && /^[A-Za-z0-9-]{1,64}$/.test(e2.id) && !ids.has(e2.id) && typeof e2.at === "string" && typeof e2.command === "string" && nonNegInt(e2.reserved) && (e2.reportedCredits === null || nonNegInt(e2.reportedCredits)) && STATUSES.includes(e2.status) && typeof e2.note === "string" && (e2.url === null || typeof e2.url === "string") && (e2.requestSha256 === null || typeof e2.requestSha256 === "string" && /^[0-9a-f]{64}$/.test(e2.requestSha256)) && (e2.resolvedCredits === void 0 || e2.resolvedCredits === null || nonNegInt(e2.resolvedCredits)) && (e2.overrun === void 0 || typeof e2.overrun === "boolean");
+    if (!ok) throw new LedgerError(`ledger: entries[${i}] is malformed`);
+    ids.add(e2.id);
   }
-  if (!Number.isInteger(reportedBalance) || reportedBalance < 0) throw new CrawlPolicyError("--operator-reported-balance must be a non-negative integer");
-  if (reportedBalance < maxCredits) {
-    throw new CrawlPolicyError(`Refusing: operator-reported balance ${reportedBalance} is below the accepted-risk budget ${maxCredits}`);
-  }
-  if (a.confirmExistingCredits !== true || a.confirmNoTopup !== true) {
-    throw new CrawlPolicyError(
-      "Refusing: the operator must affirm both --confirm-existing-credits (existing credits cover the accepted-risk budget) and --confirm-no-topup (no top-up or purchase is authorized for this run). This CLI does not verify either."
-    );
-  }
-  return estimate;
+  return l;
 }
-var CrawlPolicyError, MAX_EXCLUDES, CREDITS_PER_MAP_CALL, MAX_CREDITS_PER_PAGE, SCRAPE_OPTIONS, LIVE_MAX_PAGES;
-var init_plan2 = __esm({
-  "src/crawl/plan.ts"() {
+function entryCredits(e2) {
+  if (e2.resolvedAt && typeof e2.resolvedCredits === "number") return e2.resolvedCredits;
+  return Math.max(e2.reserved, e2.reportedCredits ?? 0);
+}
+function committedCredits(l) {
+  return l.entries.reduce((n, e2) => n + entryCredits(e2), 0);
+}
+function unresolved(l) {
+  return l.entries.filter((e2) => (e2.status === "attempting" || e2.status === "ambiguous" || e2.overrun === true) && !e2.resolvedAt);
+}
+function assertRegular(path) {
+  let st3;
+  try {
+    st3 = lstatSync(path);
+  } catch {
+    throw new LedgerError(`ledger ${path} does not exist (create it with: ledger init --ledger FILE --prior-credits N --note TEXT)`);
+  }
+  if (st3.isSymbolicLink() || !st3.isFile()) throw new LedgerError(`ledger ${path} must be a regular file (symlinks refused)`);
+}
+function readLedger(path) {
+  assertRegular(path);
+  const fd = openSync2(path, constants2.O_RDONLY | NOFOLLOW);
+  try {
+    const size = fstatSync2(fd).size;
+    if (size > MAX_LEDGER_BYTES) throw new LedgerError("ledger: file too large");
+    const buf = Buffer.alloc(size);
+    let off = 0;
+    while (off < size) {
+      const n = readSync2(fd, buf, off, size - off, off);
+      if (n <= 0) break;
+      off += n;
+    }
+    return parseLedger(buf.subarray(0, off).toString("utf8"));
+  } finally {
+    closeSync2(fd);
+  }
+}
+function writeAtomic(path, l) {
+  assertRegular(path);
+  const tmp = `${path}.tmp-${process.pid}-${randomUUID().slice(0, 8)}`;
+  const fd = openSync2(tmp, constants2.O_WRONLY | constants2.O_CREAT | constants2.O_EXCL | NOFOLLOW, 384);
+  try {
+    writeSync(fd, JSON.stringify(l, null, 2) + "\n");
+    fchmodSync(fd, 384);
+    fsyncSync(fd);
+  } finally {
+    closeSync2(fd);
+  }
+  renameSync(tmp, path);
+}
+function withLedgerLock(path, fn) {
+  const lock = `${path}.lock`;
+  let fd;
+  try {
+    fd = openSync2(lock, constants2.O_WRONLY | constants2.O_CREAT | constants2.O_EXCL | NOFOLLOW, 384);
+  } catch {
+    throw new LedgerError(`ledger is locked (${lock}); another run may be active. Remove the lock only after confirming none is.`);
+  }
+  try {
+    writeSync(fd, String(process.pid));
+    return fn();
+  } finally {
+    closeSync2(fd);
+    unlinkSync(lock);
+  }
+}
+function initLedger(path, priorCredits, note2, now = () => /* @__PURE__ */ new Date()) {
+  if (!nonNegInt(priorCredits) || priorCredits > LEDGER_CAP) throw new LedgerError(`--prior-credits must be 0..${LEDGER_CAP}`);
+  let exists = true;
+  try {
+    lstatSync(path);
+  } catch {
+    exists = false;
+  }
+  if (exists) throw new LedgerError(`ledger ${path} already exists; not overwritten`);
+  const l = { schema: "website-to-figma/credit-ledger", schemaVersion: 1, capCredits: LEDGER_CAP, entries: [] };
+  if (priorCredits > 0) {
+    l.entries.push({ id: randomUUID(), at: now().toISOString(), command: "prior", url: null, requestSha256: null, reserved: priorCredits, reportedCredits: priorCredits, status: "prior", note: clean(note2 || "operator-attributed prior project spend") });
+  }
+  const fd = openSync2(path, constants2.O_WRONLY | constants2.O_CREAT | constants2.O_EXCL | NOFOLLOW, 384);
+  try {
+    writeSync(fd, JSON.stringify(l, null, 2) + "\n");
+    fchmodSync(fd, 384);
+    fsyncSync(fd);
+  } finally {
+    closeSync2(fd);
+  }
+  return l;
+}
+function reserveAttempt(path, r, now = () => /* @__PURE__ */ new Date()) {
+  return withLedgerLock(path, () => {
+    const l = readLedger(path);
+    const open = unresolved(l);
+    if (open.length) throw new LedgerError(`ledger has ${open.length} unresolved paid attempt(s) (${open.map((e3) => e3.id).join(", ")}); resolve them with "ledger resolve" before any new paid request`);
+    const prior = l.entries.filter((e3) => e3.requestSha256 === r.requestSha256);
+    if (prior.length && !(r.continuationOf && prior.some((e3) => e3.id === r.continuationOf))) {
+      throw new LedgerError(`identical request ${r.requestSha256.slice(0, 16)}... was already attempted (entry ${prior.map((e3) => e3.id).join(", ")}); no automatic repeat. Re-run only after review with --reviewed-continuation <entry id>`);
+    }
+    const committed = committedCredits(l);
+    if (committed + r.reserved > l.capCredits) throw new LedgerError(`project budget ceiling: ${committed} committed + ${r.reserved} reserved would exceed ${l.capCredits} credits (local allowance, not a provider cap)`);
+    const e2 = { id: randomUUID(), at: now().toISOString(), command: r.command, url: r.url, requestSha256: r.requestSha256, reserved: r.reserved, reportedCredits: null, status: "attempting", note: "paid attempt recorded before sending; result pending", ...r.continuationOf ? { continuationOf: r.continuationOf } : {} };
+    l.entries.push(e2);
+    writeAtomic(path, l);
+    return e2;
+  });
+}
+function settleAttempt(path, id, status, reportedCredits, note2) {
+  return withLedgerLock(path, () => {
+    const l = readLedger(path);
+    const e2 = l.entries.find((x) => x.id === id);
+    if (!e2 || e2.status !== "attempting") throw new LedgerError(`ledger entry ${id} is not an open attempt`);
+    e2.reportedCredits = reportedCredits !== null && nonNegInt(reportedCredits) ? reportedCredits : null;
+    e2.status = status === "succeeded" && e2.reportedCredits === null ? "ambiguous" : status;
+    if (e2.reportedCredits !== null && e2.reportedCredits > e2.reserved) e2.overrun = true;
+    e2.note = clean(note2);
+    writeAtomic(path, l);
+    return e2;
+  });
+}
+function resolveEntry(path, id, credits, note2, now = () => /* @__PURE__ */ new Date()) {
+  return withLedgerLock(path, () => {
+    const l = readLedger(path);
+    const e2 = l.entries.find((x) => x.id === id);
+    if (!e2) throw new LedgerError(`no ledger entry ${id}`);
+    if (e2.status !== "attempting" && e2.status !== "ambiguous" && e2.status !== "failed" && !e2.overrun) throw new LedgerError(`entry ${id} (${e2.status}) does not need resolution`);
+    if (credits !== null && !nonNegInt(credits)) throw new LedgerError("--credits must be a whole number or unknown");
+    e2.resolvedAt = now().toISOString();
+    e2.resolvedCredits = credits === null ? Math.max(e2.reserved, e2.reportedCredits ?? 0) : credits;
+    e2.note = clean(`${e2.note}; operator resolution: ${note2 || "reviewed"}${credits === null ? " (credits unknown; reservation kept)" : ""}`);
+    writeAtomic(path, l);
+    return e2;
+  });
+}
+function recordManual(path, credits, note2, now = () => /* @__PURE__ */ new Date()) {
+  return withLedgerLock(path, () => {
+    const l = readLedger(path);
+    if (!nonNegInt(credits) || credits < 1) throw new LedgerError("--credits must be a positive whole number");
+    if (committedCredits(l) + credits > l.capCredits) throw new LedgerError(`recording ${credits} would exceed the ${l.capCredits}-credit project budget ceiling (local allowance); refused`);
+    const e2 = { id: randomUUID(), at: now().toISOString(), command: "manual", url: null, requestSha256: null, reserved: credits, reportedCredits: credits, status: "manual", note: clean(note2 || "manual entry") };
+    l.entries.push(e2);
+    writeAtomic(path, l);
+    return e2;
+  });
+}
+function ledgerSummary(l) {
+  const committed = committedCredits(l);
+  const open = unresolved(l);
+  return [`Local project budget ceiling ${l.capCredits} (operator-asserted allowance; NOT a provider cap); committed ${committed}; remaining allowance ${l.capCredits - committed}; entries ${l.entries.length}; unresolved ${open.length}`, ...l.entries.slice(-20).map((e2) => `  ${e2.id} ${e2.status}${e2.overrun ? " OVERRUN" : ""}${e2.resolvedAt ? " (resolved)" : ""} reserved ${e2.reserved} reported ${e2.reportedCredits ?? "-"} counted ${entryCredits(e2)} ${e2.url ?? ""} ${e2.note}`)].join("\n");
+}
+var LEDGER_CAP, MAX_LEDGER_BYTES, MAX_ENTRIES, LedgerError, STATUSES, nonNegInt, clean, NOFOLLOW;
+var init_ledger = __esm({
+  "src/states/ledger.ts"() {
     "use strict";
-    init_limits();
-    CrawlPolicyError = class extends Error {
-      constructor(message) {
-        super(message);
-        this.name = "CrawlPolicyError";
-      }
+    LEDGER_CAP = 1e3;
+    MAX_LEDGER_BYTES = 2e6;
+    MAX_ENTRIES = 5e3;
+    LedgerError = class extends Error {
     };
-    MAX_EXCLUDES = 10;
-    CREDITS_PER_MAP_CALL = 1;
-    MAX_CREDITS_PER_PAGE = 1;
-    SCRAPE_OPTIONS = {
-      formats: ["html"],
-      onlyMainContent: false,
-      timeout: 2e4,
-      blockAds: true,
-      removeBase64Images: true,
-      parsers: [],
-      proxy: "basic",
-      lockdown: false,
-      checkPromptInjection: false,
-      redactPII: false
-    };
-    LIVE_MAX_PAGES = 10;
+    STATUSES = ["attempting", "succeeded", "failed", "ambiguous", "manual", "prior"];
+    nonNegInt = (v) => typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 1e6;
+    clean = (s, n = 200) => s.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, n);
+    NOFOLLOW = constants2.O_NOFOLLOW ?? 0;
   }
 });
 
@@ -21443,10 +21562,10 @@ var require_abort = __commonJS({
   "node_modules/asynckit/lib/abort.js"(exports2, module) {
     module.exports = abort;
     function abort(state) {
-      Object.keys(state.jobs).forEach(clean.bind(state));
+      Object.keys(state.jobs).forEach(clean2.bind(state));
       state.jobs = {};
     }
-    function clean(key) {
+    function clean2(key) {
       if (typeof this.jobs[key] == "function") {
         this.jobs[key]();
       }
@@ -23601,10 +23720,10 @@ var init_CanceledError = __esm({
 });
 
 // node_modules/axios/lib/core/settle.js
-function settle(resolve4, reject, response) {
+function settle(resolve5, reject, response) {
   const validateStatus2 = response.config.validateStatus;
   if (!response.status || !validateStatus2 || validateStatus2(response.status)) {
-    resolve4(response);
+    resolve5(response);
   } else {
     reject(new AxiosError_default(
       "Request failed with status code " + response.status,
@@ -24454,12 +24573,12 @@ var require_promisify = __commonJS({
     Object.defineProperty(exports2, "__esModule", { value: true });
     function promisify(fn) {
       return function(req, opts) {
-        return new Promise((resolve4, reject) => {
+        return new Promise((resolve5, reject) => {
           fn.call(this, req, opts, (err, rtn) => {
             if (err) {
               reject(err);
             } else {
-              resolve4(rtn);
+              resolve5(rtn);
             }
           });
         });
@@ -24663,7 +24782,7 @@ var require_parse_proxy_response = __commonJS({
     var debug_1 = __importDefault(require_src());
     var debug = debug_1.default("https-proxy-agent:parse-proxy-response");
     function parseProxyResponse(socket) {
-      return new Promise((resolve4, reject) => {
+      return new Promise((resolve5, reject) => {
         let buffersLength = 0;
         const buffers = [];
         function read() {
@@ -24703,7 +24822,7 @@ var require_parse_proxy_response = __commonJS({
           const firstLine = buffered.toString("ascii", 0, buffered.indexOf("\r\n"));
           const statusCode = +firstLine.split(" ")[1];
           debug("got proxy server response: %o", firstLine);
-          resolve4({
+          resolve5({
             statusCode,
             buffered
           });
@@ -24724,11 +24843,11 @@ var require_agent = __commonJS({
     "use strict";
     var __awaiter = exports2 && exports2.__awaiter || function(thisArg, _arguments, P, generator) {
       function adopt(value) {
-        return value instanceof P ? value : new P(function(resolve4) {
-          resolve4(value);
+        return value instanceof P ? value : new P(function(resolve5) {
+          resolve5(value);
         });
       }
-      return new (P || (P = Promise))(function(resolve4, reject) {
+      return new (P || (P = Promise))(function(resolve5, reject) {
         function fulfilled(value) {
           try {
             step(generator.next(value));
@@ -24744,7 +24863,7 @@ var require_agent = __commonJS({
           }
         }
         function step(result) {
-          result.done ? resolve4(result.value) : adopt(result.value).then(fulfilled, rejected);
+          result.done ? resolve5(result.value) : adopt(result.value).then(fulfilled, rejected);
         }
         step((generator = generator.apply(thisArg, _arguments || [])).next());
       });
@@ -26743,7 +26862,7 @@ var init_http = __esm({
     http2Sessions = new Http2Sessions_default();
     isHttpAdapterSupported = typeof process !== "undefined" && utils_default.kindOf(process) === "process";
     wrapAsync = (asyncExecutor) => {
-      return new Promise((resolve4, reject) => {
+      return new Promise((resolve5, reject) => {
         let onDone;
         let isDone;
         const done = (value, isRejected) => {
@@ -26753,7 +26872,7 @@ var init_http = __esm({
         };
         const _resolve = (value) => {
           done(value);
-          resolve4(value);
+          resolve5(value);
         };
         const _reject = (reason) => {
           done(reason, true);
@@ -26824,7 +26943,7 @@ var init_http = __esm({
       }
     };
     http_default = isHttpAdapterSupported && function httpAdapter(config) {
-      return wrapAsync(async function dispatchHttpRequest(resolve4, reject, onDone) {
+      return wrapAsync(async function dispatchHttpRequest(resolve5, reject, onDone) {
         const own3 = (key) => utils_default.getSafeProp(config, key);
         const transitional2 = own3("transitional") || transitional_default;
         let data = own3("data");
@@ -26961,7 +27080,7 @@ var init_http = __esm({
           }
           let convertedData;
           if (method !== "GET") {
-            return settle(resolve4, reject, {
+            return settle(resolve5, reject, {
               status: 405,
               statusText: "method not allowed",
               headers: {},
@@ -26983,7 +27102,7 @@ var init_http = __esm({
           } else if (responseType === "stream") {
             convertedData = stream3.Readable.from(convertedData);
           }
-          return settle(resolve4, reject, {
+          return settle(resolve5, reject, {
             data: convertedData,
             status: 200,
             statusText: "OK",
@@ -27355,7 +27474,7 @@ var init_http = __esm({
               });
             }
             response.data = responseStream;
-            settle(resolve4, reject, response);
+            settle(resolve5, reject, response);
           } else {
             const responseBuffer = [];
             let totalResponseBytes = 0;
@@ -27406,7 +27525,7 @@ var init_http = __esm({
               } catch (err) {
                 return reject(AxiosError_default.from(err, null, config, response.request, response));
               }
-              settle(resolve4, reject, response);
+              settle(resolve5, reject, response);
             });
           }
           abortEmitter.once("abort", (err) => {
@@ -27833,7 +27952,7 @@ var init_xhr = __esm({
     init_sanitizeHeaderValue();
     isXHRAdapterSupported = typeof XMLHttpRequest !== "undefined";
     xhr_default = isXHRAdapterSupported && function(config) {
-      return new Promise(function dispatchXhrRequest(resolve4, reject) {
+      return new Promise(function dispatchXhrRequest(resolve5, reject) {
         const _config = resolveConfig_default(config);
         let requestData = _config.data;
         const requestHeaders = AxiosHeaders_default.from(_config.headers).normalize();
@@ -27888,7 +28007,7 @@ var init_xhr = __esm({
           };
           settle(
             function _resolve(value) {
-              resolve4(value);
+              resolve5(value);
               done();
             },
             function _reject(err) {
@@ -28543,8 +28662,8 @@ var init_fetch = __esm({
             }
           }
           !isStreamResponse && unsubscribe && unsubscribe();
-          return await new Promise((resolve4, reject) => {
-            settle(resolve4, reject, {
+          return await new Promise((resolve5, reject) => {
+            settle(resolve5, reject, {
               data: responseData,
               headers: AxiosHeaders_default.from(response.headers),
               status: response.status,
@@ -29077,8 +29196,8 @@ var init_CancelToken = __esm({
           throw new TypeError("executor must be a function.");
         }
         let resolvePromise;
-        this.promise = new Promise(function promiseExecutor(resolve4) {
-          resolvePromise = resolve4;
+        this.promise = new Promise(function promiseExecutor(resolve5) {
+          resolvePromise = resolve5;
         });
         const token = this;
         this.promise.then((cancel) => {
@@ -29091,9 +29210,9 @@ var init_CancelToken = __esm({
         });
         this.promise.then = (onfulfilled) => {
           let _resolve;
-          const promise = new Promise((resolve4) => {
-            token.subscribe(resolve4);
-            _resolve = resolve4;
+          const promise = new Promise((resolve5) => {
+            token.subscribe(resolve5);
+            _resolve = resolve5;
           }).then(onfulfilled);
           promise.cancel = function reject() {
             token.unsubscribe(_resolve);
@@ -37010,7 +37129,7 @@ function processingContinuesDelayMs(err) {
   return Math.min(RESUME_MAX_DELAY_MS, Math.max(RESUME_MIN_DELAY_MS, seconds * 1e3));
 }
 async function scrape(http3, url2, options, deps = {}) {
-  const sleep2 = deps.sleepImpl ?? ((ms) => new Promise((resolve4) => setTimeout(resolve4, ms)));
+  const sleep2 = deps.sleepImpl ?? ((ms) => new Promise((resolve5) => setTimeout(resolve5, ms)));
   if (!url2 || !url2.trim()) {
     throw new Error("URL cannot be empty");
   }
@@ -37636,7 +37755,7 @@ function raceAbort(promise, signal) {
     });
     return Promise.reject(abortReason(signal));
   }
-  return new Promise((resolve4, reject) => {
+  return new Promise((resolve5, reject) => {
     const onAbort = () => {
       promise.catch(() => {
       });
@@ -37646,7 +37765,7 @@ function raceAbort(promise, signal) {
     promise.then(
       (value) => {
         signal.removeEventListener("abort", onAbort);
-        resolve4(value);
+        resolve5(value);
       },
       (err) => {
         signal.removeEventListener("abort", onAbort);
@@ -37656,7 +37775,7 @@ function raceAbort(promise, signal) {
   });
 }
 function sleep(ms, signal) {
-  return new Promise((resolve4, reject) => {
+  return new Promise((resolve5, reject) => {
     if (signal?.aborted) return reject(abortReason(signal));
     const onAbort = () => {
       clearTimeout(timer);
@@ -37664,7 +37783,7 @@ function sleep(ms, signal) {
     };
     const timer = setTimeout(() => {
       signal?.removeEventListener("abort", onAbort);
-      resolve4();
+      resolve5();
     }, ms);
     signal?.addEventListener("abort", onAbort, { once: true });
   });
@@ -38899,14 +39018,14 @@ var init_dist2 = __esm({
         return `${wsBase}${path}`;
       }
       async start() {
-        return new Promise((resolve4, reject) => {
+        return new Promise((resolve5, reject) => {
           const onDone = () => {
             cleanup();
-            resolve4();
+            resolve5();
           };
           const onError = (err) => {
             cleanup();
-            resolve4();
+            resolve5();
           };
           const cleanup = () => {
             this.removeListener("done", onDone);
@@ -40200,7 +40319,7 @@ var init_dist2 = __esm({
               } else if (extractStatus.status === "failed" || extractStatus.status === "cancelled") {
                 throw new FirecrawlError(`Extract job ${extractStatus.status}. Error: ${extractStatus.error}`, statusResponse.status);
               }
-              await new Promise((resolve4) => setTimeout(resolve4, 1e3));
+              await new Promise((resolve5) => setTimeout(resolve5, 1e3));
             } while (extractStatus.status !== "completed");
           } else {
             this.handleError(response, "extract");
@@ -40360,7 +40479,7 @@ var init_dist2 = __esm({
               } else if (["active", "paused", "pending", "queued", "waiting", "scraping"].includes(statusData.status)) {
                 checkInterval = Math.max(checkInterval, 2);
                 await new Promise(
-                  (resolve4) => setTimeout(resolve4, checkInterval * 1e3)
+                  (resolve5) => setTimeout(resolve5, checkInterval * 1e3)
                 );
               } else {
                 throw new FirecrawlError(
@@ -40378,7 +40497,7 @@ var init_dist2 = __esm({
             if (this.isRetryableError(error) && networkRetries < maxNetworkRetries) {
               networkRetries++;
               const backoffDelay = Math.min(1e3 * Math.pow(2, networkRetries - 1), 1e4);
-              await new Promise((resolve4) => setTimeout(resolve4, backoffDelay));
+              await new Promise((resolve5) => setTimeout(resolve5, backoffDelay));
               continue;
             }
             throw new FirecrawlError(error, 500);
@@ -40493,7 +40612,7 @@ var init_dist2 = __esm({
             if (researchStatus.status !== "processing") {
               break;
             }
-            await new Promise((resolve4) => setTimeout(resolve4, 2e3));
+            await new Promise((resolve5) => setTimeout(resolve5, 2e3));
           }
           return { success: false, error: "Research job terminated unexpectedly" };
         } catch (error) {
@@ -40611,7 +40730,7 @@ var init_dist2 = __esm({
             if (researchStatus.status !== "processing") {
               break;
             }
-            await new Promise((resolve4) => setTimeout(resolve4, 2e3));
+            await new Promise((resolve5) => setTimeout(resolve5, 2e3));
           }
           return { success: false, error: "Research job terminated unexpectedly" };
         } catch (error) {
@@ -40711,7 +40830,7 @@ var init_dist2 = __esm({
             if (generationStatus.status !== "processing") {
               break;
             }
-            await new Promise((resolve4) => setTimeout(resolve4, 2e3));
+            await new Promise((resolve5) => setTimeout(resolve5, 2e3));
           }
           return { success: false, error: "LLMs.txt generation job terminated unexpectedly" };
         } catch (error) {
@@ -41018,8 +41137,561 @@ var init_dist2 = __esm({
   }
 });
 
+// src/states/execute.ts
+import { createHash as createHash4 } from "node:crypto";
+async function createStateScrapeClient(apiKey) {
+  const { default: Firecrawl2 } = await Promise.resolve().then(() => (init_dist2(), dist_exports));
+  const fc = new Firecrawl2({ apiKey, timeoutMs: STATE_LIMITS.requestTimeoutMs + 1e4, maxRetries: 1 });
+  return { scrape: (url2, options) => fc.scrape(url2, options) };
+}
+function canonicalJson(v) {
+  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(",")}]`;
+  if (isObj6(v)) return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson(v[k])}`).join(",")}}`;
+  return JSON.stringify(v);
+}
+function redact(text, secrets) {
+  let out = text;
+  for (const s of secrets) if (s && s.length >= 4) out = out.split(s).join("[REDACTED]");
+  return out.replace(/\bfc-[A-Za-z0-9_-]{8,}\b/g, "[REDACTED]").replace(/(authorization|bearer)\s*[:=]?\s*\S+/gi, "$1 [REDACTED]").slice(0, 500);
+}
+function validateForExecution(planJson, previewJson) {
+  const plan = parseStatePlan(planJson);
+  const rebuilt = buildStatePreview(plan);
+  const want = canonicalJson(rebuilt);
+  if (canonicalJson(previewJson) !== want) throw new StateRunPolicyError("preview file does not match the preview rebuilt from the plan; re-run states-plan, review the new preview, and pass that exact file");
+  if (rebuilt.requests.length < 1 || rebuilt.requests.length > STATE_LIMITS.maxPages) throw new StateRunPolicyError(`1..${STATE_LIMITS.maxPages} pages required`);
+  const site = parseHttpUrl(plan.site);
+  const requests = rebuilt.requests.map((r) => {
+    const b = r.body;
+    const fail = (m) => {
+      throw new StateRunPolicyError(`${r.pageUrl}: ${m}`);
+    };
+    for (const k of Object.keys(b)) if (!ALLOWED_BODY_KEYS.includes(k)) fail(`request option "${k}" is not allowed`);
+    if (canonicalJson(b.formats) !== '["rawHtml"]') fail('formats must be exactly ["rawHtml"] (JSON/LLM formats are refused)');
+    if (b.proxy !== "basic" || b.checkPromptInjection !== false || b.redactPII !== false || b.lockdown !== false || b.parsers.length !== 0) fail("only standard options are allowed");
+    if (b.timeout !== STATE_LIMITS.requestTimeoutMs) fail("unexpected timeout");
+    if (!isSameSite(parseHttpUrl(String(b.url)), site) || canonicalizeUrl(parseHttpUrl(String(b.url))) !== canonicalizeUrl(parseHttpUrl(r.pageUrl))) fail("request URL is not the planned same-site page");
+    const actions = b.actions;
+    if (actions.length > plan.maxActions || actions.length > STATE_LIMITS.providerMaxActions) fail("too many actions");
+    let waits = 0;
+    for (const a of actions) {
+      if (!ALLOWED_ACTIONS.includes(String(a.type))) fail(`action type "${String(a.type)}" is not allowed`);
+      if (a.type === "wait") {
+        if (a.selector !== void 0 || typeof a.milliseconds !== "number") fail("only fixed-duration waits are allowed");
+        waits += a.milliseconds;
+      }
+      if (a.type === "screenshot" && (a.fullPage !== false || a.viewport !== void 0 || a.quality !== void 0)) fail("only viewport screenshots without overrides are allowed");
+      if (a.type === "executeJavascript" && (typeof a.script !== "string" || FORBIDDEN_SCRIPT.test(a.script) || !/w2f/.test(a.script))) fail("script is not one of the reviewed scripts");
+    }
+    if (waits > STATE_LIMITS.providerMaxCombinedWaitMs || r.combinedWaitMs > plan.maxCombinedWaitMs) fail("combined waits exceed the budget");
+    if (r.states.length > STATE_LIMITS.maxStatesPerPage) fail("too many states");
+    return { preview: r, requestSha256: sha256(canonicalJson(b)), synthetic: r.states.some((s) => s.provenance === "synthetic") };
+  });
+  return { plan, preview: rebuilt, previewSha256: sha256(want), requests };
+}
+function assertRunGates(v, g) {
+  const missing = [];
+  if (!Number.isInteger(g.operatorCreditsPerRequest) || g.operatorCreditsPerRequest < 1 || g.operatorCreditsPerRequest > 100) missing.push("--operator-credits-per-request N (1..100; YOUR asserted price per request; provider cost is unknown and this tool sets no price)");
+  if (!Number.isInteger(g.operatorReportedBalance) || g.operatorReportedBalance < 0) missing.push("--operator-reported-balance N");
+  if (!g.confirmExistingCredits) missing.push("--confirm-existing-credits");
+  if (!g.confirmNoTopup) missing.push("--confirm-no-topup");
+  if ((v.plan.forceAos || v.requests.some((r) => r.synthetic)) && !g.acknowledgeSyntheticModifications) missing.push("--acknowledge-synthetic-modifications (synthetic DOM changes / forced AOS visibility; no handler side-effect guarantee)");
+  if (!g.ledgerPath) missing.push("--ledger FILE (shared local project ledger; 1000-credit budget ceiling, not a provider cap)");
+  if (missing.length) throw new StateRunPolicyError(`Refusing before any request: missing operator inputs:
+  ${missing.join("\n  ")}`);
+  const perRequest = g.operatorCreditsPerRequest;
+  const projected = perRequest * v.requests.length;
+  if (projected > g.operatorReportedBalance) throw new StateRunPolicyError(`operator-asserted projection ${projected} exceeds the operator-reported balance ${g.operatorReportedBalance}`);
+  let l;
+  try {
+    l = readLedger(g.ledgerPath);
+  } catch (err) {
+    throw new StateRunPolicyError(err instanceof Error ? err.message : String(err));
+  }
+  const committed = committedCredits(l);
+  const open = unresolved(l);
+  if (open.length) throw new StateRunPolicyError(`ledger has unresolved paid attempt(s): ${open.map((e2) => e2.id).join(", ")}; resolve them first ("ledger resolve")`);
+  if (committed + projected > l.capCredits) throw new StateRunPolicyError(`ledger: ${committed} committed + ${projected} operator-asserted reservation exceeds the ${l.capCredits}-credit project budget ceiling (local allowance, not a provider cap)`);
+  return { perRequest, projected, committed, remaining: l.capCredits - committed };
+}
+function withTimeout(p, ms) {
+  let timer;
+  const t = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(Object.assign(new Error(`scrape did not finish within ${ms} ms (wall clock)`), { w2fTimeout: true })), ms);
+  });
+  return Promise.race([p, t]).finally(() => clearTimeout(timer));
+}
+function classify(err) {
+  const status = isObj6(err) && typeof err.status === "number" ? err.status : isObj6(err) && isObj6(err.response) && typeof err.response.status === "number" ? err.response.status : null;
+  if (status !== null && status >= 400 && status < 500 && status !== 408) return "failed";
+  return "ambiguous";
+}
+async function validateStateResponse(doc, r, resolver) {
+  const out = { freeze: null, lazy: null, states: [], warnings: [] };
+  const reject = (status, reason) => ({ status, reason, run: out });
+  if (!isObj6(doc)) return reject("ambiguous", "response is not an object");
+  if (JSON.stringify(doc).length > LIMITS.hifiMaxJsonBytes) return reject("rejected", "response exceeds the byte bound");
+  const meta = isObj6(doc.metadata) ? doc.metadata : {};
+  const finalUrl = typeof meta.url === "string" ? meta.url : null;
+  if (!finalUrl) return reject("rejected", "no final URL reported (metadata.url)");
+  try {
+    await assertHostedFirecrawlUrl(finalUrl, resolver);
+  } catch (err) {
+    return reject("rejected", `final URL failed the URL guard: ${err instanceof Error ? err.message : "invalid"}`);
+  }
+  const requested = parseHttpUrl(r.pageUrl);
+  const final = parseHttpUrl(finalUrl);
+  if (!isSameSite(final, requested)) return reject("rejected", "final URL is on another site");
+  if (canonicalizeUrl(final) !== canonicalizeUrl(requested)) return reject("rejected", `redirected to ${canonicalizeUrl(final)}; redirects are not accepted`);
+  if (typeof meta.statusCode === "number" && (meta.statusCode < 200 || meta.statusCode > 299)) return reject("rejected", `HTTP status ${meta.statusCode}`);
+  if (typeof meta.contentType === "string" && !meta.contentType.toLowerCase().startsWith("text/html")) return reject("rejected", `content type ${meta.contentType.slice(0, 60)}`);
+  const actions = isObj6(doc.actions) ? doc.actions : null;
+  const returns = actions && Array.isArray(actions.javascriptReturns) ? actions.javascriptReturns : null;
+  const shots = actions && Array.isArray(actions.screenshots) ? actions.screenshots : null;
+  const scrapes = actions && Array.isArray(actions.scrapes) ? actions.scrapes : null;
+  const jsRoles = r.roles.filter((x) => x.role === "freeze" || x.role === "lazy" || x.role === "state" || x.role === "revert");
+  if (!returns || returns.length !== jsRoles.length) return reject("ambiguous", `expected ${jsRoles.length} javascriptReturns, got ${returns ? returns.length : "none"} (possibly a partial run or unawaited async script)`);
+  for (const [i, role2] of jsRoles.entries()) {
+    const v = isObj6(returns[i]) ? returns[i].value : void 0;
+    if (!isObj6(v) || v.w2f !== role2.role) return reject("ambiguous", `javascriptReturns[${i}] is not the expected "${role2.role}" result`);
+    if ((role2.role === "state" || role2.role === "revert") && v.seq !== role2.seq) return reject("ambiguous", `javascriptReturns[${i}] has seq ${String(v.seq)}, expected ${role2.seq}`);
+    if (role2.role === "freeze") out.freeze = v;
+    if (role2.role === "lazy") out.lazy = v;
+  }
+  if (!shots || shots.length !== r.states.length || !shots.every((s) => typeof s === "string" && s.length <= LIMITS.maxUrlChars)) return reject("ambiguous", `expected ${r.states.length} screenshots`);
+  if (!scrapes || scrapes.length !== r.states.length) return reject("ambiguous", `expected ${r.states.length} scrapes`);
+  for (const s of r.states) {
+    const v = returns.find((x) => isObj6(x) && isObj6(x.value) && x.value.w2f === "state" && x.value.seq === s.seq).value;
+    const rv = returns.find((x) => isObj6(x) && isObj6(x.value) && x.value.w2f === "revert" && x.value.seq === s.seq);
+    const rvv = rv && isObj6(rv.value) ? rv.value : null;
+    if (v.name !== s.name) return reject("ambiguous", `state ${s.seq} returned name ${String(v.name)}`);
+    if (v.provenance !== s.provenance) return reject("ambiguous", `state ${s.seq} provenance mismatch`);
+    const err = typeof v.error === "string" ? v.error.slice(0, 200) : null;
+    out.states.push({ seq: s.seq, name: s.name, provenance: s.provenance, applied: Array.isArray(v.applied) ? v.applied.length : 0, refused: Array.isArray(v.refused) ? v.refused.length : 0, missing: Array.isArray(v.missing) ? v.missing.length : 0, error: err, reverted: rvv && typeof rvv.reverted === "number" ? rvv.reverted : null, revertFailed: rvv && typeof rvv.failed === "number" ? rvv.failed : null });
+    if (err) out.warnings.push(`state "${s.name}" failed in the browser (${err}); it reverted itself`);
+    if (s.provenance === "synthetic" && Array.isArray(v.applied) && v.applied.length === 0) out.warnings.push(`state "${s.name}": no modification applied`);
+    if (rvv && rvv.failed !== 0) out.warnings.push(`state "${s.name}": revert reported ${String(rvv.failed)} failure(s)`);
+  }
+  if (out.freeze && Array.isArray(out.freeze.modifications) && out.freeze.modifications.length) out.warnings.push(`freeze modified the page: ${out.freeze.modifications.map(String).join("; ").slice(0, 160)}`);
+  return { status: "accepted", reason: null, run: out };
+}
+async function executeStateRun(o) {
+  const now = o.now ?? (() => /* @__PURE__ */ new Date());
+  const log = o.log ?? (() => {
+  });
+  const resolver = o.resolver ?? systemResolver;
+  const runId = o.runId ?? sha256(`${o.validated.previewSha256}:${now().toISOString()}:${Math.random()}`).slice(0, 16);
+  const gate = assertRunGates(o.validated, o.gates);
+  const secrets = [];
+  const pages = [];
+  let stopped = false;
+  let client = null;
+  for (const [i, req] of o.validated.requests.entries()) {
+    const r = req.preview;
+    const run = {
+      schema: "website-to-figma/state-run",
+      schemaVersion: 1,
+      runId,
+      pageUrl: r.pageUrl,
+      previewSha256: o.validated.previewSha256,
+      requestSha256: req.requestSha256,
+      ledgerEntryId: null,
+      attempts: 0,
+      retries: 0,
+      status: "not-attempted",
+      reason: null,
+      operatorCreditsPerRequest: gate.perRequest,
+      reportedCreditsUsed: null,
+      checkpoints: [],
+      freeze: null,
+      lazy: null,
+      states: [],
+      warnings: []
+    };
+    pages.push(run);
+    const cp = (step, detail = "") => {
+      run.checkpoints.push({ at: now().toISOString(), step, detail: redact(detail, secrets) });
+      log(`[${r.pageUrl}] ${step}${detail ? `: ${redact(detail, secrets)}` : ""}`);
+    };
+    if (stopped) {
+      run.reason = "run stopped before this page (earlier page not accepted); manual reviewed continuation only";
+      continue;
+    }
+    cp("validated", `request sha256 ${req.requestSha256}; ${r.actionCount} actions; combined waits ${r.combinedWaitMs} ms`);
+    try {
+      await assertHostedFirecrawlUrl(r.pageUrl, resolver);
+    } catch (err) {
+      run.status = "rejected";
+      run.reason = `start URL failed the URL guard: ${err instanceof Error ? err.message : "invalid"}`;
+      cp("guard-failed", run.reason);
+      stopped = true;
+      continue;
+    }
+    cp("url-guard-passed");
+    if (!client) {
+      const key = o.getApiKey()?.trim();
+      if (!key) {
+        run.reason = "FIRECRAWL_API_KEY is not set; nothing was sent and no ledger attempt was recorded";
+        cp("no-key", run.reason);
+        stopped = true;
+        continue;
+      }
+      secrets.push(key);
+      try {
+        client = await (o.createClient ?? createStateScrapeClient)(key);
+      } catch (err) {
+        run.reason = redact(`client could not be created: ${err instanceof Error ? err.message : String(err)}`, secrets);
+        cp("client-failed", run.reason);
+        stopped = true;
+        continue;
+      }
+    }
+    let entryId;
+    try {
+      entryId = reserveAttempt(o.gates.ledgerPath, { url: r.pageUrl, requestSha256: req.requestSha256, reserved: gate.perRequest, command: "states-run", continuationOf: o.gates.reviewedContinuation }, now).id;
+    } catch (err) {
+      run.reason = err instanceof LedgerError ? err.message : String(err);
+      cp("ledger-refused", run.reason);
+      stopped = true;
+      continue;
+    }
+    run.ledgerEntryId = entryId;
+    cp("ledger-attempt-recorded", `entry ${entryId}; reserved ${gate.perRequest} (operator-asserted)`);
+    const { url: url2, ...opts } = r.body;
+    let doc;
+    let outcome = "ok";
+    run.attempts = 1;
+    try {
+      cp("request-sent", "attempt 1 of 1 (no retries, autoResume false)");
+      doc = await withTimeout(client.scrape(String(url2), { ...opts, autoResume: false }), STATE_LIMITS.requestTimeoutMs + 3e4);
+      cp("response-received");
+    } catch (err) {
+      outcome = classify(err);
+      run.reason = redact(`request ${outcome}: ${err instanceof Error ? err.message : String(err)}`, secrets);
+      cp(outcome === "failed" ? "request-failed" : "request-ambiguous", run.reason);
+    }
+    const reported = isObj6(doc) && isObj6(doc.metadata) && typeof doc.metadata.creditsUsed === "number" && Number.isInteger(doc.metadata.creditsUsed) && doc.metadata.creditsUsed >= 0 ? doc.metadata.creditsUsed : null;
+    run.reportedCreditsUsed = reported;
+    if (outcome === "ok") {
+      const v = await validateStateResponse(doc, r, resolver);
+      run.status = v.status;
+      run.reason = v.reason;
+      Object.assign(run, v.run);
+      cp(`response-${v.status}`, v.reason ?? `${run.states.length} state(s); freeze ${run.freeze ? "reported" : "missing"}`);
+    } else {
+      run.status = outcome;
+    }
+    if (outcome === "ok" && reported === null) {
+      run.warnings.push("response reported no request-specific creditsUsed; credits are UNKNOWN (ledger entry left ambiguous; remaining pages stopped)");
+      stopped = true;
+    }
+    try {
+      const e2 = settleAttempt(o.gates.ledgerPath, entryId, run.status === "accepted" || run.status === "rejected" ? "succeeded" : run.status === "failed" ? "failed" : "ambiguous", reported, `${run.status}${run.reason ? `: ${run.reason}` : ""}; request-specific creditsUsed ${reported ?? "not reported"}`);
+      cp("ledger-result-recorded", `ledger status ${e2.status}${e2.overrun ? " OVERRUN" : ""}; reported creditsUsed ${reported ?? "not reported"}`);
+    } catch (err) {
+      run.warnings.push(`ledger result not recorded: ${err instanceof Error ? err.message : String(err)}`);
+      stopped = true;
+    }
+    if (doc !== void 0 && o.save) {
+      o.save(i, { success: true, data: doc, w2fRun: run });
+      cp("saved");
+    }
+    if (run.status !== "accepted") stopped = true;
+    if (reported !== null && reported > gate.perRequest) {
+      run.warnings.push(`OVERRUN: provider reported ${reported} credits for this request, above the operator-asserted reservation ${gate.perRequest}; recorded in the ledger; remaining pages stopped and later runs blocked until resolved`);
+      stopped = true;
+    }
+  }
+  return { runId, previewSha256: o.validated.previewSha256, pages, stoppedEarly: stopped };
+}
+var StateRunPolicyError, isObj6, sha256, ALLOWED_BODY_KEYS, ALLOWED_ACTIONS, FORBIDDEN_SCRIPT, STOP_CONDITIONS;
+var init_execute = __esm({
+  "src/states/execute.ts"() {
+    "use strict";
+    init_urlGuard();
+    init_canonicalize();
+    init_limits();
+    init_plan();
+    init_ledger();
+    StateRunPolicyError = class extends Error {
+    };
+    isObj6 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+    sha256 = (s) => createHash4("sha256").update(s).digest("hex");
+    ALLOWED_BODY_KEYS = ["url", "formats", "timeout", "actions", "onlyMainContent", "blockAds", "removeBase64Images", "parsers", "proxy", "lockdown", "checkPromptInjection", "redactPII", "mobile"];
+    ALLOWED_ACTIONS = ["wait", "executeJavascript", "screenshot", "scrape"];
+    FORBIDDEN_SCRIPT = /\.click\s*\(|\.submit\s*\(|requestSubmit|\bfetch\s*\(|XMLHttpRequest|sendBeacon|WebSocket|location\s*(\.\w+\s*)?=|location\.(assign|replace)|window\.open|history\.(push|replace)State|localStorage|sessionStorage|document\.cookie|indexedDB|\.dispatchEvent\s*\(|\.focus\s*\(/;
+    STOP_CONDITIONS = [
+      "preview file differs from the plan's rebuilt preview, or any request fails semantic validation",
+      "any operator gate missing: asserted credits/request, reported balance, existing-credit and no-top-up confirmations, synthetic acknowledgement, ledger",
+      "ledger: unresolved attempting/ambiguous/overrun entry, identical request already attempted (without --reviewed-continuation), or the 1000-credit local project budget ceiling would be exceeded by the operator-asserted reservation (local allowance only, NOT a provider cap; no pre-send guarantee)",
+      "FIRECRAWL_API_KEY absent after all guards -> nothing sent, no ledger attempt",
+      "projection (asserted credits x pages) exceeds the operator-reported balance",
+      "start or final URL fails the hosted URL guard; final URL off-site or redirected; non-2xx status; non-HTML content",
+      "SDK error: 4xx -> failed, timeout/network/5xx/408 -> ambiguous; never retried",
+      "missing/out-of-order tagged javascriptReturns, screenshots or scrapes -> ambiguous (no retry, no per-state fallback)",
+      "response without request-specific creditsUsed -> ledger entry ambiguous, remaining pages stopped (never settled at an assumed price)",
+      "request-specific creditsUsed above the operator-asserted reservation -> OVERRUN recorded, remaining pages stopped, later runs blocked until resolved",
+      "any page not accepted -> remaining pages not attempted; continuation only after manual review"
+    ];
+  }
+});
+
+// src/states/runFiles.ts
+import { closeSync as closeSync3, constants as constants3, fsyncSync as fsyncSync2, lstatSync as lstatSync2, mkdirSync, openSync as openSync3, writeSync as writeSync2 } from "node:fs";
+import { join, resolve as resolve3 } from "node:path";
+function createExclusiveDir(parent, name3) {
+  if (!/^[A-Za-z0-9._-]{1,80}$/.test(name3)) throw new OutputError("invalid output directory name");
+  const root = resolve3(parent);
+  mkdirSync(root, { recursive: true, mode: 448 });
+  const st3 = lstatSync2(root);
+  if (st3.isSymbolicLink() || !st3.isDirectory()) throw new OutputError(`${root} must be a real directory (symlinks refused)`);
+  const dir = join(root, name3);
+  try {
+    mkdirSync(dir, { mode: 448 });
+  } catch {
+    throw new OutputError(`${dir} already exists; refusing to overwrite`);
+  }
+  return dir;
+}
+function writeExclusive(path, data) {
+  let fd;
+  try {
+    fd = openSync3(path, constants3.O_WRONLY | constants3.O_CREAT | constants3.O_EXCL | NOFOLLOW2, 384);
+  } catch {
+    throw new OutputError(`${path} already exists or is not writable; refusing to overwrite`);
+  }
+  try {
+    writeSync2(fd, typeof data === "string" ? Buffer.from(data, "utf8") : Buffer.from(data));
+    fsyncSync2(fd);
+  } finally {
+    closeSync3(fd);
+  }
+}
+var NOFOLLOW2, OutputError;
+var init_runFiles = __esm({
+  "src/states/runFiles.ts"() {
+    "use strict";
+    NOFOLLOW2 = constants3.O_NOFOLLOW ?? 0;
+    OutputError = class extends Error {
+    };
+  }
+});
+
+// src/states/acquire.ts
+import { createHash as createHash5 } from "node:crypto";
+import { request as httpsRequest } from "node:https";
+import { isIP as isIP2 } from "node:net";
+async function pinnedAddress(url2, resolve5) {
+  const host = url2.hostname.replace(/^\[|\]$/g, "");
+  if (isIP2(host)) throw new UnsafeUrlError("IP-literal image URLs are not accepted");
+  let addrs;
+  try {
+    addrs = await resolve5(host);
+  } catch {
+    throw new UnsafeUrlError(`could not resolve ${host}`);
+  }
+  if (!addrs.length) throw new UnsafeUrlError(`no addresses for ${host}`);
+  const bad = addrs.find((a2) => !isPublicAddress(a2));
+  if (bad) throw new UnsafeUrlError(`${host} resolves to non-public address ${bad} (a FakeIP/local resolver cannot be validated)`);
+  const a = addrs[0];
+  return { address: a, family: isIP2(a) === 6 ? 6 : 4 };
+}
+async function acquireImage(raw, transport, resolve5 = systemResolver) {
+  let url2 = parseHttpUrl(raw);
+  for (let hop = 0; hop <= ACQUIRE_LIMITS.maxRedirects; hop++) {
+    if (url2.protocol !== "https:") throw new UnsafeUrlError("only https image URLs are accepted");
+    const addr = await pinnedAddress(url2, resolve5);
+    const res = await transport.get(url2, addr, { maxBytes: ACQUIRE_LIMITS.maxBytes, timeoutMs: ACQUIRE_LIMITS.timeoutMs });
+    if (res.status >= 300 && res.status < 400) {
+      if (!res.location) throw new AcquireError(`redirect ${res.status} without a location`);
+      url2 = parseHttpUrl(new URL(res.location, url2).toString());
+      continue;
+    }
+    if (res.status !== 200 || !res.body) throw new AcquireError(`HTTP ${res.status}`);
+    if (res.body.length > ACQUIRE_LIMITS.maxBytes) throw new AcquireError("image exceeds the byte bound");
+    const ct = (res.contentType ?? "").toLowerCase().split(";")[0].trim();
+    if (ct !== "image/png" && ct !== "image/jpeg") throw new AcquireError(`content type ${ct || "missing"} is not PNG/JPEG`);
+    const info = inspectImage(res.body);
+    if (!info || info.mime !== "image/png" && info.mime !== "image/jpeg" || info.mime !== ct) throw new AcquireError("bytes are not the declared PNG/JPEG");
+    if (info.width < 1 || info.height < 1 || info.width > ACQUIRE_LIMITS.maxWidth || info.height > ACQUIRE_LIMITS.maxHeight || info.width * info.height > ACQUIRE_LIMITS.maxPixels) throw new AcquireError(`image ${info.width}x${info.height}px is outside the pixel bounds`);
+    return { url: raw, finalUrl: url2.toString(), bytes: res.body, sha256: createHash5("sha256").update(res.body).digest("hex"), mime: info.mime, width: info.width, height: info.height };
+  }
+  throw new AcquireError(`more than ${ACQUIRE_LIMITS.maxRedirects} redirects`);
+}
+function pinnedLookup(addr) {
+  return (_host, opts, cb) => opts && opts.all ? cb(null, [{ address: addr.address, family: addr.family }]) : cb(null, addr.address, addr.family);
+}
+var ACQUIRE_LIMITS, AcquireError, httpsTransport;
+var init_acquire = __esm({
+  "src/states/acquire.ts"() {
+    "use strict";
+    init_urlGuard();
+    init_imageInfo();
+    init_limits();
+    ACQUIRE_LIMITS = { maxBytes: LIMITS.hifiMaxAssetBytes, maxRedirects: 3, timeoutMs: 3e4, maxWidth: LIMITS.hifiMaxImageDim, maxHeight: LIMITS.refTileMaxSourceHeight, maxPixels: LIMITS.refTileMaxSourcePixels };
+    AcquireError = class extends Error {
+    };
+    httpsTransport = {
+      get(url2, addr, limits) {
+        return new Promise((resolvePromise, reject) => {
+          const req = httpsRequest(
+            {
+              host: url2.hostname,
+              servername: url2.hostname,
+              port: 443,
+              path: `${url2.pathname}${url2.search}`,
+              method: "GET",
+              headers: { accept: "image/png,image/jpeg" },
+              timeout: limits.timeoutMs,
+              lookup: pinnedLookup(addr)
+            },
+            (res) => {
+              const status = res.statusCode ?? 0;
+              const location = typeof res.headers.location === "string" ? res.headers.location : null;
+              const contentType = typeof res.headers["content-type"] === "string" ? res.headers["content-type"] : null;
+              if (status >= 300 && status < 400) {
+                res.resume();
+                resolvePromise({ status, location, contentType, body: null });
+                return;
+              }
+              const declared = Number(res.headers["content-length"]);
+              if (Number.isFinite(declared) && declared > limits.maxBytes) {
+                req.destroy();
+                reject(new AcquireError("declared content-length exceeds the byte bound"));
+                return;
+              }
+              const chunks = [];
+              let total = 0;
+              res.on("data", (c) => {
+                total += c.length;
+                if (total > limits.maxBytes) {
+                  req.destroy();
+                  reject(new AcquireError("image exceeds the byte bound"));
+                  return;
+                }
+                chunks.push(c);
+              });
+              res.on("end", () => resolvePromise({ status, location, contentType, body: new Uint8Array(Buffer.concat(chunks)) }));
+              res.on("error", reject);
+            }
+          );
+          req.on("timeout", () => req.destroy(new AcquireError("image request timed out")));
+          req.on("error", reject);
+          req.end();
+        });
+      }
+    };
+  }
+});
+
+// src/crawl/plan.ts
+function normalizeExcludePrefix(raw) {
+  if (typeof raw !== "string" || !raw.startsWith("/")) throw new CrawlPolicyError(`--exclude must be a path starting with "/" (got ${JSON.stringify(raw)})`);
+  if (raw.length > 200) throw new CrawlPolicyError("--exclude path is too long");
+  if (!/^[A-Za-z0-9._~\-/]+$/.test(raw)) throw new CrawlPolicyError(`--exclude ${raw}: only letters, digits, "._~-/" are allowed`);
+  if (raw.includes("//") || raw.split("/").some((s) => s === "." || s === "..")) {
+    throw new CrawlPolicyError(`--exclude ${raw}: empty, "." or ".." segments are not allowed`);
+  }
+  const p = raw.replace(/\/+$/, "");
+  if (p === "") throw new CrawlPolicyError('--exclude "/" would exclude the whole site');
+  return p;
+}
+function normalizeExcludes(raw) {
+  if (raw.length > MAX_EXCLUDES) throw new CrawlPolicyError(`At most ${MAX_EXCLUDES} --exclude values`);
+  return [...new Set(raw.map(normalizeExcludePrefix))].sort();
+}
+function escapeRegex2(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function excludeRegex(prefix) {
+  return `^/?${escapeRegex2(prefix.slice(1))}(?:/.*)?$`;
+}
+function isExcludedPath(pathname, prefixes) {
+  return prefixes.some((p) => pathname === p || pathname.startsWith(p + "/"));
+}
+function buildCrawlRequest(limit, excludes) {
+  const req = {
+    limit,
+    allowSubdomains: false,
+    allowExternalLinks: false,
+    crawlEntireDomain: false,
+    maxDiscoveryDepth: 3,
+    // "skip" uses HTML links only (docs: features/crawl): the site's sitemap,
+    // including any private/odd hosts it lists, is never used for discovery.
+    sitemap: "skip",
+    ignoreQueryParameters: true,
+    deduplicateSimilarURLs: true,
+    regexOnFullURL: false,
+    zeroDataRetention: false,
+    scrapeOptions: { ...SCRAPE_OPTIONS }
+  };
+  if (excludes.length > 0) req.excludePaths = excludes.map(excludeRegex);
+  return req;
+}
+function buildMapRequest() {
+  return {
+    limit: LIMITS.maxMapLinks,
+    sitemap: "skip",
+    includeSubdomains: false,
+    ignoreQueryParameters: true,
+    timeout: 3e4
+  };
+}
+function standardEstimate(limit, useMap) {
+  return (useMap ? CREDITS_PER_MAP_CALL : 0) + limit * MAX_CREDITS_PER_PAGE;
+}
+function assertOperatorPrerequisites(limit, useMap, a) {
+  const estimate = standardEstimate(limit, useMap);
+  const { maxCredits, reportedBalance } = a;
+  if (maxCredits === void 0) throw new CrawlPolicyError(`Refusing: --max-credits (accepted-risk budget) is required (standard estimate ${estimate}, not a guarantee)`);
+  if (!Number.isInteger(maxCredits) || maxCredits < 1) throw new CrawlPolicyError("--max-credits must be a positive integer");
+  if (estimate > maxCredits) throw new CrawlPolicyError(`Refusing: standard estimate ${estimate} credits already exceeds --max-credits ${maxCredits}`);
+  if (reportedBalance === void 0) {
+    throw new CrawlPolicyError("Refusing: --operator-reported-balance N is required (a recent remaining-credit balance the operator obtained and verified; this CLI does not check it)");
+  }
+  if (!Number.isInteger(reportedBalance) || reportedBalance < 0) throw new CrawlPolicyError("--operator-reported-balance must be a non-negative integer");
+  if (reportedBalance < maxCredits) {
+    throw new CrawlPolicyError(`Refusing: operator-reported balance ${reportedBalance} is below the accepted-risk budget ${maxCredits}`);
+  }
+  if (a.confirmExistingCredits !== true || a.confirmNoTopup !== true) {
+    throw new CrawlPolicyError(
+      "Refusing: the operator must affirm both --confirm-existing-credits (existing credits cover the accepted-risk budget) and --confirm-no-topup (no top-up or purchase is authorized for this run). This CLI does not verify either."
+    );
+  }
+  return estimate;
+}
+var CrawlPolicyError, MAX_EXCLUDES, CREDITS_PER_MAP_CALL, MAX_CREDITS_PER_PAGE, SCRAPE_OPTIONS, LIVE_MAX_PAGES;
+var init_plan2 = __esm({
+  "src/crawl/plan.ts"() {
+    "use strict";
+    init_limits();
+    CrawlPolicyError = class extends Error {
+      constructor(message) {
+        super(message);
+        this.name = "CrawlPolicyError";
+      }
+    };
+    MAX_EXCLUDES = 10;
+    CREDITS_PER_MAP_CALL = 1;
+    MAX_CREDITS_PER_PAGE = 1;
+    SCRAPE_OPTIONS = {
+      formats: ["html"],
+      onlyMainContent: false,
+      timeout: 2e4,
+      blockAds: true,
+      removeBase64Images: true,
+      parsers: [],
+      proxy: "basic",
+      lockdown: false,
+      checkPromptInjection: false,
+      redactPII: false
+    };
+    LIVE_MAX_PAGES = 10;
+  }
+});
+
 // src/crawl/firecrawl.ts
-function withTimeout(p, ms, label) {
+function withTimeout2(p, ms, label) {
   let timer;
   const t = new Promise((_, reject) => {
     timer = setTimeout(() => reject(new CallTimeoutError(label, ms)), ms);
@@ -41099,11 +41771,11 @@ function abortError() {
   return new Error("Aborted by user; remote crawl cancel requested. Nothing written.");
 }
 function abortableSleep(ms, signal) {
-  return new Promise((resolve4, reject) => {
+  return new Promise((resolve5, reject) => {
     if (signal?.aborted) return reject(abortError());
     const t = setTimeout(() => {
       signal?.removeEventListener("abort", onAbort);
-      resolve4();
+      resolve5();
     }, ms);
     const onAbort = () => {
       clearTimeout(t);
@@ -41150,7 +41822,7 @@ async function executeCrawl(opts, plan) {
   if (useMap) {
     try {
       log("Mapping site (discovery)...");
-      const map2 = await withTimeout(client.map(startUrl, buildMapRequest()), ct.map, "map");
+      const map2 = await withTimeout2(client.map(startUrl, buildMapRequest()), ct.map, "map");
       discoveredCount = countDiscovered(map2, start, excludes);
     } catch {
       notes.add("Discovery (map) failed; total page count unknown");
@@ -41162,7 +41834,7 @@ async function executeCrawl(opts, plan) {
   log(`Starting crawl (limit ${limit})...`);
   let started;
   try {
-    started = await withTimeout(client.startCrawl(startUrl, crawlRequest), ct.start, "startCrawl");
+    started = await withTimeout2(client.startCrawl(startUrl, crawlRequest), ct.start, "startCrawl");
   } catch (err) {
     const status2 = err?.status;
     if (status2 === 402) throw new Error("Firecrawl refused the crawl with 402 (payment required / spend limit). Stopped; nothing retried or purchased.");
@@ -41177,7 +41849,7 @@ async function executeCrawl(opts, plan) {
   try {
     for (; ; ) {
       if (opts.signal?.aborted) throw abortError();
-      job = await withTimeout(client.getCrawlStatus(id, { autoPaginate: true, maxPages: 5, maxResults: limit }), ct.status, "getCrawlStatus");
+      job = await withTimeout2(client.getCrawlStatus(id, { autoPaginate: true, maxPages: 5, maxResults: limit }), ct.status, "getCrawlStatus");
       log(`  status=${String(job?.status)} completed=${String(job?.completed)} total=${String(job?.total)}`);
       if (TERMINAL.has(job?.status)) {
         terminal = true;
@@ -41199,7 +41871,7 @@ async function executeCrawl(opts, plan) {
   } finally {
     if (!terminal) {
       try {
-        await withTimeout(client.cancelCrawl(id), ct.cancel, "cancelCrawl");
+        await withTimeout2(client.cancelCrawl(id), ct.cancel, "cancelCrawl");
       } catch {
         notes.add("Cancel request failed; the remote job may continue up to its page limit");
       }
@@ -41213,7 +41885,7 @@ async function executeCrawl(opts, plan) {
   }
   if (typeof job?.total === "number" && job.total > data.length) incomplete = true;
   try {
-    const errs = await withTimeout(client.getCrawlErrors(id), ct.errors, "getCrawlErrors");
+    const errs = await withTimeout2(client.getCrawlErrors(id), ct.errors, "getCrawlErrors");
     const nErr = Array.isArray(errs?.errors) ? errs.errors.length : 0;
     const nRobots = Array.isArray(errs?.robotsBlocked) ? errs.robotsBlocked.length : 0;
     if (nErr > 0) notes.add(`${nErr} page(s) failed to scrape`);
@@ -41267,8 +41939,8 @@ var init_firecrawl = __esm({
 
 // src/cli.ts
 var cli_exports = {};
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname as dirname3, resolve as resolve3 } from "node:path";
+import { existsSync, mkdirSync as mkdirSync2, readdirSync, writeFileSync } from "node:fs";
+import { dirname as dirname3, join as join2, resolve as resolve4 } from "node:path";
 function parseFlags(args) {
   const positional = [];
   const flags = /* @__PURE__ */ new Map();
@@ -41277,9 +41949,9 @@ function parseFlags(args) {
   const fontMaps = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (a === "--yes" || a === "--help" || a === "-h" || a === "--no-map" || a === "--confirm-existing-credits" || a === "--confirm-no-topup") {
+    if (a === "--yes" || a === "--help" || a === "-h" || a === "--no-map" || a === "--confirm-existing-credits" || a === "--confirm-no-topup" || a === "--acknowledge-synthetic-modifications") {
       flags.set(a.replace(/^-+/, ""), true);
-    } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label" || a === "--font-map" || a === "--normalize-reference" || a === "--plan" || a === "--state-reactions") {
+    } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label" || a === "--font-map" || a === "--normalize-reference" || a === "--plan" || a === "--state-reactions" || a === "--preview" || a === "--ledger" || a === "--operator-credits-per-request" || a === "--reviewed-continuation" || a === "--run" || a === "--prior-credits" || a === "--note" || a === "--id" || a === "--credits") {
       const v = args[++i];
       if (v === void 0) throw new UsageError(`${a} needs a value`);
       if (a === "--exclude") excludes.push(v);
@@ -41299,8 +41971,8 @@ function intFlag(v, name3, fallback) {
 function writeHifi(doc, out) {
   const text = JSON.stringify(doc) + "\n";
   if (utf8Length(text) > LIMITS.hifiMaxJsonBytes) throw new Error(`Output exceeds ${LIMITS.hifiMaxJsonBytes} bytes; not written`);
-  const path = resolve3(out);
-  mkdirSync(dirname3(path), { recursive: true });
+  const path = resolve4(out);
+  mkdirSync2(dirname3(path), { recursive: true });
   writeFileSync(path, text);
   return path;
 }
@@ -41317,8 +41989,8 @@ function hifiSummary(doc, path) {
 function writeDoc(doc, out) {
   const text = JSON.stringify(doc, null, 2) + "\n";
   if (utf8Length(text) > LIMITS.maxJsonBytes) throw new Error(`Output exceeds ${LIMITS.maxJsonBytes} bytes; not written`);
-  const path = resolve3(out);
-  mkdirSync(dirname3(path), { recursive: true });
+  const path = resolve4(out);
+  mkdirSync2(dirname3(path), { recursive: true });
   writeFileSync(path, text);
   return path;
 }
@@ -41360,8 +42032,8 @@ async function main2(argv) {
     const { capture, screenshotHints, warnings } = captureFromScrapeResponses(responses, label);
     const text = JSON.stringify(capture) + "\n";
     if (utf8Length(text) > LIMITS.hifiMaxJsonBytes) throw new CaptureError("capture output too large; not written");
-    const path = resolve3(out);
-    mkdirSync(dirname3(path), { recursive: true });
+    const path = resolve4(out);
+    mkdirSync2(dirname3(path), { recursive: true });
     writeFileSync(path, text);
     console.log(`Wrote ${path} (${capture.pages.length} page(s); nothing fetched)`);
     for (const h of screenshotHints) console.log(`  screenshot URL present for ${h.pageUrl}${h.state ? ` state "${h.state}" (scrollY ${h.scrollY ?? "unknown"})` : ""} (NOT downloaded; add local bytes to the asset manifest with kind "reference", pageUrl${h.state ? " and state" : ""})`);
@@ -41373,8 +42045,8 @@ async function main2(argv) {
     const out = flags.get("out");
     if (typeof planPath !== "string" || typeof out !== "string") throw new UsageError("states-plan needs --plan FILE and --out FILE");
     const preview = buildStatePreview(parseStatePlan(readBoundedJson(planPath, 1e6, "state plan")));
-    const path = resolve3(out);
-    mkdirSync(dirname3(path), { recursive: true });
+    const path = resolve4(out);
+    mkdirSync2(dirname3(path), { recursive: true });
     writeFileSync(path, JSON.stringify(preview, null, 2) + "\n");
     console.log(`Wrote ${path} (request PREVIEWS only; NOTHING was sent)`);
     for (const r of preview.requests) {
@@ -41383,6 +42055,116 @@ async function main2(argv) {
     for (const m of preview.manualRoute) console.log(`  manual: ${m}`);
     for (const n of preview.notice) console.log(`  note: ${n}`);
     return 0;
+  }
+  if (cmd === "ledger") {
+    const path = flags.get("ledger");
+    const sub = positional[0];
+    if (typeof path !== "string" || !sub) throw new UsageError("ledger needs a subcommand (init|show|resolve|record) and --ledger FILE");
+    const note2 = typeof flags.get("note") === "string" ? flags.get("note") : "";
+    if (sub === "init") {
+      const l = initLedger(path, intFlag(flags.get("prior-credits"), "prior-credits", 0), note2);
+      console.log(ledgerSummary(l));
+    } else if (sub === "show") {
+      console.log(ledgerSummary(readLedger(path)));
+    } else if (sub === "resolve") {
+      const id = flags.get("id");
+      const c = flags.get("credits");
+      if (typeof id !== "string" || typeof c !== "string") throw new UsageError("ledger resolve needs --id ID --credits N|unknown");
+      const e2 = resolveEntry(path, id, c === "unknown" ? null : intFlag(c, "credits", 0), note2);
+      console.log(`Resolved ${e2.id}: counted ${e2.resolvedCredits}`);
+    } else if (sub === "record") {
+      const e2 = recordManual(path, intFlag(flags.get("credits"), "credits", 0), note2);
+      console.log(`Recorded ${e2.id}: ${e2.reserved} credits`);
+    } else throw new UsageError(`unknown ledger subcommand ${sub}`);
+    return 0;
+  }
+  if (cmd === "states-run") {
+    const planPath = flags.get("plan");
+    const previewPath = flags.get("preview");
+    const out = flags.get("out");
+    if (typeof planPath !== "string" || typeof previewPath !== "string" || typeof out !== "string") throw new UsageError("states-run needs --plan FILE --preview FILE --out DIR");
+    const validated = validateForExecution(readBoundedJson(planPath, 1e6, "state plan"), readBoundedJson(previewPath, 2e7, "preview"));
+    const optInt = (k) => flags.get(k) === void 0 ? void 0 : intFlag(flags.get(k), k, 0);
+    const gates = {
+      operatorCreditsPerRequest: optInt("operator-credits-per-request"),
+      operatorReportedBalance: optInt("operator-reported-balance"),
+      confirmExistingCredits: flags.has("confirm-existing-credits"),
+      confirmNoTopup: flags.has("confirm-no-topup"),
+      acknowledgeSyntheticModifications: flags.has("acknowledge-synthetic-modifications"),
+      ledgerPath: typeof flags.get("ledger") === "string" ? flags.get("ledger") : void 0,
+      reviewedContinuation: typeof flags.get("reviewed-continuation") === "string" ? flags.get("reviewed-continuation") : void 0
+    };
+    const g = assertRunGates(validated, gates);
+    console.log(`Exact request plan (preview sha256 ${validated.previewSha256}); ONE request per page, one attempt each, no retries:`);
+    for (const r of validated.requests) {
+      const p = r.preview;
+      console.log(`  POST /v2/scrape ${p.pageUrl}: ${p.actionCount} actions [${p.roles.map((x) => x.role).join(",")}], combined waits ${p.combinedWaitMs} ms, states ${p.states.map((s) => `${s.name}(${s.provenance})`).join(", ")}, request sha256 ${r.requestSha256}`);
+    }
+    console.log(`Operator-asserted reservation: ${g.perRequest} x ${validated.requests.length} = ${g.projected} (NOT a price; provider cost unknown and may exceed it). Ledger committed ${g.committed}, remaining local allowance ${g.remaining} of the 1000-credit project budget ceiling (not a provider cap).`);
+    console.log("Stop conditions:");
+    for (const c of STOP_CONDITIONS) console.log(`  - ${c}`);
+    if (!flags.has("yes")) {
+      console.log("HOLD: nothing was sent and no key was read. Re-run with --yes to execute.");
+      return 3;
+    }
+    const runId = sha256(`${validated.previewSha256}:${Date.now()}:${Math.random()}`).slice(0, 16);
+    const runDir = createExclusiveDir(out, `state-run-${runId}`);
+    const result = await executeStateRun({
+      validated,
+      gates,
+      runId,
+      getApiKey: () => {
+        if (existsSync(".env")) process.loadEnvFile(".env");
+        return process.env.FIRECRAWL_API_KEY;
+      },
+      save: (i, wrapper) => writeExclusive(join2(runDir, `page-${i}.response.json`), JSON.stringify(wrapper) + "\n"),
+      log: (m) => console.error(m)
+    });
+    writeExclusive(join2(runDir, "run.json"), JSON.stringify({ runId: result.runId, previewSha256: result.previewSha256, stoppedEarly: result.stoppedEarly, pages: result.pages }, null, 2) + "\n");
+    console.log(`Wrote ${runDir} (PRIVATE: contains raw page content; never commit it)`);
+    for (const p of result.pages) console.log(`  ${p.pageUrl}: ${p.status}${p.reason ? ` (${p.reason})` : ""}; credits reported ${p.reportedCreditsUsed ?? "NOT reported"}${p.warnings.length ? `; ${p.warnings.join("; ")}` : ""}`);
+    return result.pages.every((p) => p.status === "accepted") && !result.stoppedEarly ? 0 : 4;
+  }
+  if (cmd === "states-screenshots") {
+    const runDir = flags.get("run");
+    const out = flags.get("out");
+    if (typeof runDir !== "string" || typeof out !== "string") throw new UsageError("states-screenshots needs --run RUN_DIR --out DIR");
+    const files = readdirSync(runDir).filter((f) => /^page-[0-2]\.response\.json$/.test(f)).sort();
+    const targets = [];
+    for (const f of files) {
+      const w = readBoundedJson(join2(runDir, f), LIMITS.hifiMaxJsonBytes, f);
+      if (w?.w2fRun?.status !== "accepted" || typeof w?.data !== "object") {
+        console.log(`  skipped ${f}: run status ${String(w?.w2fRun?.status)}`);
+        continue;
+      }
+      const t = adaptTaggedReturns(w.data, f);
+      const pageUrl = String(w.w2fRun.pageUrl);
+      for (const h of t?.screenshotHints ?? []) targets.push({ pageUrl, state: h.state, seq: h.seq, url: h.screenshotUrl, page: Number(f.slice(5, 6)) });
+    }
+    console.log(`${targets.length} associated screenshot URL(s) from accepted runs:`);
+    for (const t of targets) console.log(`  ${t.pageUrl} "${t.state}": ${t.url.slice(0, 120)}`);
+    if (!flags.has("yes")) {
+      console.log("HOLD: nothing downloaded. Re-run with --yes (local fetch; full local DNS guard, no hosted exception).");
+      return 3;
+    }
+    const dir = createExclusiveDir(out, `screenshots-${Date.now()}`);
+    const assets = [];
+    let failed = 0;
+    for (const t of targets) {
+      try {
+        const a = await acquireImage(t.url, httpsTransport);
+        const file = `p${t.page}-s${t.seq}.${a.mime === "image/png" ? "png" : "jpg"}`;
+        writeExclusive(join2(dir, file), a.bytes);
+        assets.push({ id: `state-p${t.page}-s${t.seq}`, kind: "reference", file, sha256: a.sha256, pageUrl: t.pageUrl, state: t.state });
+        console.log(`  saved ${file} ${a.width}x${a.height} sha256 ${a.sha256}`);
+      } catch (err) {
+        failed++;
+        console.log(`  NOT downloaded (${err instanceof Error ? err.message : String(err)}): operator-local input required: download ${t.pageUrl} "${t.state}" yourself and add it to the asset manifest (kind "reference", pageUrl, state).`);
+      }
+    }
+    writeExclusive(join2(dir, "manifest.json"), JSON.stringify({ schema: "website-to-figma/asset-manifest", schemaVersion: 1, assets }, null, 2) + "\n");
+    console.log(`Wrote ${dir} (PRIVATE; ${assets.length} saved, ${failed} need manual download)`);
+    return failed ? 4 : 0;
   }
   if (cmd === "hifi") {
     const capturePath = flags.get("capture");
@@ -41529,6 +42311,11 @@ var init_cli = __esm({
     init_adapter();
     init_urlGuard();
     init_plan();
+    init_execute();
+    init_ledger();
+    init_runFiles();
+    init_acquire();
+    init_adapt();
     init_build();
     init_firecrawl();
     init_plan2();
@@ -41562,6 +42349,23 @@ var init_cli = __esm({
       per page incl. baseline, declarative synthetic mutations only) and write
       exact Firecrawl request PREVIEWS. Sends NOTHING; there is no executor, so
       automatic state capture is unsupported. Provider cost is unknown.
+  website-to-figma states-run --plan FILE --preview FILE --out DIR --ledger FILE
+        --operator-credits-per-request N --operator-reported-balance N
+        --confirm-existing-credits --confirm-no-topup
+        [--acknowledge-synthetic-modifications] [--reviewed-continuation LEDGER_ID] [--yes]
+      PAID hosted execution of the exact reviewed previews: ONE request per page,
+      one attempt, no retries. Without --yes it prints the exact request plan and
+      stop conditions and HOLDS (nothing sent, key not read). N is YOUR asserted
+      reservation, not a price; provider cost is unknown and may exceed it. The
+      ledger is a local 1000-credit project budget ceiling, NOT a provider cap.
+  website-to-figma states-screenshots --run RUN_DIR --out DIR [--yes]
+      Bounded local download of an ACCEPTED run's state screenshots (full local
+      DNS guard, pinned address, re-checked redirects, byte/pixel bounds, SHA-256
+      manifest). Without --yes it lists targets and HOLDS. Failures => download
+      manually and add to the asset manifest.
+  website-to-figma ledger init|show|resolve|record --ledger FILE [...]
+      init --prior-credits N --note TEXT | resolve --id ID --credits N|unknown --note TEXT
+      | record --credits N --note TEXT (other attributable project spend)
   website-to-figma validate <FILE>
       Validate a site map JSON file (schemaVersion 1 or 2).`;
     UsageError = class extends Error {
@@ -41569,7 +42373,7 @@ var init_cli = __esm({
     main2(process.argv.slice(2)).then(
       (code) => process.exit(code),
       (err) => {
-        if (err instanceof CrawlPolicyError || err instanceof StatePlanError) {
+        if (err instanceof CrawlPolicyError || err instanceof StatePlanError || err instanceof StateRunPolicyError || err instanceof LedgerError || err instanceof OutputError) {
           console.error(err.message);
           process.exit(3);
         }

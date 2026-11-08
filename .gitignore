@@ -9,3 +9,8 @@ coverage/
 !.env.example
 *.log
 .DS_Store
+
+# private state-run outputs (raw page content), local ledgers
+private-runs/
+private-assets/
+ledger.json

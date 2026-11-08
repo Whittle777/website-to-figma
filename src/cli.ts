@@ -3,8 +3,8 @@
 //   fixture <5|10|20> [--out FILE]                 synthetic, offline, no key
 //   crawl <url> [--limit N] [--timeout S] [--out FILE] [--yes]
 //   validate <FILE>
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { buildFixture, FIXTURE_SIZES, type FixtureSize } from "./fixtures/generate";
 import { LIMITS } from "./shared/limits";
 import { utf8Length, type SiteMapDoc } from "./shared/schema";
@@ -18,6 +18,11 @@ import { readBoundedFile, readBoundedJson } from "./hifi/files";
 import { captureFromScrapeResponses } from "./hifi/adapter";
 import { parseHttpUrl } from "./security/urlGuard";
 import { buildStatePreview, parseStatePlan, StatePlanError } from "./states/plan";
+import { assertRunGates, executeStateRun, StateRunPolicyError, STOP_CONDITIONS, validateForExecution, sha256 } from "./states/execute";
+import { initLedger, ledgerSummary, LedgerError, readLedger, recordManual, resolveEntry } from "./states/ledger";
+import { createExclusiveDir, OutputError, writeExclusive } from "./states/runFiles";
+import { acquireImage, httpsTransport } from "./states/acquire";
+import { adaptTaggedReturns } from "./states/adapt";
 import { assertLimit } from "./normalize/build";
 import { MAX_TIMEOUT_SEC, planCrawl, runCrawl } from "./crawl/firecrawl";
 import { assertOperatorPrerequisites, CrawlPolicyError, normalizeExcludes, standardEstimate } from "./crawl/plan";
@@ -52,6 +57,23 @@ const USAGE = `Usage:
       per page incl. baseline, declarative synthetic mutations only) and write
       exact Firecrawl request PREVIEWS. Sends NOTHING; there is no executor, so
       automatic state capture is unsupported. Provider cost is unknown.
+  website-to-figma states-run --plan FILE --preview FILE --out DIR --ledger FILE
+        --operator-credits-per-request N --operator-reported-balance N
+        --confirm-existing-credits --confirm-no-topup
+        [--acknowledge-synthetic-modifications] [--reviewed-continuation LEDGER_ID] [--yes]
+      PAID hosted execution of the exact reviewed previews: ONE request per page,
+      one attempt, no retries. Without --yes it prints the exact request plan and
+      stop conditions and HOLDS (nothing sent, key not read). N is YOUR asserted
+      reservation, not a price; provider cost is unknown and may exceed it. The
+      ledger is a local 1000-credit project budget ceiling, NOT a provider cap.
+  website-to-figma states-screenshots --run RUN_DIR --out DIR [--yes]
+      Bounded local download of an ACCEPTED run's state screenshots (full local
+      DNS guard, pinned address, re-checked redirects, byte/pixel bounds, SHA-256
+      manifest). Without --yes it lists targets and HOLDS. Failures => download
+      manually and add to the asset manifest.
+  website-to-figma ledger init|show|resolve|record --ledger FILE [...]
+      init --prior-credits N --note TEXT | resolve --id ID --credits N|unknown --note TEXT
+      | record --credits N --note TEXT (other attributable project spend)
   website-to-figma validate <FILE>
       Validate a site map JSON file (schemaVersion 1 or 2).`;
 
@@ -65,9 +87,9 @@ function parseFlags(args: string[]): { positional: string[]; flags: Map<string, 
   const fontMaps: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
-    if (a === "--yes" || a === "--help" || a === "-h" || a === "--no-map" || a === "--confirm-existing-credits" || a === "--confirm-no-topup") {
+    if (a === "--yes" || a === "--help" || a === "-h" || a === "--no-map" || a === "--confirm-existing-credits" || a === "--confirm-no-topup" || a === "--acknowledge-synthetic-modifications") {
       flags.set(a.replace(/^-+/, ""), true);
-    } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label" || a === "--font-map" || a === "--normalize-reference" || a === "--plan" || a === "--state-reactions") {
+    } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label" || a === "--font-map" || a === "--normalize-reference" || a === "--plan" || a === "--state-reactions" || a === "--preview" || a === "--ledger" || a === "--operator-credits-per-request" || a === "--reviewed-continuation" || a === "--run" || a === "--prior-credits" || a === "--note" || a === "--id" || a === "--credits") {
       const v = args[++i];
       if (v === undefined) throw new UsageError(`${a} needs a value`);
       if (a === "--exclude") excludes.push(v);
@@ -181,6 +203,120 @@ async function main(argv: string[]): Promise<number> {
     for (const m of preview.manualRoute) console.log(`  manual: ${m}`);
     for (const n of preview.notice) console.log(`  note: ${n}`);
     return 0;
+  }
+
+  if (cmd === "ledger") {
+    const path = flags.get("ledger");
+    const sub = positional[0];
+    if (typeof path !== "string" || !sub) throw new UsageError("ledger needs a subcommand (init|show|resolve|record) and --ledger FILE");
+    const note = typeof flags.get("note") === "string" ? (flags.get("note") as string) : "";
+    if (sub === "init") {
+      const l = initLedger(path, intFlag(flags.get("prior-credits"), "prior-credits", 0), note);
+      console.log(ledgerSummary(l));
+    } else if (sub === "show") {
+      console.log(ledgerSummary(readLedger(path)));
+    } else if (sub === "resolve") {
+      const id = flags.get("id");
+      const c = flags.get("credits");
+      if (typeof id !== "string" || typeof c !== "string") throw new UsageError("ledger resolve needs --id ID --credits N|unknown");
+      const e = resolveEntry(path, id, c === "unknown" ? null : intFlag(c, "credits", 0), note);
+      console.log(`Resolved ${e.id}: counted ${e.resolvedCredits}`);
+    } else if (sub === "record") {
+      const e = recordManual(path, intFlag(flags.get("credits"), "credits", 0), note);
+      console.log(`Recorded ${e.id}: ${e.reserved} credits`);
+    } else throw new UsageError(`unknown ledger subcommand ${sub}`);
+    return 0;
+  }
+
+  if (cmd === "states-run") {
+    const planPath = flags.get("plan");
+    const previewPath = flags.get("preview");
+    const out = flags.get("out");
+    if (typeof planPath !== "string" || typeof previewPath !== "string" || typeof out !== "string") throw new UsageError("states-run needs --plan FILE --preview FILE --out DIR");
+    // 1) exact preview + semantic validation, 2) operator gates + ledger (no key, no network)
+    const validated = validateForExecution(readBoundedJson(planPath, 1_000_000, "state plan"), readBoundedJson(previewPath, 20_000_000, "preview"));
+    const optInt = (k: string) => (flags.get(k) === undefined ? undefined : intFlag(flags.get(k), k, 0));
+    const gates = {
+      operatorCreditsPerRequest: optInt("operator-credits-per-request"),
+      operatorReportedBalance: optInt("operator-reported-balance"),
+      confirmExistingCredits: flags.has("confirm-existing-credits"),
+      confirmNoTopup: flags.has("confirm-no-topup"),
+      acknowledgeSyntheticModifications: flags.has("acknowledge-synthetic-modifications"),
+      ledgerPath: typeof flags.get("ledger") === "string" ? (flags.get("ledger") as string) : undefined,
+      reviewedContinuation: typeof flags.get("reviewed-continuation") === "string" ? (flags.get("reviewed-continuation") as string) : undefined,
+    };
+    const g = assertRunGates(validated, gates);
+    console.log(`Exact request plan (preview sha256 ${validated.previewSha256}); ONE request per page, one attempt each, no retries:`);
+    for (const r of validated.requests) {
+      const p = r.preview;
+      console.log(`  POST /v2/scrape ${p.pageUrl}: ${p.actionCount} actions [${p.roles.map((x) => x.role).join(",")}], combined waits ${p.combinedWaitMs} ms, states ${p.states.map((s) => `${s.name}(${s.provenance})`).join(", ")}, request sha256 ${r.requestSha256}`);
+    }
+    console.log(`Operator-asserted reservation: ${g.perRequest} x ${validated.requests.length} = ${g.projected} (NOT a price; provider cost unknown and may exceed it). Ledger committed ${g.committed}, remaining local allowance ${g.remaining} of the 1000-credit project budget ceiling (not a provider cap).`);
+    console.log("Stop conditions:");
+    for (const c of STOP_CONDITIONS) console.log(`  - ${c}`);
+    if (!flags.has("yes")) {
+      console.log("HOLD: nothing was sent and no key was read. Re-run with --yes to execute.");
+      return 3;
+    }
+    const runId = sha256(`${validated.previewSha256}:${Date.now()}:${Math.random()}`).slice(0, 16);
+    const runDir = createExclusiveDir(out, `state-run-${runId}`);
+    const result = await executeStateRun({
+      validated,
+      gates,
+      runId,
+      getApiKey: () => {
+        if (existsSync(".env")) process.loadEnvFile(".env");
+        return process.env.FIRECRAWL_API_KEY;
+      },
+      save: (i, wrapper) => writeExclusive(join(runDir, `page-${i}.response.json`), JSON.stringify(wrapper) + "\n"),
+      log: (m) => console.error(m),
+    });
+    writeExclusive(join(runDir, "run.json"), JSON.stringify({ runId: result.runId, previewSha256: result.previewSha256, stoppedEarly: result.stoppedEarly, pages: result.pages }, null, 2) + "\n");
+    console.log(`Wrote ${runDir} (PRIVATE: contains raw page content; never commit it)`);
+    for (const p of result.pages) console.log(`  ${p.pageUrl}: ${p.status}${p.reason ? ` (${p.reason})` : ""}; credits reported ${p.reportedCreditsUsed ?? "NOT reported"}${p.warnings.length ? `; ${p.warnings.join("; ")}` : ""}`);
+    return result.pages.every((p) => p.status === "accepted") && !result.stoppedEarly ? 0 : 4;
+  }
+
+  if (cmd === "states-screenshots") {
+    const runDir = flags.get("run");
+    const out = flags.get("out");
+    if (typeof runDir !== "string" || typeof out !== "string") throw new UsageError("states-screenshots needs --run RUN_DIR --out DIR");
+    const files = readdirSync(runDir).filter((f) => /^page-[0-2]\.response\.json$/.test(f)).sort();
+    const targets: { pageUrl: string; state: string; seq: number; url: string; page: number }[] = [];
+    for (const f of files) {
+      const w = readBoundedJson(join(runDir, f), LIMITS.hifiMaxJsonBytes, f) as Record<string, any>;
+      if (w?.w2fRun?.status !== "accepted" || typeof w?.data !== "object") {
+        console.log(`  skipped ${f}: run status ${String(w?.w2fRun?.status)}`);
+        continue;
+      }
+      const t = adaptTaggedReturns(w.data, f);
+      const pageUrl = String(w.w2fRun.pageUrl);
+      for (const h of t?.screenshotHints ?? []) targets.push({ pageUrl, state: h.state, seq: h.seq, url: h.screenshotUrl, page: Number(f.slice(5, 6)) });
+    }
+    console.log(`${targets.length} associated screenshot URL(s) from accepted runs:`);
+    for (const t of targets) console.log(`  ${t.pageUrl} "${t.state}": ${t.url.slice(0, 120)}`);
+    if (!flags.has("yes")) {
+      console.log("HOLD: nothing downloaded. Re-run with --yes (local fetch; full local DNS guard, no hosted exception).");
+      return 3;
+    }
+    const dir = createExclusiveDir(out, `screenshots-${Date.now()}`);
+    const assets: Record<string, unknown>[] = [];
+    let failed = 0;
+    for (const t of targets) {
+      try {
+        const a = await acquireImage(t.url, httpsTransport);
+        const file = `p${t.page}-s${t.seq}.${a.mime === "image/png" ? "png" : "jpg"}`;
+        writeExclusive(join(dir, file), a.bytes);
+        assets.push({ id: `state-p${t.page}-s${t.seq}`, kind: "reference", file, sha256: a.sha256, pageUrl: t.pageUrl, state: t.state });
+        console.log(`  saved ${file} ${a.width}x${a.height} sha256 ${a.sha256}`);
+      } catch (err) {
+        failed++;
+        console.log(`  NOT downloaded (${err instanceof Error ? err.message : String(err)}): operator-local input required: download ${t.pageUrl} "${t.state}" yourself and add it to the asset manifest (kind "reference", pageUrl, state).`);
+      }
+    }
+    writeExclusive(join(dir, "manifest.json"), JSON.stringify({ schema: "website-to-figma/asset-manifest", schemaVersion: 1, assets }, null, 2) + "\n");
+    console.log(`Wrote ${dir} (PRIVATE; ${assets.length} saved, ${failed} need manual download)`);
+    return failed ? 4 : 0;
   }
 
   if (cmd === "hifi") {
@@ -327,7 +463,7 @@ async function main(argv: string[]): Promise<number> {
 main(process.argv.slice(2)).then(
   (code) => process.exit(code),
   (err: unknown) => {
-    if (err instanceof CrawlPolicyError || err instanceof StatePlanError) {
+    if (err instanceof CrawlPolicyError || err instanceof StatePlanError || err instanceof StateRunPolicyError || err instanceof LedgerError || err instanceof OutputError) {
       console.error(err.message);
       process.exit(3);
     }
