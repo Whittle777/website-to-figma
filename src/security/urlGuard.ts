@@ -113,13 +113,18 @@ export function parseHttpUrl(raw: string): URL {
   return url;
 }
 
-// Owner-approved (2026-11-07) narrow exception: for URLs handed to or returned
-// by HOSTED Firecrawl only, the local DNS-answer lookup is omitted for this
-// exact hostname (no www, subdomain, trailing-dot or suffix variants). The
+// Owner-approved narrow exceptions (simplecss.org 2026-11-07, bootstrapmade.com
+// 2026-11-08): for URLs handed to or returned by HOSTED Firecrawl only, the
+// local DNS-answer lookup is omitted for these exact hostnames (no www,
+// subdomain, trailing-dot or suffix variants). The
 // local resolver there is a FakeIP proxy (198.18.0.0/15), so its answers say
 // nothing about the hosted fetch. All structural checks still apply. Local
 // fetches and every other host keep the full DNS check.
-const HOSTED_DNS_CHECK_EXEMPT_HOSTNAME = "simplecss.org";
+const HOSTED_DNS_CHECK_EXEMPT_HOSTNAMES: ReadonlySet<string> = new Set(["simplecss.org", "bootstrapmade.com"]);
+// Copy for tests/docs; the set itself is not exported, so it cannot be extended at runtime.
+export function hostedDnsExemptHostnames(): string[] {
+  return [...HOSTED_DNS_CHECK_EXEMPT_HOSTNAMES];
+}
 
 // For hosted Firecrawl requests (start URL and returned final URLs) only.
 export async function assertHostedFirecrawlUrl(
@@ -128,7 +133,7 @@ export async function assertHostedFirecrawlUrl(
   cache?: Map<string, Promise<void>>,
 ): Promise<URL> {
   const url = parseHttpUrl(raw);
-  if (url.hostname === HOSTED_DNS_CHECK_EXEMPT_HOSTNAME) return url;
+  if (HOSTED_DNS_CHECK_EXEMPT_HOSTNAMES.has(url.hostname)) return url;
   return assertPublicHttpUrl(raw, resolve, cache);
 }
 

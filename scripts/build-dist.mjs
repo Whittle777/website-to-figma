@@ -132,7 +132,7 @@ const manifest = JSON.parse(readFileSync("plugin/manifest.json", "utf8"));
 manifest.main = "code.js";
 manifest.ui = "ui.html";
 writeFileSync(`${PD}/manifest.json`, JSON.stringify(manifest, null, 2) + "\n");
-for (const f of ["fixture-5.json", "hifi-synthetic.json"]) writeFileSync(`${PD}/samples/${f}`, readFileSync(`samples/${f}`));
+for (const f of ["fixture-5.json", "hifi-synthetic.json", "hifi-states-synthetic.json"]) writeFileSync(`${PD}/samples/${f}`, readFileSync(`samples/${f}`));
 writeFileSync(
   `${PD}/THIRD_PARTY_NOTICES.txt`,
   thirdParty.length
@@ -153,7 +153,8 @@ writeFileSync(
     "   into `manifest.json` here, replacing `REPLACE-WITH-FIGMA-GENERATED-ID`.",
     "2. Import this folder's `manifest.json` from Figma's development plugin menu.",
     "3. Run it and choose a JSON file: `samples/fixture-5.json` (schemaVersion 1, low-fi) or",
-    "   `samples/hifi-synthetic.json` (schemaVersion 2, measured hi-fi; SYNTHETIC, not a real site).",
+    "   `samples/hifi-synthetic.json` (schemaVersion 2, measured hi-fi; SYNTHETIC, not a real site), or",
+    "   `samples/hifi-states-synthetic.json` (SYNTHETIC state variants: combineAsVariants + ON_CLICK/CHANGE_TO).",
     "",
     "The plugin has `networkAccess: none`, validates everything before creating nodes, verifies each",
     "embedded image (length, SHA-256, PNG/JPEG/GIF header, <= 4096 px) and rolls back on failure.",
@@ -162,7 +163,7 @@ writeFileSync(
     "",
   ].join("\n"),
 );
-const pdFiles = ["manifest.json", "code.js", "ui.html", "README.md", "THIRD_PARTY_NOTICES.txt", "samples/fixture-5.json", "samples/hifi-synthetic.json"];
+const pdFiles = ["manifest.json", "code.js", "ui.html", "README.md", "THIRD_PARTY_NOTICES.txt", "samples/fixture-5.json", "samples/hifi-synthetic.json", "samples/hifi-states-synthetic.json"];
 writeFileSync(`${PD}/SHA256SUMS`, pdFiles.map((f) => `${sha(`${PD}/${f}`)}  ${f}`).join("\n") + "\n");
 console.log(`Built ${PD}/ (${pcode.length} bytes code.js; third-party inputs: ${thirdParty.length})`);
 console.log(readFileSync(`${PD}/SHA256SUMS`, "utf8").trimEnd());

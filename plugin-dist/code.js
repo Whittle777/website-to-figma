@@ -597,6 +597,81 @@
     nodes.forEach((n, j) => checkNode(c, n, `${p}[${j}]`, nodes.length, assetIds, kinds, clipCount));
     return nodes.length;
   }
+  var STATE_NAME = /^[A-Za-z0-9][A-Za-z0-9 _-]{0,39}$/;
+  var MAX_VARIANT_NODES = 2e3;
+  function checkStatesEtc(c, pg, p, assetIds, assetsById) {
+    let total = 0;
+    if (pg.states !== void 0 && c.obj(pg.states, `${p}.states`, ["reactions", "variants"])) {
+      const st = pg.states;
+      c.oneOf(st.reactions, `${p}.states.reactions`, ["none", "click-cycle"]);
+      if (c.arr(st.variants, `${p}.states.variants`, 3)) {
+        if (st.variants.length < 1) c.fail(`${p}.states.variants`, "expected 1..3 variants");
+        const names = /* @__PURE__ */ new Set();
+        st.variants.forEach((v, j) => {
+          const q = `${p}.states.variants[${j}]`;
+          if (!c.obj(v, q, ["name", "provenance", "frame", "nodes", "referenceAssetId", "screenshot", "notes"])) return;
+          if (typeof v.name !== "string" || !STATE_NAME.test(v.name) || names.has(v.name.toLowerCase())) c.fail(`${q}.name`, "expected a unique state name");
+          else names.add(v.name.toLowerCase());
+          c.oneOf(v.provenance, `${q}.provenance`, ["baseline", "synthetic", "manual"]);
+          if (j === 0 !== (v.provenance === "baseline")) c.fail(`${q}.provenance`, "exactly the first variant must be the baseline");
+          if (j === 0 && v.name !== "Default") c.fail(`${q}.name`, 'the baseline variant must be named "Default"');
+          if (c.obj(v.frame, `${q}.frame`, ["x", "y", "w", "h"])) {
+            checkRect(c, v.frame, `${q}.frame`);
+            c.num(v.frame.w, `${q}.frame.w`, 1, LIMITS.hifiMaxPageWidth);
+            c.num(v.frame.h, `${q}.frame.h`, 1, LIMITS.hifiMaxPageHeight);
+          }
+          total += checkNodeList(c, v.nodes, `${q}.nodes`, MAX_VARIANT_NODES, assetIds, 0);
+          if (v.referenceAssetId !== null && (typeof v.referenceAssetId !== "string" || assetsById.get(v.referenceAssetId)?.kind !== "reference")) c.fail(`${q}.referenceAssetId`, "unknown reference asset");
+          if (v.screenshot !== null && c.obj(v.screenshot, `${q}.screenshot`, ["association", "scrollY", "viewportW", "viewportH"])) {
+            c.oneOf(v.screenshot.association, `${q}.screenshot.association`, ["action-order", "unassociated", "manual"]);
+            for (const k of ["scrollY", "viewportW", "viewportH"]) if (v.screenshot[k] !== null) c.num(v.screenshot[k], `${q}.screenshot.${k}`, 0, COORD);
+          }
+          c.labels(v.notes, `${q}.notes`, 10);
+        });
+      }
+    }
+    if (pg.freeze !== void 0 && c.obj(pg.freeze, `${p}.freeze`, ["attempted", "applied", "unavailable", "modifications", "notFrozen"])) {
+      const f = pg.freeze;
+      c.labels(f.attempted, `${p}.freeze.attempted`, 10);
+      c.labels(f.unavailable, `${p}.freeze.unavailable`, 10);
+      c.labels(f.modifications, `${p}.freeze.modifications`, 10);
+      c.labels(f.notFrozen, `${p}.freeze.notFrozen`, 10);
+      if (c.arr(f.applied, `${p}.freeze.applied`, 10)) {
+        f.applied.forEach((a, j) => {
+          if (!c.obj(a, `${p}.freeze.applied[${j}]`, ["name", "count"])) return;
+          c.str(a.name, `${p}.freeze.applied[${j}].name`, 60, false);
+          c.int(a.count, `${p}.freeze.applied[${j}].count`, 0, 1e5);
+        });
+      }
+    }
+    if (pg.motion !== void 0 && c.obj(pg.motion, `${p}.motion`, ["rules", "inaccessibleSheets"])) {
+      c.int(pg.motion.inaccessibleSheets, `${p}.motion.inaccessibleSheets`, 0, 1e3);
+      if (c.arr(pg.motion.rules, `${p}.motion.rules`, 200)) {
+        pg.motion.rules.forEach((r, j) => {
+          const q = `${p}.motion.rules[${j}]`;
+          if (!c.obj(r, q, ["selector", "kind", "detail"])) return;
+          c.str(r.selector, `${q}.selector`, 200, false);
+          c.oneOf(r.kind, `${q}.kind`, ["transition", "animation", "hover"]);
+          c.str(r.detail, `${q}.detail`, 200);
+        });
+      }
+    }
+    if (pg.media !== void 0 && c.arr(pg.media, `${p}.media`, 50)) {
+      pg.media.forEach((m, j) => {
+        const q = `${p}.media[${j}]`;
+        if (!c.obj(m, q, ["kind", "x", "y", "w", "h", "poster", "src", "webgl", "stillAssetId", "still"])) return;
+        c.oneOf(m.kind, `${q}.kind`, ["video", "canvas", "lottie", "iframe"]);
+        checkRect(c, m, q);
+        if (m.poster !== null) c.httpUrl(m.poster, `${q}.poster`);
+        if (m.src !== null) c.httpUrl(m.src, `${q}.src`);
+        if (m.webgl !== null) c.bool(m.webgl, `${q}.webgl`);
+        c.oneOf(m.still, `${q}.still`, ["operator-asset", "poster-url-observed-not-downloaded", "unavailable"]);
+        if (m.still === "operator-asset" !== (m.stillAssetId !== null)) c.fail(`${q}.stillAssetId`, 'set exactly when still is "operator-asset"');
+        if (m.stillAssetId !== null && (typeof m.stillAssetId !== "string" || assetsById.get(m.stillAssetId)?.kind !== "image")) c.fail(`${q}.stillAssetId`, "unknown image asset");
+      });
+    }
+    return total;
+  }
   function validateHifiDoc(input) {
     const c = new C();
     if (!c.obj(input, "$", ["schema", "schemaVersion", "generator", "source", "site", "provenance", "assets", "pages", "warnings"], ["components", "fontMap"])) return { ok: false, errors: c.errors };
@@ -675,7 +750,8 @@
       const ids = /* @__PURE__ */ new Set();
       d.pages.forEach((pg, i) => {
         const p = `$.pages[${i}]`;
-        if (!c.obj(pg, p, ["id", "url", "path", "title", "width", "height", "truncated", "referenceAssetId", "branding", "nodes", "warnings"], ["notes", "parentId", "clips", "instances", "normalization", "referenceTiles"])) return;
+        if (!c.obj(pg, p, ["id", "url", "path", "title", "width", "height", "truncated", "referenceAssetId", "branding", "nodes", "warnings"], ["notes", "parentId", "clips", "instances", "normalization", "referenceTiles", "states", "freeze", "motion", "media"])) return;
+        total += checkStatesEtc(c, pg, p, assetIds, assetsById);
         if (pg.referenceTiles !== void 0 && c.obj(pg.referenceTiles, `${p}.referenceTiles`, ["sourceSha256", "sourceWidth", "sourceHeight", "tiles"])) {
           const rt = pg.referenceTiles;
           const q = `${p}.referenceTiles`;
@@ -1031,7 +1107,7 @@
     const byNode = /* @__PURE__ */ new Map();
     for (let round = 0; round < 6; round++) {
       const needed = /* @__PURE__ */ new Map();
-      for (const list of [...doc.pages.map((p) => p.nodes), ...(doc.components ?? []).map((c) => c.nodes)]) {
+      for (const list of [...doc.pages.map((p) => p.nodes), ...doc.pages.flatMap((p) => (p.states?.variants ?? []).map((v) => v.nodes)), ...(doc.components ?? []).map((c) => c.nodes)]) {
         for (const n of list) {
           if (n.kind !== "text") continue;
           const r = resolveFont(n.fontStack, n.generic, n.weight, n.italic, available, mappedFamily(n.fontStack, n.generic, doc.fontMap));
@@ -1267,6 +1343,7 @@
       ...fontLines(page.nodes, fonts),
       ...failedLoads.map((f) => `Font load failure: ${f}`),
       ...page.instances?.length ? [`Shared components: ${page.instances.length} instance(s) (${page.instances.map((i) => `${i.component}${i.overrides.length ? ` with ${i.overrides.length} override(s)` : ""}`).join(", ")})`] : [],
+      ...stateLines(page),
       ...page.branding ? [`Branding (page-level, not per-element): ${Object.entries(page.branding.colors).map(([k, v]) => `${k} ${v}`).join(", ")}${page.branding.fonts.length ? `; fonts ${page.branding.fonts.join(", ")}` : ""}`] : []
     ];
     const head = label(track2, section, notes.join("\n"), 14, false, x0, y, Math.max(600, page.width));
@@ -1299,6 +1376,25 @@
         }
       }
       stats.instances++;
+    }
+    for (const m of page.media ?? []) {
+      const r = track2(figma.createRectangle());
+      frame.appendChild(r);
+      r.x = m.x;
+      r.y = m.y;
+      r.resize(Math.max(0.01, m.w), Math.max(0.01, m.h));
+      if (m.stillAssetId && hashes.has(m.stillAssetId)) {
+        r.name = `MEDIA STILL / ${m.kind} (operator still for the observed poster URL; not playing)`;
+        r.fills = [{ type: "IMAGE", imageHash: hashes.get(m.stillAssetId), scaleMode: "FILL" }];
+      } else {
+        r.name = `MEDIA PLACEHOLDER / ${m.kind} (${m.still === "poster-url-observed-not-downloaded" ? "poster URL observed, not downloaded" : "no still available"}${m.webgl ? "; WebGL" : ""})`;
+        r.fills = [{ type: "SOLID", color: { r: 0.85, g: 0.85, b: 0.85 }, opacity: 0.6 }];
+        r.dashPattern = [6, 4];
+        r.strokes = [{ type: "SOLID", color: { r: 0.4, g: 0.4, b: 0.4 } }];
+        r.strokeWeight = 1;
+      }
+      r.setPluginData("w2f", JSON.stringify({ media: m.kind, still: m.still, poster: m.poster, src: m.src, webgl: m.webgl }));
+      stats.media++;
     }
     if (unfitted) {
       head.characters = head.characters + `
@@ -1344,7 +1440,68 @@ Width fit skipped for ${unfitted} measured text run(s) (difference too large); n
       }
       bottom = Math.max(bottom, top + rt.sourceHeight);
     }
+    if (page.states) bottom = await buildStates(track2, section, page, bottom + 80, fonts, hashes, doc, stats);
     return { bottom, frame };
+  }
+  function stateLines(page) {
+    const out = [];
+    if (page.states) out.push(`States: ${page.states.variants.map((v) => `${v.name} (${v.provenance})`).join(", ")}. Synthetic = DOM modification, not an observed original state; manual = operator screenshot only.`);
+    if (page.freeze) out.push(`Freeze: applied ${page.freeze.applied.map((a) => `${a.name} ${a.count}`).join(", ") || "none"}; unavailable ${page.freeze.unavailable.join(", ") || "none"}; NOT frozen: ${page.freeze.notFrozen.join(", ")}`);
+    for (const m of page.freeze?.modifications ?? []) out.push(`Freeze modification: ${m}`);
+    if (page.motion) out.push(`Motion (static notes, not animated): ${page.motion.rules.length} transition/animation/hover rule(s); ${page.motion.inaccessibleSheets} unreadable stylesheet(s)`);
+    if (page.media?.length) out.push(`Media: ${page.media.length} placeholder(s) (video/canvas/lottie/iframe do not play in Figma)`);
+    return out;
+  }
+  async function buildStates(track2, section, page, y, fonts, hashes, doc, stats) {
+    const st = page.states;
+    const x0 = 80;
+    const head = label(track2, section, `States / ${page.path}: native component variants (${st.variants.map((v) => `${v.name}: ${v.provenance}`).join(", ")}). Synthetic states are DOM modifications, not observed original states.${st.reactions === "click-cycle" && st.variants.length > 1 ? " Prototype: ON_CLICK -> CHANGE_TO next variant." : ""}`, 14, true, x0, y, 1200);
+    const top = y + head.height + 16;
+    const comps = [];
+    let x = 0;
+    for (const v of st.variants) {
+      const c = track2(figma.createComponent());
+      section.appendChild(c);
+      c.name = `State=${v.name}`;
+      c.x = x0 + x;
+      c.y = top;
+      c.resize(Math.max(1, v.frame.w), Math.max(1, v.frame.h));
+      c.fills = [];
+      c.clipsContent = true;
+      c.description = v.notes.join("\n");
+      c.setPluginData("w2f", JSON.stringify({ state: v.name, provenance: v.provenance, frame: v.frame, screenshot: v.screenshot }));
+      const ref = v.referenceAssetId ? doc.assets.find((a) => a.id === v.referenceAssetId) : void 0;
+      if (ref && v.screenshot && v.screenshot.scrollY !== null) {
+        const r = track2(figma.createRectangle());
+        c.appendChild(r);
+        r.name = `Reference screenshot / ${v.name} (hidden; ${v.screenshot.association})`;
+        r.x = -v.frame.x;
+        r.y = v.screenshot.scrollY - v.frame.y;
+        r.resize(ref.width, ref.height);
+        r.fills = [{ type: "IMAGE", imageHash: hashes.get(ref.id), scaleMode: "FILL" }];
+        r.visible = false;
+        r.locked = true;
+      }
+      await renderNodes(track2, c, v.nodes, [], fonts, hashes, stats, () => "");
+      comps.push(c);
+      x += v.frame.w + 40;
+      stats.variants++;
+    }
+    const set = track2(figma.combineAsVariants(comps, section));
+    set.name = `States / ${page.path}`;
+    set.x = x0;
+    set.y = top;
+    stats.variantSets++;
+    if (st.reactions === "click-cycle" && comps.length > 1) {
+      for (const [i, c] of comps.entries()) {
+        const next = comps[(i + 1) % comps.length];
+        const action = { type: "NODE", destinationId: next.id, navigation: "CHANGE_TO", transition: null };
+        const reaction = { trigger: { type: "ON_CLICK" }, actions: [action] };
+        await c.setReactionsAsync([reaction]);
+        stats.reactions++;
+      }
+    }
+    return top + Math.max(...st.variants.map((v) => v.frame.h)) + 40;
   }
   async function edge(track2, section, from, to) {
     const gx = 40;
@@ -1376,7 +1533,7 @@ Width fit skipped for ${unfitted} measured text run(s) (difference too large); n
     const { byNode, failedLoads } = await resolveFonts(doc);
     const hashes = /* @__PURE__ */ new Map();
     for (const [id, b] of bytes) hashes.set(id, figma.createImage(b).hash);
-    const stats = { pages: 0, nodes: 0, images: 0, placeholders: 0, fontFallbacks: 0, fitted: 0, unfitted: 0, shapes: 0, svgs: 0, components: 0, instances: 0, edges: 0, warnings: [...doc.warnings] };
+    const stats = { pages: 0, nodes: 0, images: 0, placeholders: 0, fontFallbacks: 0, fitted: 0, unfitted: 0, shapes: 0, svgs: 0, components: 0, instances: 0, edges: 0, variantSets: 0, variants: 0, reactions: 0, media: 0, warnings: [...doc.warnings] };
     const section = track2(figma.createSection());
     created.push(section);
     section.name = `website-to-figma \xB7 Hi-fi (measured) \xB7 ${doc.site.host}`;
@@ -1639,7 +1796,7 @@ Width fit skipped for ${unfitted} measured text run(s) (difference too large); n
         const h = await buildV2(result.doc);
         post({
           type: "done",
-          text: `Created ${h.pages} hi-fi page(s): ${h.nodes} measured node(s), ${h.images} image fill(s), ${h.placeholders} missing-image placeholder(s), ${h.fitted} width-fitted text run(s).`,
+          text: `Created ${h.pages} hi-fi page(s): ${h.nodes} measured node(s), ${h.images} image fill(s), ${h.placeholders} missing-image placeholder(s), ${h.fitted} width-fitted text run(s)${h.variantSets ? `, ${h.variantSets} state variant set(s) with ${h.variants} variant(s) and ${h.reactions} prototype reaction(s)` : ""}${h.media ? `, ${h.media} media placeholder(s)` : ""}.`,
           details: h.warnings
         });
         return;

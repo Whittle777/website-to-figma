@@ -4,6 +4,7 @@
 // contract); it is NOT a substitute for importing into real Figma.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildHifiFixture } from "../src/fixtures/hifiSynthetic";
+import { buildStatesFixture } from "../src/fixtures/statesSynthetic";
 import { buildHifiDoc, verifyAssets } from "../plugin/src/hifi";
 import type { HifiDoc } from "../src/shared/hifiSchema";
 
@@ -23,10 +24,13 @@ let events: string[];
 let failFonts: Set<string>;
 let failOnText: number | null;
 let textCount: number;
+let failReactions: boolean;
+let nextId = 0;
 
 function node(type: string): FakeNode {
   const n: FakeNode = {
     type,
+    id: `${++nextId}:1`,
     name: "",
     children: [],
     parent: null,
@@ -74,6 +78,10 @@ function node(type: string): FakeNode {
       };
       return clone(n);
     },
+    async setReactionsAsync(r: unknown) {
+      if (failReactions) throw new Error("simulated reaction failure");
+      n.reactions = r;
+    },
     remove() {
       n.removed = true;
     },
@@ -101,6 +109,7 @@ beforeEach(() => {
   failFonts = new Set();
   failOnText = null;
   textCount = 0;
+  failReactions = false;
   (globalThis as unknown as { figma: unknown }).figma = {
     base64Decode: (s: string) => new Uint8Array(Buffer.from(s, "base64")),
     listAvailableFontsAsync: async () =>
@@ -130,6 +139,16 @@ beforeEach(() => {
       return g;
     },
     createFrame: () => node("FRAME"),
+    combineAsVariants: (nodes: FakeNode[], parent: FakeNode) => {
+      const set = node("COMPONENT_SET");
+      for (const c of nodes) {
+        if (c.type !== "COMPONENT") throw new Error("combineAsVariants: components only");
+        if (c.parent) c.parent.children = c.parent.children.filter((x) => x !== c);
+        (set.appendChild as (x: FakeNode) => void)(c);
+      }
+      (parent.appendChild as (x: FakeNode) => void)(set);
+      return set;
+    },
     createRectangle: () => node("RECTANGLE"),
     createText: () => {
       textCount++;
@@ -271,5 +290,69 @@ describe("native hi-fi renderer (fake figma)", () => {
     const untracked = created.filter((n) => !tracked.includes(n));
     expect(created.length).toBeGreaterThan(0);
     expect(untracked).toEqual([]);
+  });
+});
+
+describe("state variants, reactions and media (fake figma)", () => {
+  it("combines native component variants with provenance and ON_CLICK -> CHANGE_TO reactions", async () => {
+    tracked.length = 0;
+    const sections: FakeNode[] = [];
+    const stats = await buildHifiDoc(buildStatesFixture(), track as never, sections as never, 0);
+    expect(stats).toMatchObject({ variantSets: 1, variants: 3, reactions: 3, media: 2 });
+    const set = created.find((n) => n.type === "COMPONENT_SET")!;
+    expect(set.name).toBe("States / /");
+    expect(set.children.map((c) => c.name)).toEqual(["State=Default", "State=FAQ open", "State=Tab two"]);
+    const [base, faq, tab] = set.children;
+    expect(JSON.parse(faq!.data.w2f!)).toMatchObject({ provenance: "synthetic", screenshot: { association: "action-order", scrollY: 60 } });
+    expect(JSON.parse(base!.data.w2f!).provenance).toBe("baseline");
+    expect(faq!.description).toMatch(/not an observed original state/);
+    expect(faq!.description).toMatch(/No handler side-effect guarantee/);
+    expect(faq!).toMatchObject({ width: 400, height: 140, clipsContent: true });
+    // hidden 1:1 provider screenshot placed where it was taken
+    const shot = faq!.children.find((c) => c.name.startsWith("Reference screenshot / FAQ open"))!;
+    expect(shot).toMatchObject({ visible: false, locked: true, x: -40, y: -40, width: 800, height: 600 });
+    expect(faq!.children.some((c) => c.type === "TEXT" && c.characters === "Synthetic answer text.")).toBe(true);
+    const dest = (c: FakeNode) => (c.reactions as any)[0];
+    expect(dest(base!)).toEqual({ trigger: { type: "ON_CLICK" }, actions: [{ type: "NODE", destinationId: faq!.id, navigation: "CHANGE_TO", transition: null }] });
+    expect(dest(faq!).actions[0].destinationId).toBe(tab!.id);
+    expect(dest(tab!).actions[0].destinationId).toBe(base!.id);
+    expect(created.filter((n) => !tracked.includes(n))).toEqual([]);
+  });
+
+  it("renders media as an operator still or a labelled placeholder, never as playing media", async () => {
+    await buildHifiDoc(buildStatesFixture(), track as never, [], 0);
+    const page = created.find((n) => n.name === "Page / / (editable, measured)")!;
+    const still = page.children.find((c) => c.name.startsWith("MEDIA STILL / video"))!;
+    expect((still.fills as any)[0].type).toBe("IMAGE");
+    const ph = page.children.find((c) => c.name.startsWith("MEDIA PLACEHOLDER / canvas"))!;
+    expect(ph.name).toMatch(/no still available; WebGL/);
+    expect(JSON.parse(ph.data.w2f!)).toMatchObject({ media: "canvas", still: "unavailable", webgl: true });
+    const notes = created.find((n) => n.name === "Notes / /")!;
+    expect(notes.characters).toMatch(/NOT frozen: JS timers, requestAnimationFrame loops, WebGL\/canvas rendering/);
+    expect(notes.characters).toMatch(/Freeze modification: forced \.aos-animate/);
+  });
+
+  it("no reactions unless requested", async () => {
+    const stats = await buildHifiDoc(buildStatesFixture({ reactions: "none" }), track as never, [], 0);
+    expect(stats.reactions).toBe(0);
+    expect(created.filter((n) => n.type === "COMPONENT").every((c) => c.reactions === undefined)).toBe(true);
+  });
+
+  it("a reaction failure leaves every created node (variant set included) tracked for rollback", async () => {
+    tracked.length = 0;
+    failReactions = true;
+    await expect(buildHifiDoc(buildStatesFixture(), track as never, [], 0)).rejects.toThrow(/simulated reaction failure/);
+    expect(created.some((n) => n.type === "COMPONENT_SET")).toBe(true);
+    expect(created.filter((n) => !tracked.includes(n))).toEqual([]);
+    // the caller's rollback (code.ts buildV2) removes tracked nodes newest-first
+    for (let i = tracked.length - 1; i >= 0; i--) if (!tracked[i]!.removed) (tracked[i]!.remove as () => void)();
+    expect(created.every((n) => n.removed)).toBe(true);
+  });
+
+  it("a mid-variant failure is also fully tracked", async () => {
+    tracked.length = 0;
+    failOnText = 9;
+    await expect(buildHifiDoc(buildStatesFixture(), track as never, [], 0)).rejects.toThrow(/simulated/);
+    expect(created.filter((n) => !tracked.includes(n))).toEqual([]);
   });
 });

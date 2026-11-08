@@ -1,0 +1,47 @@
+{
+  "schema": "website-to-figma/state-plan",
+  "schemaVersion": 1,
+  "site": "https://example.com",
+  "forceAos": false,
+  "pages": [
+    {
+      "url": "https://example.com/",
+      "waitMs": 2000,
+      "lazy": {
+        "steps": 6,
+        "maxPx": 20000,
+        "stepWaitMs": 300
+      },
+      "states": [
+        {
+          "name": "FAQ open",
+          "scope": "#faq",
+          "mutations": [
+            {
+              "mechanism": "details-open",
+              "selector": "#faq details"
+            }
+          ]
+        },
+        {
+          "name": "Tab two",
+          "scope": "#tabs",
+          "mutations": [
+            {
+              "mechanism": "attribute-set",
+              "selector": "#tab2",
+              "attribute": "aria-selected",
+              "value": "true"
+            },
+            {
+              "mechanism": "class-add",
+              "selector": "#panel2",
+              "className": "is-active"
+            }
+          ]
+        }
+      ],
+      "manual": []
+    }
+  ]
+}

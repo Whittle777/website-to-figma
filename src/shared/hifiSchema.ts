@@ -132,6 +132,31 @@ export interface HifiAsset {
   dataBase64: string;
 }
 
+// Interactive-state variants (optional; added with the offline state planner).
+// "synthetic" = a declarative DOM modification measured in a hosted browser,
+// NOT the page's observed original state; "manual" = an operator-captured
+// screenshot only (no measurement); "baseline" = the unmodified page.
+export interface StateVariant {
+  name: string;
+  provenance: "baseline" | "synthetic" | "manual";
+  // page coordinates of this state's own measurement (manual: 0,0,w,h)
+  frame: Rect;
+  nodes: HifiNode[]; // relative to frame
+  referenceAssetId: string | null;
+  // how the provider screenshot was tied to this state, and where it was taken
+  screenshot: { association: "action-order" | "unassociated" | "manual"; scrollY: number | null; viewportW: number | null; viewportH: number | null } | null;
+  notes: string[];
+}
+
+export interface MediaItem extends Rect {
+  kind: "video" | "canvas" | "lottie" | "iframe";
+  poster: string | null; // observed poster URL (never downloaded)
+  src: string | null; // observed http(s) source URL (never downloaded)
+  webgl: boolean | null;
+  stillAssetId: string | null; // operator-supplied local still matching the poster URL
+  still: "operator-asset" | "poster-url-observed-not-downloaded" | "unavailable";
+}
+
 export interface HifiPage {
   id: string;
   url: string;
@@ -154,6 +179,11 @@ export interface HifiPage {
   normalization?: { mode: "centered-dpr1"; measuredWidth: number; measuredHeight: number; offsetX: number; gutterPx: number; gutters: number };
   // tall reference screenshot reassembled from <=4096px tiles at their offsets
   referenceTiles?: { sourceSha256: string; sourceWidth: number; sourceHeight: number; tiles: { assetId: string; y: number; h: number }[] };
+  states?: { reactions: "none" | "click-cycle"; variants: StateVariant[] };
+  // freeze report: what was attempted/applied/unavailable; notFrozen is listed verbatim
+  freeze?: { attempted: string[]; applied: { name: string; count: number }[]; unavailable: string[]; modifications: string[]; notFrozen: string[] };
+  motion?: { rules: { selector: string; kind: "transition" | "animation" | "hover"; detail: string }[]; inaccessibleSheets: number };
+  media?: MediaItem[];
 }
 
 export interface HifiDoc {
@@ -332,6 +362,83 @@ function checkNodeList(c: C, nodes: unknown, p: string, max: number, assetIds: S
   return nodes.length;
 }
 
+export const STATE_NAME = /^[A-Za-z0-9][A-Za-z0-9 _-]{0,39}$/;
+export const MAX_VARIANT_NODES = 2_000;
+
+function checkStatesEtc(c: C, pg: Record<string, unknown>, p: string, assetIds: Set<string>, assetsById: Map<string, { kind: unknown; width: unknown; height: unknown }>): number {
+  let total = 0;
+  if (pg.states !== undefined && c.obj(pg.states, `${p}.states`, ["reactions", "variants"])) {
+    const st = pg.states;
+    c.oneOf(st.reactions, `${p}.states.reactions`, ["none", "click-cycle"]);
+    if (c.arr(st.variants, `${p}.states.variants`, 3)) {
+      if (st.variants.length < 1) c.fail(`${p}.states.variants`, "expected 1..3 variants");
+      const names = new Set<string>();
+      st.variants.forEach((v, j) => {
+        const q = `${p}.states.variants[${j}]`;
+        if (!c.obj(v, q, ["name", "provenance", "frame", "nodes", "referenceAssetId", "screenshot", "notes"])) return;
+        if (typeof v.name !== "string" || !STATE_NAME.test(v.name) || names.has(v.name.toLowerCase())) c.fail(`${q}.name`, "expected a unique state name");
+        else names.add(v.name.toLowerCase());
+        c.oneOf(v.provenance, `${q}.provenance`, ["baseline", "synthetic", "manual"]);
+        if ((j === 0) !== (v.provenance === "baseline")) c.fail(`${q}.provenance`, "exactly the first variant must be the baseline");
+        if (j === 0 && v.name !== "Default") c.fail(`${q}.name`, 'the baseline variant must be named "Default"');
+        if (c.obj(v.frame, `${q}.frame`, ["x", "y", "w", "h"])) {
+          checkRect(c, v.frame, `${q}.frame`);
+          c.num(v.frame.w, `${q}.frame.w`, 1, LIMITS.hifiMaxPageWidth);
+          c.num(v.frame.h, `${q}.frame.h`, 1, LIMITS.hifiMaxPageHeight);
+        }
+        total += checkNodeList(c, v.nodes, `${q}.nodes`, MAX_VARIANT_NODES, assetIds, 0);
+        if (v.referenceAssetId !== null && (typeof v.referenceAssetId !== "string" || assetsById.get(v.referenceAssetId)?.kind !== "reference")) c.fail(`${q}.referenceAssetId`, "unknown reference asset");
+        if (v.screenshot !== null && c.obj(v.screenshot, `${q}.screenshot`, ["association", "scrollY", "viewportW", "viewportH"])) {
+          c.oneOf(v.screenshot.association, `${q}.screenshot.association`, ["action-order", "unassociated", "manual"]);
+          for (const k of ["scrollY", "viewportW", "viewportH"] as const) if (v.screenshot[k] !== null) c.num(v.screenshot[k], `${q}.screenshot.${k}`, 0, COORD);
+        }
+        c.labels(v.notes, `${q}.notes`, 10);
+      });
+    }
+  }
+  if (pg.freeze !== undefined && c.obj(pg.freeze, `${p}.freeze`, ["attempted", "applied", "unavailable", "modifications", "notFrozen"])) {
+    const f = pg.freeze;
+    c.labels(f.attempted, `${p}.freeze.attempted`, 10);
+    c.labels(f.unavailable, `${p}.freeze.unavailable`, 10);
+    c.labels(f.modifications, `${p}.freeze.modifications`, 10);
+    c.labels(f.notFrozen, `${p}.freeze.notFrozen`, 10);
+    if (c.arr(f.applied, `${p}.freeze.applied`, 10)) {
+      f.applied.forEach((a, j) => {
+        if (!c.obj(a, `${p}.freeze.applied[${j}]`, ["name", "count"])) return;
+        c.str(a.name, `${p}.freeze.applied[${j}].name`, 60, false);
+        c.int(a.count, `${p}.freeze.applied[${j}].count`, 0, 100_000);
+      });
+    }
+  }
+  if (pg.motion !== undefined && c.obj(pg.motion, `${p}.motion`, ["rules", "inaccessibleSheets"])) {
+    c.int(pg.motion.inaccessibleSheets, `${p}.motion.inaccessibleSheets`, 0, 1_000);
+    if (c.arr(pg.motion.rules, `${p}.motion.rules`, 200)) {
+      pg.motion.rules.forEach((r, j) => {
+        const q = `${p}.motion.rules[${j}]`;
+        if (!c.obj(r, q, ["selector", "kind", "detail"])) return;
+        c.str(r.selector, `${q}.selector`, 200, false);
+        c.oneOf(r.kind, `${q}.kind`, ["transition", "animation", "hover"]);
+        c.str(r.detail, `${q}.detail`, 200);
+      });
+    }
+  }
+  if (pg.media !== undefined && c.arr(pg.media, `${p}.media`, 50)) {
+    pg.media.forEach((m, j) => {
+      const q = `${p}.media[${j}]`;
+      if (!c.obj(m, q, ["kind", "x", "y", "w", "h", "poster", "src", "webgl", "stillAssetId", "still"])) return;
+      c.oneOf(m.kind, `${q}.kind`, ["video", "canvas", "lottie", "iframe"]);
+      checkRect(c, m, q);
+      if (m.poster !== null) c.httpUrl(m.poster, `${q}.poster`);
+      if (m.src !== null) c.httpUrl(m.src, `${q}.src`);
+      if (m.webgl !== null) c.bool(m.webgl, `${q}.webgl`);
+      c.oneOf(m.still, `${q}.still`, ["operator-asset", "poster-url-observed-not-downloaded", "unavailable"]);
+      if ((m.still === "operator-asset") !== (m.stillAssetId !== null)) c.fail(`${q}.stillAssetId`, 'set exactly when still is "operator-asset"');
+      if (m.stillAssetId !== null && (typeof m.stillAssetId !== "string" || assetsById.get(m.stillAssetId)?.kind !== "image")) c.fail(`${q}.stillAssetId`, "unknown image asset");
+    });
+  }
+  return total;
+}
+
 export function validateHifiDoc(input: unknown): { ok: true; doc: HifiDoc } | { ok: false; errors: string[] } {
   const c = new C();
   if (!c.obj(input, "$", ["schema", "schemaVersion", "generator", "source", "site", "provenance", "assets", "pages", "warnings"], ["components", "fontMap"])) return { ok: false, errors: c.errors };
@@ -412,7 +519,8 @@ export function validateHifiDoc(input: unknown): { ok: true; doc: HifiDoc } | { 
     const ids = new Set<string>();
     d.pages.forEach((pg, i) => {
       const p = `$.pages[${i}]`;
-      if (!c.obj(pg, p, ["id", "url", "path", "title", "width", "height", "truncated", "referenceAssetId", "branding", "nodes", "warnings"], ["notes", "parentId", "clips", "instances", "normalization", "referenceTiles"])) return;
+      if (!c.obj(pg, p, ["id", "url", "path", "title", "width", "height", "truncated", "referenceAssetId", "branding", "nodes", "warnings"], ["notes", "parentId", "clips", "instances", "normalization", "referenceTiles", "states", "freeze", "motion", "media"])) return;
+      total += checkStatesEtc(c, pg, p, assetIds, assetsById);
       if (pg.referenceTiles !== undefined && c.obj(pg.referenceTiles, `${p}.referenceTiles`, ["sourceSha256", "sourceWidth", "sourceHeight", "tiles"])) {
         const rt = pg.referenceTiles;
         const q = `${p}.referenceTiles`;

@@ -19,7 +19,14 @@ node website-to-figma.mjs --help
 Hi-fi (schemaVersion 2), offline only:
 `node website-to-figma.mjs hifi --capture capture.json --assets assets/manifest.json --out site-v2.json`
 `node website-to-figma.mjs hifi-capture --scrape saved-response.json --out capture.json`
-(offline adapter for saved scrape responses) and `node website-to-figma.mjs fixture hifi`. For the input formats, bounds and limits, see "Hi-fi
+(offline adapter for saved scrape responses; also reads tagged state returns) and
+`node website-to-figma.mjs fixture hifi` / `fixture hifi-states`.
+
+State PLANNER (previews only; sends nothing; no executor, so automatic state capture is
+unsupported; no clicks; synthetic DOM modifications only, with no handler side-effect guarantee;
+provider cost unknown): `node website-to-figma.mjs states-plan --plan state-plan.json --out preview.json`.
+Optional: `hifi ... --state-reactions click-cycle` adds ON_CLICK -> CHANGE_TO prototype reactions
+between state variants. For the input formats, bounds and limits, see "Hi-fi
 import" in the repository README. Nothing is fetched; assets are local, hash-pinned PNG/JPEG/GIF
 files.
 
@@ -60,16 +67,17 @@ FIRECRAWL_API_KEY=... node website-to-figma.mjs crawl https://SITE.example/ --no
   --confirm-existing-credits --confirm-no-topup --yes
 ```
 
-## URL safety exception (exactly `simplecss.org`, hosted Firecrawl only)
+## URL safety exception (exactly `simplecss.org` and `bootstrapmade.com`, hosted Firecrawl only)
 
 The start URL and every final URL Firecrawl reports must pass the full structural URL checks. For
-every host except exactly `simplecss.org`, they must also pass a local DNS check: every answer must
-be public unicast. For `simplecss.org`, the owner approved skipping only the local DNS-answer
-lookup (2026-11-07), because the operator's resolver returns FakeIP addresses (`198.18.0.0/15`).
+every host except exactly `simplecss.org` and exactly `bootstrapmade.com`, they must also pass a
+local DNS check: every answer must be public unicast. For these two hosts, the owner approved
+skipping only the local DNS-answer lookup (`simplecss.org` 2026-11-07, `bootstrapmade.com`
+2026-11-08), because the operator's resolver returns FakeIP addresses (`198.18.0.0/15`).
 
 - **Scope:** no `www.`, subdomain, trailing-dot or look-alike variants, and no flag to extend it.
 - **Still rejected:** `198.18.0.0/15` IP literals.
-- **Risk:** for this host, private-address resolution, DNS rebinding and redirect hops rely
+- **Risk:** for these hosts, private-address resolution, DNS rebinding and redirect hops rely
   solely on Firecrawl's documented Network protections (https://docs.firecrawl.dev/security).
   This tool has not verified those controls.
 

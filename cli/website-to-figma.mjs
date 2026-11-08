@@ -30,8 +30,8 @@ var __commonJS = (cb, mod) => function __require2() {
   }
 };
 var __export = (target, all3) => {
-  for (var name2 in all3)
-    __defProp(target, name2, { get: all3[name2], enumerable: true });
+  for (var name3 in all3)
+    __defProp(target, name3, { get: all3[name3], enumerable: true });
 };
 var __copyProps = (to, from, except, desc) => {
   if (from && typeof from === "object" || typeof from === "function") {
@@ -313,15 +313,15 @@ var init_schema = __esm({
       fail(path, msg) {
         if (this.errors.length < 50) this.errors.push(`${path}: ${msg}`);
       }
-      obj(v, path, keys) {
+      obj(v, path, keys2) {
         if (typeof v !== "object" || v === null || Array.isArray(v)) {
           this.fail(path, "expected object");
           return false;
         }
         for (const k of Object.keys(v)) {
-          if (!keys.includes(k)) this.fail(path, `unknown key "${k}"`);
+          if (!keys2.includes(k)) this.fail(path, `unknown key "${k}"`);
         }
-        for (const k of keys) {
+        for (const k of keys2) {
           if (!Object.prototype.hasOwnProperty.call(v, k)) this.fail(path, `missing key "${k}"`);
         }
         return true;
@@ -1176,12 +1176,12 @@ function getSiblings$1(elem) {
   }
   return siblings;
 }
-function getAttributeValue$1(elem, name2) {
+function getAttributeValue$1(elem, name3) {
   var _a3;
-  return (_a3 = elem.attribs) === null || _a3 === void 0 ? void 0 : _a3[name2];
+  return (_a3 = elem.attribs) === null || _a3 === void 0 ? void 0 : _a3[name3];
 }
-function hasAttrib$1(elem, name2) {
-  return elem.attribs != null && Object.prototype.hasOwnProperty.call(elem.attribs, name2) && elem.attribs[name2] != null;
+function hasAttrib$1(elem, name3) {
+  return elem.attribs != null && Object.prototype.hasOwnProperty.call(elem.attribs, name3) && elem.attribs[name3] != null;
 }
 function getName$1(elem) {
   return elem.name;
@@ -1483,14 +1483,14 @@ function getRssFeed(feedRoot) {
 function getMediaElements(where) {
   return getElementsByTagName("media:content", where).map((elem) => {
     const { attribs } = elem;
-    const media = {
+    const media2 = {
       medium: attribs["medium"],
       isDefault: !!attribs["isDefault"]
     };
-    for (const attrib of MEDIA_KEYS_STRING) if (attribs[attrib]) media[attrib] = attribs[attrib];
-    for (const attrib of MEDIA_KEYS_INT) if (attribs[attrib]) media[attrib] = parseInt(attribs[attrib], 10);
-    if (attribs["expression"]) media.expression = attribs["expression"];
-    return media;
+    for (const attrib of MEDIA_KEYS_STRING) if (attribs[attrib]) media2[attrib] = attribs[attrib];
+    for (const attrib of MEDIA_KEYS_INT) if (attribs[attrib]) media2[attrib] = parseInt(attribs[attrib], 10);
+    if (attribs["expression"]) media2.expression = attribs["expression"];
+    return media2;
   });
 }
 function getOneElement(tagName, node) {
@@ -1543,8 +1543,8 @@ function getProcedure(token) {
 function escapeRegex(value) {
   return value.replace(reChars, "\\$&");
 }
-function shouldIgnoreCase(selector, options) {
-  return typeof selector.ignoreCase === "boolean" ? selector.ignoreCase : selector.ignoreCase === "quirks" ? !!options.quirksMode : !options.xmlMode && caseInsensitiveAttributes.has(selector.name);
+function shouldIgnoreCase(selector2, options) {
+  return typeof selector2.ignoreCase === "boolean" ? selector2.ignoreCase : selector2.ignoreCase === "quirks" ? !!options.quirksMode : !options.xmlMode && caseInsensitiveAttributes.has(selector2.name);
 }
 function parse$4(formula) {
   formula = formula.trim().toLowerCase();
@@ -1607,19 +1607,19 @@ function getChildFunc(next, adapter2) {
     return parent != null && adapter2.isTag(parent) && next(elem);
   };
 }
-function dynamicStatePseudo(name2) {
+function dynamicStatePseudo(name3) {
   return function dynamicPseudo(next, _rule, { adapter: adapter2 }) {
-    const func = adapter2[name2];
+    const func = adapter2[name3];
     if (typeof func !== "function") return import_boolbase.default.falseFunc;
     return function active(elem) {
       return func(elem) && next(elem);
     };
   };
 }
-function verifyPseudoArgs(func, name2, subselect, argIndex) {
+function verifyPseudoArgs(func, name3, subselect, argIndex) {
   if (subselect === null) {
-    if (func.length > argIndex) throw new Error(`Pseudo-class :${name2} requires an argument`);
-  } else if (func.length === argIndex) throw new Error(`Pseudo-class :${name2} doesn't have any arguments`);
+    if (func.length > argIndex) throw new Error(`Pseudo-class :${name3} requires an argument`);
+  } else if (func.length === argIndex) throw new Error(`Pseudo-class :${name3} doesn't have any arguments`);
 }
 function ensureIsTag(next, adapter2) {
   if (next === import_boolbase.default.falseFunc) return import_boolbase.default.falseFunc;
@@ -1644,56 +1644,56 @@ function copyOptions(options) {
     equals: options.equals
   };
 }
-function compilePseudoSelector(next, selector, options, context, compileToken2) {
+function compilePseudoSelector(next, selector2, options, context, compileToken2) {
   var _a3;
-  const { name: name2, data } = selector;
+  const { name: name3, data } = selector2;
   if (Array.isArray(data)) {
-    if (!(name2 in subselects)) throw new Error(`Unknown pseudo-class :${name2}(${data})`);
-    return subselects[name2](next, data, options, context, compileToken2);
+    if (!(name3 in subselects)) throw new Error(`Unknown pseudo-class :${name3}(${data})`);
+    return subselects[name3](next, data, options, context, compileToken2);
   }
-  const userPseudo = (_a3 = options.pseudos) === null || _a3 === void 0 ? void 0 : _a3[name2];
-  const stringPseudo = typeof userPseudo === "string" ? userPseudo : aliases[name2];
+  const userPseudo = (_a3 = options.pseudos) === null || _a3 === void 0 ? void 0 : _a3[name3];
+  const stringPseudo = typeof userPseudo === "string" ? userPseudo : aliases[name3];
   if (typeof stringPseudo === "string") {
-    if (data != null) throw new Error(`Pseudo ${name2} doesn't have any arguments`);
+    if (data != null) throw new Error(`Pseudo ${name3} doesn't have any arguments`);
     const alias = (0, import_commonjs.parse)(stringPseudo);
     return subselects["is"](next, alias, options, context, compileToken2);
   }
   if (typeof userPseudo === "function") {
-    verifyPseudoArgs(userPseudo, name2, data, 1);
+    verifyPseudoArgs(userPseudo, name3, data, 1);
     return (elem) => userPseudo(elem, data) && next(elem);
   }
-  if (name2 in filters) return filters[name2](next, data, options, context);
-  if (name2 in pseudos) {
-    const pseudo = pseudos[name2];
-    verifyPseudoArgs(pseudo, name2, data, 2);
+  if (name3 in filters) return filters[name3](next, data, options, context);
+  if (name3 in pseudos) {
+    const pseudo = pseudos[name3];
+    verifyPseudoArgs(pseudo, name3, data, 2);
     return (elem) => pseudo(elem, options, data) && next(elem);
   }
-  throw new Error(`Unknown pseudo-class :${name2}`);
+  throw new Error(`Unknown pseudo-class :${name3}`);
 }
 function getElementParent(node, adapter2) {
   const parent = adapter2.getParent(node);
   if (parent && adapter2.isTag(parent)) return parent;
   return null;
 }
-function compileGeneralSelector(next, selector, options, context, compileToken2) {
+function compileGeneralSelector(next, selector2, options, context, compileToken2) {
   const { adapter: adapter2, equals } = options;
-  switch (selector.type) {
+  switch (selector2.type) {
     case import_commonjs.SelectorType.PseudoElement:
       throw new Error("Pseudo-elements are not supported by css-select");
     case import_commonjs.SelectorType.ColumnCombinator:
       throw new Error("Column combinators are not yet supported by css-select");
     case import_commonjs.SelectorType.Attribute:
-      if (selector.namespace != null) throw new Error("Namespaced attributes are not yet supported by css-select");
-      if (!options.xmlMode || options.lowerCaseAttributeNames) selector.name = selector.name.toLowerCase();
-      return attributeRules[selector.action](next, selector, options);
+      if (selector2.namespace != null) throw new Error("Namespaced attributes are not yet supported by css-select");
+      if (!options.xmlMode || options.lowerCaseAttributeNames) selector2.name = selector2.name.toLowerCase();
+      return attributeRules[selector2.action](next, selector2, options);
     case import_commonjs.SelectorType.Pseudo:
-      return compilePseudoSelector(next, selector, options, context, compileToken2);
+      return compilePseudoSelector(next, selector2, options, context, compileToken2);
     case import_commonjs.SelectorType.Tag: {
-      if (selector.namespace != null) throw new Error("Namespaced tag names are not yet supported by css-select");
-      let { name: name2 } = selector;
-      if (!options.xmlMode || options.lowerCaseTags) name2 = name2.toLowerCase();
+      if (selector2.namespace != null) throw new Error("Namespaced tag names are not yet supported by css-select");
+      let { name: name3 } = selector2;
+      if (!options.xmlMode || options.lowerCaseTags) name3 = name3.toLowerCase();
       return function tag(elem) {
-        return adapter2.getName(elem) === name2 && next(elem);
+        return adapter2.getName(elem) === name3 && next(elem);
       };
     }
     case import_commonjs.SelectorType.Descendant: {
@@ -1755,15 +1755,15 @@ function compileGeneralSelector(next, selector, options, context, compileToken2)
         return !!lastElement && next(lastElement);
       };
     case import_commonjs.SelectorType.Universal:
-      if (selector.namespace != null && selector.namespace !== "*") throw new Error("Namespaced universal selectors are not yet supported by css-select");
+      if (selector2.namespace != null && selector2.namespace !== "*") throw new Error("Namespaced universal selectors are not yet supported by css-select");
       return next;
   }
 }
-function compile$1(selector, options, context) {
-  return ensureIsTag(compileUnsafe(selector, options, context), options.adapter);
+function compile$1(selector2, options, context) {
+  return ensureIsTag(compileUnsafe(selector2, options, context), options.adapter);
 }
-function compileUnsafe(selector, options, context) {
-  return compileToken(typeof selector === "string" ? (0, import_commonjs.parse)(selector) : selector, options, context);
+function compileUnsafe(selector2, options, context) {
+  return compileToken(typeof selector2 === "string" ? (0, import_commonjs.parse)(selector2) : selector2, options, context);
 }
 function includesScopePseudo(t) {
   return t.type === import_commonjs.SelectorType.Pseudo && (t.name === "scope" || Array.isArray(t.data) && t.data.some((data) => data.some(includesScopePseudo)));
@@ -1850,8 +1850,8 @@ function arr_back(arr2) {
 function isTag(node) {
   return node && node.nodeType === 1;
 }
-function getAttributeValue(elem, name2) {
-  return isTag(elem) ? elem.getAttribute(name2) : void 0;
+function getAttributeValue(elem, name3) {
+  return isTag(elem) ? elem.getAttribute(name3) : void 0;
 }
 function getName(elem) {
   return (elem && elem.rawTagName || "").toLowerCase();
@@ -1895,8 +1895,8 @@ function getSiblings(node) {
   const parent = getParent(node);
   return parent ? getChildren(parent) : [];
 }
-function hasAttrib(elem, name2) {
-  return getAttributeValue(elem, name2) !== void 0;
+function hasAttrib(elem, name3) {
+  return getAttributeValue(elem, name3) !== void 0;
 }
 function findOne(test2, elems) {
   let elem = null;
@@ -2171,16 +2171,16 @@ var init_dist = __esm({
     __commonJSMin = (cb, mod) => () => (mod || (cb((mod = { exports: {} }).exports, mod), cb = null), mod.exports);
     __exportAll = (all3, no_symbols) => {
       let target = {};
-      for (var name2 in all3) __defProp2(target, name2, {
-        get: all3[name2],
+      for (var name3 in all3) __defProp2(target, name3, {
+        get: all3[name3],
         enumerable: true
       });
       if (!no_symbols) __defProp2(target, Symbol.toStringTag, { value: "Module" });
       return target;
     };
     __copyProps2 = (to, from, except, desc) => {
-      if (from && typeof from === "object" || typeof from === "function") for (var keys = __getOwnPropNames2(from), i = 0, n = keys.length, key; i < n; i++) {
-        key = keys[i];
+      if (from && typeof from === "object" || typeof from === "function") for (var keys2 = __getOwnPropNames2(from), i = 0, n = keys2.length, key; i < n; i++) {
+        key = keys2[i];
         if (!__hasOwnProp2.call(to, key) && key !== except) __defProp2(to, key, {
           get: ((k) => from[k]).bind(null, key),
           enumerable: !(desc = __getOwnPropDesc2(from, key)) || desc.enumerable
@@ -2838,10 +2838,10 @@ var init_dist = __esm({
     ]);
     foreignElements = /* @__PURE__ */ new Set(["svg", "math"]);
     Checks = {
-      tag_name(name2) {
-        if (typeof name2 === "function") return (elem) => isTag$1(elem) && name2(elem.name);
-        else if (name2 === "*") return isTag$1;
-        return (elem) => isTag$1(elem) && elem.name === name2;
+      tag_name(name3) {
+        if (typeof name3 === "function") return (elem) => isTag$1(elem) && name3(elem.name);
+        else if (name3 === "*") return isTag$1;
+        return (elem) => isTag$1(elem) && elem.name === name3;
       },
       tag_type(type2) {
         if (typeof type2 === "function") return (elem) => type2(elem.type);
@@ -2984,8 +2984,8 @@ var init_dist = __esm({
         "host",
         "host-context"
       ]);
-      function isTraversal2(selector) {
-        switch (selector.type) {
+      function isTraversal2(selector2) {
+        switch (selector2.type) {
           case types_1.SelectorType.Adjacent:
           case types_1.SelectorType.Child:
           case types_1.SelectorType.Descendant:
@@ -3012,38 +3012,38 @@ var init_dist = __esm({
       function isWhitespace(c) {
         return c === 32 || c === 9 || c === 10 || c === 12 || c === 13;
       }
-      function parse3(selector) {
+      function parse3(selector2) {
         var subselects2 = [];
-        var endIndex = parseSelector(subselects2, "".concat(selector), 0);
-        if (endIndex < selector.length) throw new Error("Unmatched selector: ".concat(selector.slice(endIndex)));
+        var endIndex = parseSelector(subselects2, "".concat(selector2), 0);
+        if (endIndex < selector2.length) throw new Error("Unmatched selector: ".concat(selector2.slice(endIndex)));
         return subselects2;
       }
       exports2.parse = parse3;
-      function parseSelector(subselects2, selector, selectorIndex) {
+      function parseSelector(subselects2, selector2, selectorIndex) {
         var tokens = [];
         function getName2(offset) {
-          var match = selector.slice(selectorIndex + offset).match(reName);
-          if (!match) throw new Error("Expected name, found ".concat(selector.slice(selectorIndex)));
-          var name2 = match[0];
-          selectorIndex += offset + name2.length;
-          return unescapeCSS(name2);
+          var match = selector2.slice(selectorIndex + offset).match(reName);
+          if (!match) throw new Error("Expected name, found ".concat(selector2.slice(selectorIndex)));
+          var name3 = match[0];
+          selectorIndex += offset + name3.length;
+          return unescapeCSS(name3);
         }
         function stripWhitespace(offset) {
           selectorIndex += offset;
-          while (selectorIndex < selector.length && isWhitespace(selector.charCodeAt(selectorIndex))) selectorIndex++;
+          while (selectorIndex < selector2.length && isWhitespace(selector2.charCodeAt(selectorIndex))) selectorIndex++;
         }
         function readValueWithParenthesis() {
           selectorIndex += 1;
           var start = selectorIndex;
           var counter = 1;
-          for (; counter > 0 && selectorIndex < selector.length; selectorIndex++) if (selector.charCodeAt(selectorIndex) === 40 && !isEscaped(selectorIndex)) counter++;
-          else if (selector.charCodeAt(selectorIndex) === 41 && !isEscaped(selectorIndex)) counter--;
+          for (; counter > 0 && selectorIndex < selector2.length; selectorIndex++) if (selector2.charCodeAt(selectorIndex) === 40 && !isEscaped(selectorIndex)) counter++;
+          else if (selector2.charCodeAt(selectorIndex) === 41 && !isEscaped(selectorIndex)) counter--;
           if (counter) throw new Error("Parenthesis not matched");
-          return unescapeCSS(selector.slice(start, selectorIndex - 1));
+          return unescapeCSS(selector2.slice(start, selectorIndex - 1));
         }
         function isEscaped(pos) {
           var slashCount = 0;
-          while (selector.charCodeAt(--pos) === 92) slashCount++;
+          while (selector2.charCodeAt(--pos) === 92) slashCount++;
           return (slashCount & 1) === 1;
         }
         function ensureNotTraversal() {
@@ -3057,10 +3057,10 @@ var init_dist = __esm({
           ensureNotTraversal();
           tokens.push({ type: type2 });
         }
-        function addSpecialAttribute(name2, action2) {
+        function addSpecialAttribute(name3, action2) {
           tokens.push({
             type: types_1.SelectorType.Attribute,
-            name: name2,
+            name: name3,
             action: action2,
             value: getName2(1),
             namespace: null,
@@ -3073,9 +3073,9 @@ var init_dist = __esm({
           subselects2.push(tokens);
         }
         stripWhitespace(0);
-        if (selector.length === selectorIndex) return selectorIndex;
-        loop: while (selectorIndex < selector.length) {
-          var firstChar = selector.charCodeAt(selectorIndex);
+        if (selector2.length === selectorIndex) return selectorIndex;
+        loop: while (selectorIndex < selector2.length) {
+          var firstChar = selector2.charCodeAt(selectorIndex);
           switch (firstChar) {
             case 32:
             case 9:
@@ -3114,45 +3114,45 @@ var init_dist = __esm({
               stripWhitespace(1);
               var name_1 = void 0;
               var namespace = null;
-              if (selector.charCodeAt(selectorIndex) === 124) name_1 = getName2(1);
-              else if (selector.startsWith("*|", selectorIndex)) {
+              if (selector2.charCodeAt(selectorIndex) === 124) name_1 = getName2(1);
+              else if (selector2.startsWith("*|", selectorIndex)) {
                 namespace = "*";
                 name_1 = getName2(2);
               } else {
                 name_1 = getName2(0);
-                if (selector.charCodeAt(selectorIndex) === 124 && selector.charCodeAt(selectorIndex + 1) !== 61) {
+                if (selector2.charCodeAt(selectorIndex) === 124 && selector2.charCodeAt(selectorIndex + 1) !== 61) {
                   namespace = name_1;
                   name_1 = getName2(1);
                 }
               }
               stripWhitespace(0);
               var action = types_1.AttributeAction.Exists;
-              var possibleAction = actionTypes.get(selector.charCodeAt(selectorIndex));
+              var possibleAction = actionTypes.get(selector2.charCodeAt(selectorIndex));
               if (possibleAction) {
                 action = possibleAction;
-                if (selector.charCodeAt(selectorIndex + 1) !== 61) throw new Error("Expected `=`");
+                if (selector2.charCodeAt(selectorIndex + 1) !== 61) throw new Error("Expected `=`");
                 stripWhitespace(2);
-              } else if (selector.charCodeAt(selectorIndex) === 61) {
+              } else if (selector2.charCodeAt(selectorIndex) === 61) {
                 action = types_1.AttributeAction.Equals;
                 stripWhitespace(1);
               }
               var value = "";
               var ignoreCase = null;
               if (action !== "exists") {
-                if (isQuote(selector.charCodeAt(selectorIndex))) {
-                  var quote = selector.charCodeAt(selectorIndex);
+                if (isQuote(selector2.charCodeAt(selectorIndex))) {
+                  var quote = selector2.charCodeAt(selectorIndex);
                   var sectionEnd = selectorIndex + 1;
-                  while (sectionEnd < selector.length && (selector.charCodeAt(sectionEnd) !== quote || isEscaped(sectionEnd))) sectionEnd += 1;
-                  if (selector.charCodeAt(sectionEnd) !== quote) throw new Error("Attribute value didn't end");
-                  value = unescapeCSS(selector.slice(selectorIndex + 1, sectionEnd));
+                  while (sectionEnd < selector2.length && (selector2.charCodeAt(sectionEnd) !== quote || isEscaped(sectionEnd))) sectionEnd += 1;
+                  if (selector2.charCodeAt(sectionEnd) !== quote) throw new Error("Attribute value didn't end");
+                  value = unescapeCSS(selector2.slice(selectorIndex + 1, sectionEnd));
                   selectorIndex = sectionEnd + 1;
                 } else {
                   var valueStart = selectorIndex;
-                  while (selectorIndex < selector.length && (!isWhitespace(selector.charCodeAt(selectorIndex)) && selector.charCodeAt(selectorIndex) !== 93 || isEscaped(selectorIndex))) selectorIndex += 1;
-                  value = unescapeCSS(selector.slice(valueStart, selectorIndex));
+                  while (selectorIndex < selector2.length && (!isWhitespace(selector2.charCodeAt(selectorIndex)) && selector2.charCodeAt(selectorIndex) !== 93 || isEscaped(selectorIndex))) selectorIndex += 1;
+                  value = unescapeCSS(selector2.slice(valueStart, selectorIndex));
                 }
                 stripWhitespace(0);
-                var forceIgnore = selector.charCodeAt(selectorIndex) | 32;
+                var forceIgnore = selector2.charCodeAt(selectorIndex) | 32;
                 if (forceIgnore === 115) {
                   ignoreCase = false;
                   stripWhitespace(1);
@@ -3161,7 +3161,7 @@ var init_dist = __esm({
                   stripWhitespace(1);
                 }
               }
-              if (selector.charCodeAt(selectorIndex) !== 93) throw new Error("Attribute selector didn't terminate");
+              if (selector2.charCodeAt(selectorIndex) !== 93) throw new Error("Attribute selector didn't terminate");
               selectorIndex += 1;
               var attributeSelector = {
                 type: types_1.SelectorType.Attribute,
@@ -3174,22 +3174,22 @@ var init_dist = __esm({
               tokens.push(attributeSelector);
               break;
             case 58:
-              if (selector.charCodeAt(selectorIndex + 1) === 58) {
+              if (selector2.charCodeAt(selectorIndex + 1) === 58) {
                 tokens.push({
                   type: types_1.SelectorType.PseudoElement,
                   name: getName2(2).toLowerCase(),
-                  data: selector.charCodeAt(selectorIndex) === 40 ? readValueWithParenthesis() : null
+                  data: selector2.charCodeAt(selectorIndex) === 40 ? readValueWithParenthesis() : null
                 });
                 continue;
               }
               var name_2 = getName2(1).toLowerCase();
               var data = null;
-              if (selector.charCodeAt(selectorIndex) === 40) {
+              if (selector2.charCodeAt(selectorIndex) === 40) {
                 if (unpackPseudos.has(name_2)) {
-                  if (isQuote(selector.charCodeAt(selectorIndex + 1))) throw new Error("Pseudo-selector ".concat(name_2, " cannot be quoted"));
+                  if (isQuote(selector2.charCodeAt(selectorIndex + 1))) throw new Error("Pseudo-selector ".concat(name_2, " cannot be quoted"));
                   data = [];
-                  selectorIndex = parseSelector(data, selector, selectorIndex + 1);
-                  if (selector.charCodeAt(selectorIndex) !== 41) throw new Error("Missing closing parenthesis in :".concat(name_2, " (").concat(selector, ")"));
+                  selectorIndex = parseSelector(data, selector2, selectorIndex + 1);
+                  if (selector2.charCodeAt(selectorIndex) !== 41) throw new Error("Missing closing parenthesis in :".concat(name_2, " (").concat(selector2, ")"));
                   selectorIndex += 1;
                 } else {
                   data = readValueWithParenthesis();
@@ -3212,8 +3212,8 @@ var init_dist = __esm({
               stripWhitespace(1);
               break;
             default:
-              if (selector.startsWith("/*", selectorIndex)) {
-                var endIndex = selector.indexOf("*/", selectorIndex + 2);
+              if (selector2.startsWith("/*", selectorIndex)) {
+                var endIndex = selector2.indexOf("*/", selectorIndex + 2);
                 if (endIndex < 0) throw new Error("Comment was not terminated");
                 selectorIndex = endIndex + 2;
                 if (tokens.length === 0) stripWhitespace(0);
@@ -3226,16 +3226,16 @@ var init_dist = __esm({
                 name_3 = "*";
               } else if (firstChar === 124) {
                 name_3 = "";
-                if (selector.charCodeAt(selectorIndex + 1) === 124) {
+                if (selector2.charCodeAt(selectorIndex + 1) === 124) {
                   addTraversal(types_1.SelectorType.ColumnCombinator);
                   stripWhitespace(2);
                   break;
                 }
-              } else if (reName.test(selector.slice(selectorIndex))) name_3 = getName2(0);
+              } else if (reName.test(selector2.slice(selectorIndex))) name_3 = getName2(0);
               else break loop;
-              if (selector.charCodeAt(selectorIndex) === 124 && selector.charCodeAt(selectorIndex + 1) !== 124) {
+              if (selector2.charCodeAt(selectorIndex) === 124 && selector2.charCodeAt(selectorIndex + 1) !== 124) {
                 namespace = name_3;
-                if (selector.charCodeAt(selectorIndex + 1) === 42) {
+                if (selector2.charCodeAt(selectorIndex + 1) === 42) {
                   name_3 = "*";
                   selectorIndex += 2;
                 } else name_3 = getName2(1);
@@ -3291,8 +3291,8 @@ var init_dist = __esm({
       ], false).map(function(c) {
         return c.charCodeAt(0);
       }));
-      function stringify(selector) {
-        return selector.map(function(token) {
+      function stringify(selector2) {
+        return selector2.map(function(token) {
           return token.map(stringifyToken).join("");
         }).join(", ");
       }
@@ -3473,68 +3473,68 @@ var init_dist = __esm({
     attributeRules = {
       equals(next, data, options) {
         const { adapter: adapter2 } = options;
-        const { name: name2 } = data;
+        const { name: name3 } = data;
         let { value } = data;
         if (shouldIgnoreCase(data, options)) {
           value = value.toLowerCase();
           return (elem) => {
-            const attr = adapter2.getAttributeValue(elem, name2);
+            const attr = adapter2.getAttributeValue(elem, name3);
             return attr != null && attr.length === value.length && attr.toLowerCase() === value && next(elem);
           };
         }
-        return (elem) => adapter2.getAttributeValue(elem, name2) === value && next(elem);
+        return (elem) => adapter2.getAttributeValue(elem, name3) === value && next(elem);
       },
       hyphen(next, data, options) {
         const { adapter: adapter2 } = options;
-        const { name: name2 } = data;
+        const { name: name3 } = data;
         let { value } = data;
         const len = value.length;
         if (shouldIgnoreCase(data, options)) {
           value = value.toLowerCase();
           return function hyphenIC(elem) {
-            const attr = adapter2.getAttributeValue(elem, name2);
+            const attr = adapter2.getAttributeValue(elem, name3);
             return attr != null && (attr.length === len || attr.charAt(len) === "-") && attr.substr(0, len).toLowerCase() === value && next(elem);
           };
         }
         return function hyphen(elem) {
-          const attr = adapter2.getAttributeValue(elem, name2);
+          const attr = adapter2.getAttributeValue(elem, name3);
           return attr != null && (attr.length === len || attr.charAt(len) === "-") && attr.substr(0, len) === value && next(elem);
         };
       },
       element(next, data, options) {
         const { adapter: adapter2 } = options;
-        const { name: name2, value } = data;
+        const { name: name3, value } = data;
         if (/\s/.test(value)) return import_boolbase.default.falseFunc;
         const regex = new RegExp(`(?:^|\\s)${escapeRegex(value)}(?:$|\\s)`, shouldIgnoreCase(data, options) ? "i" : "");
         return function element(elem) {
-          const attr = adapter2.getAttributeValue(elem, name2);
+          const attr = adapter2.getAttributeValue(elem, name3);
           return attr != null && attr.length >= value.length && regex.test(attr) && next(elem);
         };
       },
-      exists(next, { name: name2 }, { adapter: adapter2 }) {
-        return (elem) => adapter2.hasAttrib(elem, name2) && next(elem);
+      exists(next, { name: name3 }, { adapter: adapter2 }) {
+        return (elem) => adapter2.hasAttrib(elem, name3) && next(elem);
       },
       start(next, data, options) {
         const { adapter: adapter2 } = options;
-        const { name: name2 } = data;
+        const { name: name3 } = data;
         let { value } = data;
         const len = value.length;
         if (len === 0) return import_boolbase.default.falseFunc;
         if (shouldIgnoreCase(data, options)) {
           value = value.toLowerCase();
           return (elem) => {
-            const attr = adapter2.getAttributeValue(elem, name2);
+            const attr = adapter2.getAttributeValue(elem, name3);
             return attr != null && attr.length >= len && attr.substr(0, len).toLowerCase() === value && next(elem);
           };
         }
         return (elem) => {
           var _a3;
-          return !!((_a3 = adapter2.getAttributeValue(elem, name2)) === null || _a3 === void 0 ? void 0 : _a3.startsWith(value)) && next(elem);
+          return !!((_a3 = adapter2.getAttributeValue(elem, name3)) === null || _a3 === void 0 ? void 0 : _a3.startsWith(value)) && next(elem);
         };
       },
       end(next, data, options) {
         const { adapter: adapter2 } = options;
-        const { name: name2 } = data;
+        const { name: name3 } = data;
         let { value } = data;
         const len = -value.length;
         if (len === 0) return import_boolbase.default.falseFunc;
@@ -3542,43 +3542,43 @@ var init_dist = __esm({
           value = value.toLowerCase();
           return (elem) => {
             var _a3;
-            return ((_a3 = adapter2.getAttributeValue(elem, name2)) === null || _a3 === void 0 ? void 0 : _a3.substr(len).toLowerCase()) === value && next(elem);
+            return ((_a3 = adapter2.getAttributeValue(elem, name3)) === null || _a3 === void 0 ? void 0 : _a3.substr(len).toLowerCase()) === value && next(elem);
           };
         }
         return (elem) => {
           var _a3;
-          return !!((_a3 = adapter2.getAttributeValue(elem, name2)) === null || _a3 === void 0 ? void 0 : _a3.endsWith(value)) && next(elem);
+          return !!((_a3 = adapter2.getAttributeValue(elem, name3)) === null || _a3 === void 0 ? void 0 : _a3.endsWith(value)) && next(elem);
         };
       },
       any(next, data, options) {
         const { adapter: adapter2 } = options;
-        const { name: name2, value } = data;
+        const { name: name3, value } = data;
         if (value === "") return import_boolbase.default.falseFunc;
         if (shouldIgnoreCase(data, options)) {
           const regex = new RegExp(escapeRegex(value), "i");
           return function anyIC(elem) {
-            const attr = adapter2.getAttributeValue(elem, name2);
+            const attr = adapter2.getAttributeValue(elem, name3);
             return attr != null && attr.length >= value.length && regex.test(attr) && next(elem);
           };
         }
         return (elem) => {
           var _a3;
-          return !!((_a3 = adapter2.getAttributeValue(elem, name2)) === null || _a3 === void 0 ? void 0 : _a3.includes(value)) && next(elem);
+          return !!((_a3 = adapter2.getAttributeValue(elem, name3)) === null || _a3 === void 0 ? void 0 : _a3.includes(value)) && next(elem);
         };
       },
       not(next, data, options) {
         const { adapter: adapter2 } = options;
-        const { name: name2 } = data;
+        const { name: name3 } = data;
         let { value } = data;
-        if (value === "") return (elem) => !!adapter2.getAttributeValue(elem, name2) && next(elem);
+        if (value === "") return (elem) => !!adapter2.getAttributeValue(elem, name3) && next(elem);
         else if (shouldIgnoreCase(data, options)) {
           value = value.toLowerCase();
           return (elem) => {
-            const attr = adapter2.getAttributeValue(elem, name2);
+            const attr = adapter2.getAttributeValue(elem, name3);
             return (attr == null || attr.length !== value.length || attr.toLowerCase() !== value) && next(elem);
           };
         }
-        return (elem) => adapter2.getAttributeValue(elem, name2) !== value && next(elem);
+        return (elem) => adapter2.getAttributeValue(elem, name3) !== value && next(elem);
       }
     };
     whitespace = /* @__PURE__ */ new Set([
@@ -4273,8 +4273,8 @@ var init_dist = __esm({
       * @param  {string}         selector Simplified CSS selector
       * @return {HTMLElement[]}  matching elements
       */
-      querySelectorAll(selector) {
-        return selectAll(selector, this, {
+      querySelectorAll(selector2) {
+        return selectAll(selector2, this, {
           xmlMode: true,
           adapter: matcher
         });
@@ -4284,8 +4284,8 @@ var init_dist = __esm({
       * @param  {string}         selector Simplified CSS selector
       * @return {(HTMLElement|null)}    matching node
       */
-      querySelector(selector) {
-        return selectOne(selector, this, {
+      querySelector(selector2) {
+        return selectOne(selector2, this, {
           xmlMode: true,
           adapter: matcher
         });
@@ -4295,8 +4295,8 @@ var init_dist = __esm({
       * @param  {string}   selector Simplified CSS selector
       * @return {boolean}
       */
-      matches(selector) {
-        return is(this, selector, {
+      matches(selector2) {
+        return is(this, selector2, {
           xmlMode: true,
           adapter: matcher
         });
@@ -4367,7 +4367,7 @@ var init_dist = __esm({
       * @param selector a DOMString containing a selector list
       * @returns {HTMLElement | null} the element with the given id or null if not found
       */
-      closest(selector) {
+      closest(selector2) {
         const mapChild = /* @__PURE__ */ new Map();
         let el = this;
         let old = null;
@@ -4390,7 +4390,7 @@ var init_dist = __esm({
         }
         el = this;
         while (el) {
-          const e2 = selectOne(selector, el, {
+          const e2 = selectOne(selector2, el, {
             xmlMode: true,
             adapter: _objectSpread2(_objectSpread2({}, matcher), {}, {
               getChildren(node) {
@@ -4466,10 +4466,10 @@ var init_dist = __esm({
         const attrs = this.rawAttributes;
         delete attrs[key];
         if (this._attrs) delete this._attrs[key];
-        this.rawAttrs = Object.keys(attrs).map((name2) => {
-          const val = this.quoteAttribute(attrs[name2]);
-          if (val === "null" || val === '""') return name2;
-          return `${name2}=${val}`;
+        this.rawAttrs = Object.keys(attrs).map((name3) => {
+          const val = this.quoteAttribute(attrs[name3]);
+          if (val === "null" || val === '""') return name3;
+          return `${name3}=${val}`;
         }).join(" ");
         if (key === "id") this._id = "";
         return this;
@@ -4499,10 +4499,10 @@ var init_dist = __esm({
         }
         attrs[key] = String(value);
         if (this._attrs) this._attrs[k2] = decodeAttribute(attrs[key]);
-        this.rawAttrs = Object.keys(attrs).map((name2) => {
-          const val = this.quoteAttribute(attrs[name2]);
-          if (val === "null" || val === '""') return name2;
-          return `${name2}=${val}`;
+        this.rawAttrs = Object.keys(attrs).map((name3) => {
+          const val = this.quoteAttribute(attrs[name3]);
+          if (val === "null" || val === '""') return name3;
+          return `${name3}=${val}`;
         }).join(" ");
         if (key === "id") this._id = value;
         return this;
@@ -4514,10 +4514,10 @@ var init_dist = __esm({
       setAttributes(attributes2) {
         if (this._attrs) delete this._attrs;
         if (this._rawAttrs) delete this._rawAttrs;
-        this.rawAttrs = Object.keys(attributes2).map((name2) => {
-          const val = attributes2[name2];
-          if (val === "null" || val === '""') return name2;
-          return `${name2}=${this.quoteAttribute(String(val))}`;
+        this.rawAttrs = Object.keys(attributes2).map((name3) => {
+          const val = attributes2[name3];
+          if (val === "null" || val === '""') return name3;
+          return `${name3}=${this.quoteAttribute(String(val))}`;
         }).join(" ");
         if ("id" in attributes2) this._id = attributes2["id"];
         return this;
@@ -6092,7 +6092,7 @@ function parseHttpUrl(raw) {
 }
 async function assertHostedFirecrawlUrl(raw, resolve4 = systemResolver, cache) {
   const url2 = parseHttpUrl(raw);
-  if (url2.hostname === HOSTED_DNS_CHECK_EXEMPT_HOSTNAME) return url2;
+  if (HOSTED_DNS_CHECK_EXEMPT_HOSTNAMES.has(url2.hostname)) return url2;
   return assertPublicHttpUrl(raw, resolve4, cache);
 }
 async function assertPublicHttpUrl(raw, resolve4 = systemResolver, cache) {
@@ -6123,7 +6123,7 @@ async function assertPublicHttpUrl(raw, resolve4 = systemResolver, cache) {
   }
   return url2;
 }
-var import_ipaddr, UnsafeUrlError, BLOCKED_SUFFIXES, DNS_TIMEOUT_MS, systemResolver, HOSTED_DNS_CHECK_EXEMPT_HOSTNAME;
+var import_ipaddr, UnsafeUrlError, BLOCKED_SUFFIXES, DNS_TIMEOUT_MS, systemResolver, HOSTED_DNS_CHECK_EXEMPT_HOSTNAMES;
 var init_urlGuard = __esm({
   "src/security/urlGuard.ts"() {
     "use strict";
@@ -6159,7 +6159,7 @@ var init_urlGuard = __esm({
         clearTimeout(timer);
       }
     };
-    HOSTED_DNS_CHECK_EXEMPT_HOSTNAME = "simplecss.org";
+    HOSTED_DNS_CHECK_EXEMPT_HOSTNAMES = /* @__PURE__ */ new Set(["simplecss.org", "bootstrapmade.com"]);
   }
 });
 
@@ -6342,8 +6342,8 @@ var init_build = __esm({
     GENERATOR_VERSION = "0.1.0";
     Notes = class {
       items = [];
-      add(note) {
-        const n = cleanText(note, LIMITS.maxNoteChars);
+      add(note2) {
+        const n = cleanText(note2, LIMITS.maxNoteChars);
         if (n && !this.items.includes(n) && this.items.length < LIMITS.maxNotes) this.items.push(n);
       }
       list() {
@@ -6903,9 +6903,9 @@ var require_parser = __commonJS({
     Parser.prototype._parseChunkBegin = function(data) {
       let length = data.readUInt32BE(0);
       let type2 = data.readUInt32BE(4);
-      let name2 = "";
+      let name3 = "";
       for (let i = 4; i < 8; i++) {
-        name2 += String.fromCharCode(data[i]);
+        name3 += String.fromCharCode(data[i]);
       }
       let ancillary = Boolean(data[4] & 32);
       if (!this._hasIHDR && type2 !== constants2.TYPE_IHDR) {
@@ -6913,12 +6913,12 @@ var require_parser = __commonJS({
         return;
       }
       this._crc = new CrcCalculator();
-      this._crc.write(Buffer.from(name2));
+      this._crc.write(Buffer.from(name3));
       if (this._chunks[type2]) {
         return this._chunks[type2](length);
       }
       if (!ancillary) {
-        this.error(new Error("Unsupported critical chunk type " + name2));
+        this.error(new Error("Unsupported critical chunk type " + name3));
         return;
       }
       this.read(length + 4, this._skipChunk.bind(this));
@@ -8606,18 +8606,18 @@ function sanitizeSvg(input, width, height, currentColor) {
       continue;
     }
     if (tok.startsWith("</")) {
-      const name3 = tok.slice(2, -1).trim();
-      if (stack.pop() !== name3) return { ok: false, reason: "unbalanced SVG tags" };
-      if (name3 === "g") out.push("</g>");
+      const name4 = tok.slice(2, -1).trim();
+      if (stack.pop() !== name4) return { ok: false, reason: "unbalanced SVG tags" };
+      if (name4 === "g") out.push("</g>");
       continue;
     }
     const m = /^<([a-zA-Z]+)((?:\s+[a-zA-Z_:][\w:.-]*="[^"<>]*")*)\s*(\/?)>$/.exec(tok);
     if (!m) return { ok: false, reason: "unsupported SVG tag syntax" };
-    const name2 = m[1];
+    const name3 = m[1];
     const selfClosing = m[3] === "/";
     if (++count > MAX_ELEMENTS) return { ok: false, reason: "too many SVG elements" };
     const attrs = [...m[2].matchAll(/([a-zA-Z_:][\w:.-]*)="([^"<>]*)"/g)].map((a) => [a[1], a[2]]);
-    if (name2 === "svg") {
+    if (name3 === "svg") {
       if (stack.length !== 0 || out.length !== 0) return { ok: false, reason: "nested or repeated <svg>" };
       for (const [k, v] of attrs) {
         if (k === "viewBox") {
@@ -8631,14 +8631,14 @@ function sanitizeSvg(input, width, height, currentColor) {
       continue;
     }
     if (stack.length === 0) return { ok: false, reason: "content outside <svg>" };
-    const shape = SHAPES[name2];
-    if (!shape && name2 !== "g") return { ok: false, reason: `unsupported SVG element <${name2}>` };
+    const shape = SHAPES[name3];
+    if (!shape && name3 !== "g") return { ok: false, reason: `unsupported SVG element <${name3}>` };
     const kept = [];
     let hasFill = false;
     for (const [k, v] of attrs) {
       const kind = shape?.[k];
       if (kind === "num") {
-        if (!NUM.test(v.trim()) || !boundedNumbers(v, 1)) return { ok: false, reason: `invalid number in ${name2}.${k}` };
+        if (!NUM.test(v.trim()) || !boundedNumbers(v, 1)) return { ok: false, reason: `invalid number in ${name3}.${k}` };
         kept.push(`${k}="${v.trim()}"`);
       } else if (kind === "d") {
         if (v.length > MAX_PATH || !PATH_D.test(v) || !boundedNumbers(v, MAX_NUMBERS) || (v.match(/[a-z]/gi) ?? []).filter((ch) => ch !== "e" && ch !== "E").length > MAX_COMMANDS) {
@@ -8659,11 +8659,11 @@ function sanitizeSvg(input, width, height, currentColor) {
       } else if (ENUM_ATTRS[k]) {
         if (!ENUM_ATTRS[k].includes(v.trim())) return { ok: false, reason: `invalid ${k}` };
         kept.push(`${k}="${v.trim()}"`);
-      } else if (!DROPPED.has(k)) return { ok: false, reason: `unsupported attribute ${name2}.${k}` };
+      } else if (!DROPPED.has(k)) return { ok: false, reason: `unsupported attribute ${name3}.${k}` };
     }
     if (shape && !hasFill && currentColor) kept.push(`fill="${currentColor}"`);
-    out.push(`<${name2}${kept.length ? " " + kept.join(" ") : ""}${shape ? "/>" : ">"}`);
-    if (!selfClosing && shape) stack.push(name2);
+    out.push(`<${name3}${kept.length ? " " + kept.join(" ") : ""}${shape ? "/>" : ">"}`);
+    if (!selfClosing && shape) stack.push(name3);
     if (!selfClosing && !shape) stack.push("g");
     if (selfClosing && !shape) out.push("</g>");
   }
@@ -8800,6 +8800,79 @@ function checkNodeList(c, nodes, p, max, assetIds, clipCount) {
   nodes.forEach((n, j) => checkNode(c, n, `${p}[${j}]`, nodes.length, assetIds, kinds, clipCount));
   return nodes.length;
 }
+function checkStatesEtc(c, pg, p, assetIds, assetsById) {
+  let total = 0;
+  if (pg.states !== void 0 && c.obj(pg.states, `${p}.states`, ["reactions", "variants"])) {
+    const st3 = pg.states;
+    c.oneOf(st3.reactions, `${p}.states.reactions`, ["none", "click-cycle"]);
+    if (c.arr(st3.variants, `${p}.states.variants`, 3)) {
+      if (st3.variants.length < 1) c.fail(`${p}.states.variants`, "expected 1..3 variants");
+      const names = /* @__PURE__ */ new Set();
+      st3.variants.forEach((v, j) => {
+        const q = `${p}.states.variants[${j}]`;
+        if (!c.obj(v, q, ["name", "provenance", "frame", "nodes", "referenceAssetId", "screenshot", "notes"])) return;
+        if (typeof v.name !== "string" || !STATE_NAME.test(v.name) || names.has(v.name.toLowerCase())) c.fail(`${q}.name`, "expected a unique state name");
+        else names.add(v.name.toLowerCase());
+        c.oneOf(v.provenance, `${q}.provenance`, ["baseline", "synthetic", "manual"]);
+        if (j === 0 !== (v.provenance === "baseline")) c.fail(`${q}.provenance`, "exactly the first variant must be the baseline");
+        if (j === 0 && v.name !== "Default") c.fail(`${q}.name`, 'the baseline variant must be named "Default"');
+        if (c.obj(v.frame, `${q}.frame`, ["x", "y", "w", "h"])) {
+          checkRect(c, v.frame, `${q}.frame`);
+          c.num(v.frame.w, `${q}.frame.w`, 1, LIMITS.hifiMaxPageWidth);
+          c.num(v.frame.h, `${q}.frame.h`, 1, LIMITS.hifiMaxPageHeight);
+        }
+        total += checkNodeList(c, v.nodes, `${q}.nodes`, MAX_VARIANT_NODES, assetIds, 0);
+        if (v.referenceAssetId !== null && (typeof v.referenceAssetId !== "string" || assetsById.get(v.referenceAssetId)?.kind !== "reference")) c.fail(`${q}.referenceAssetId`, "unknown reference asset");
+        if (v.screenshot !== null && c.obj(v.screenshot, `${q}.screenshot`, ["association", "scrollY", "viewportW", "viewportH"])) {
+          c.oneOf(v.screenshot.association, `${q}.screenshot.association`, ["action-order", "unassociated", "manual"]);
+          for (const k of ["scrollY", "viewportW", "viewportH"]) if (v.screenshot[k] !== null) c.num(v.screenshot[k], `${q}.screenshot.${k}`, 0, COORD);
+        }
+        c.labels(v.notes, `${q}.notes`, 10);
+      });
+    }
+  }
+  if (pg.freeze !== void 0 && c.obj(pg.freeze, `${p}.freeze`, ["attempted", "applied", "unavailable", "modifications", "notFrozen"])) {
+    const f = pg.freeze;
+    c.labels(f.attempted, `${p}.freeze.attempted`, 10);
+    c.labels(f.unavailable, `${p}.freeze.unavailable`, 10);
+    c.labels(f.modifications, `${p}.freeze.modifications`, 10);
+    c.labels(f.notFrozen, `${p}.freeze.notFrozen`, 10);
+    if (c.arr(f.applied, `${p}.freeze.applied`, 10)) {
+      f.applied.forEach((a, j) => {
+        if (!c.obj(a, `${p}.freeze.applied[${j}]`, ["name", "count"])) return;
+        c.str(a.name, `${p}.freeze.applied[${j}].name`, 60, false);
+        c.int(a.count, `${p}.freeze.applied[${j}].count`, 0, 1e5);
+      });
+    }
+  }
+  if (pg.motion !== void 0 && c.obj(pg.motion, `${p}.motion`, ["rules", "inaccessibleSheets"])) {
+    c.int(pg.motion.inaccessibleSheets, `${p}.motion.inaccessibleSheets`, 0, 1e3);
+    if (c.arr(pg.motion.rules, `${p}.motion.rules`, 200)) {
+      pg.motion.rules.forEach((r, j) => {
+        const q = `${p}.motion.rules[${j}]`;
+        if (!c.obj(r, q, ["selector", "kind", "detail"])) return;
+        c.str(r.selector, `${q}.selector`, 200, false);
+        c.oneOf(r.kind, `${q}.kind`, ["transition", "animation", "hover"]);
+        c.str(r.detail, `${q}.detail`, 200);
+      });
+    }
+  }
+  if (pg.media !== void 0 && c.arr(pg.media, `${p}.media`, 50)) {
+    pg.media.forEach((m, j) => {
+      const q = `${p}.media[${j}]`;
+      if (!c.obj(m, q, ["kind", "x", "y", "w", "h", "poster", "src", "webgl", "stillAssetId", "still"])) return;
+      c.oneOf(m.kind, `${q}.kind`, ["video", "canvas", "lottie", "iframe"]);
+      checkRect(c, m, q);
+      if (m.poster !== null) c.httpUrl(m.poster, `${q}.poster`);
+      if (m.src !== null) c.httpUrl(m.src, `${q}.src`);
+      if (m.webgl !== null) c.bool(m.webgl, `${q}.webgl`);
+      c.oneOf(m.still, `${q}.still`, ["operator-asset", "poster-url-observed-not-downloaded", "unavailable"]);
+      if (m.still === "operator-asset" !== (m.stillAssetId !== null)) c.fail(`${q}.stillAssetId`, 'set exactly when still is "operator-asset"');
+      if (m.stillAssetId !== null && (typeof m.stillAssetId !== "string" || assetsById.get(m.stillAssetId)?.kind !== "image")) c.fail(`${q}.stillAssetId`, "unknown image asset");
+    });
+  }
+  return total;
+}
 function validateHifiDoc(input) {
   const c = new C();
   if (!c.obj(input, "$", ["schema", "schemaVersion", "generator", "source", "site", "provenance", "assets", "pages", "warnings"], ["components", "fontMap"])) return { ok: false, errors: c.errors };
@@ -8878,7 +8951,8 @@ function validateHifiDoc(input) {
     const ids = /* @__PURE__ */ new Set();
     d.pages.forEach((pg, i) => {
       const p = `$.pages[${i}]`;
-      if (!c.obj(pg, p, ["id", "url", "path", "title", "width", "height", "truncated", "referenceAssetId", "branding", "nodes", "warnings"], ["notes", "parentId", "clips", "instances", "normalization", "referenceTiles"])) return;
+      if (!c.obj(pg, p, ["id", "url", "path", "title", "width", "height", "truncated", "referenceAssetId", "branding", "nodes", "warnings"], ["notes", "parentId", "clips", "instances", "normalization", "referenceTiles", "states", "freeze", "motion", "media"])) return;
+      total += checkStatesEtc(c, pg, p, assetIds, assetsById);
       if (pg.referenceTiles !== void 0 && c.obj(pg.referenceTiles, `${p}.referenceTiles`, ["sourceSha256", "sourceWidth", "sourceHeight", "tiles"])) {
         const rt = pg.referenceTiles;
         const q = `${p}.referenceTiles`;
@@ -8993,7 +9067,7 @@ function parseImportJson(text) {
   }
   return { ok: false, errors: ["$.schemaVersion: unsupported version (expected 1 or 2)"] };
 }
-var HIFI_SCHEMA_VERSION, HEX2, SHA, B64, C, COORD;
+var HIFI_SCHEMA_VERSION, HEX2, SHA, B64, C, COORD, STATE_NAME, MAX_VARIANT_NODES;
 var init_hifiSchema = __esm({
   "src/shared/hifiSchema.ts"() {
     "use strict";
@@ -9009,13 +9083,13 @@ var init_hifiSchema = __esm({
       fail(p, m) {
         if (this.errors.length < 50) this.errors.push(`${p}: ${m}`);
       }
-      obj(v, p, keys, optional = []) {
+      obj(v, p, keys2, optional = []) {
         if (typeof v !== "object" || v === null || Array.isArray(v)) {
           this.fail(p, "expected object");
           return false;
         }
-        for (const k of Object.keys(v)) if (!keys.includes(k) && !optional.includes(k)) this.fail(p, `unknown key "${k}"`);
-        for (const k of keys) if (!Object.prototype.hasOwnProperty.call(v, k)) this.fail(p, `missing key "${k}"`);
+        for (const k of Object.keys(v)) if (!keys2.includes(k) && !optional.includes(k)) this.fail(p, `unknown key "${k}"`);
+        for (const k of keys2) if (!Object.prototype.hasOwnProperty.call(v, k)) this.fail(p, `missing key "${k}"`);
         return true;
       }
       str(v, p, max, allowEmpty = true) {
@@ -9066,6 +9140,8 @@ var init_hifiSchema = __esm({
       }
     };
     COORD = 1e5;
+    STATE_NAME = /^[A-Za-z0-9][A-Za-z0-9 _-]{0,39}$/;
+    MAX_VARIANT_NODES = 2e3;
   }
 });
 
@@ -9086,22 +9162,22 @@ var init_fonts = __esm({
 });
 
 // src/hifi/corrections.ts
-function widthMap(measured, target) {
-  const off = (measured - target) / 2;
+function widthMap(measured2, target) {
+  const off = (measured2 - target) / 2;
   const counts = { fullBleed: 0, marginAnchored: 0, shifted: 0, outside: 0 };
   return {
-    measured,
+    measured: measured2,
     target,
     offset: off,
     counts,
     apply(b) {
-      if (b.x <= 0.5 && b.x + b.w >= measured - 0.5) {
+      if (b.x <= 0.5 && b.x + b.w >= measured2 - 0.5) {
         counts.fullBleed++;
         return { ...b, x: 0, w: target };
       }
       if (b.x < off - 0.5 && b.x + b.w > off + target + 0.5) {
         counts.marginAnchored++;
-        return { ...b, w: r3(b.w - (measured - target)) };
+        return { ...b, w: r3(b.w - (measured2 - target)) };
       }
       counts.shifted++;
       if (b.x < off - 0.5 || b.x + b.w > off + target + 0.5) counts.outside++;
@@ -9284,6 +9360,217 @@ var init_corrections = __esm({
   }
 });
 
+// src/states/convertStates.ts
+function rectOf(v) {
+  if (!isObj(v)) return null;
+  const x = fin(v.x), y = fin(v.y), w = fin(v.w), h = fin(v.h);
+  return x !== null && y !== null && w !== null && h !== null && w >= 1 && h >= 1 ? { x, y, w, h } : null;
+}
+function safeUrl(v) {
+  if (typeof v !== "string" || v.length === 0 || v.length > LIMITS.maxUrlChars) return null;
+  try {
+    return parseHttpUrl(v).toString();
+  } catch {
+    return null;
+  }
+}
+function cropNodes(nodes, frame, max) {
+  const keep = [];
+  nodes.forEach((n, i) => {
+    if (n.x < frame.x + frame.w && n.x + n.w > frame.x && n.y < frame.y + frame.h && n.y + n.h > frame.y) keep.push(i);
+  });
+  const kept = keep.slice(0, max);
+  const index = new Map(kept.map((old, i) => [old, i]));
+  const out = kept.map((i) => {
+    const { clip: _clip, ...n } = nodes[i];
+    const moved = { ...n, x: n.x - frame.x, y: n.y - frame.y };
+    if (moved.kind === "text") moved.button = moved.button >= 0 ? index.get(moved.button) ?? -1 : -1;
+    return moved;
+  });
+  return { nodes: out, dropped: keep.length - kept.length };
+}
+function frameOf(st3, fallbackW) {
+  const scope = rectOf(st3.scope);
+  if (scope) return { x: scope.x, y: scope.y, w: Math.min(scope.w, LIMITS.hifiMaxPageWidth), h: Math.min(scope.h, LIMITS.hifiMaxPageHeight) };
+  const vp = isObj(st3.viewport) ? st3.viewport : {};
+  const w = fin(vp.width) ?? fallbackW;
+  const h = fin(vp.height) ?? 800;
+  return { x: 0, y: fin(st3.screenshotScrollY) ?? 0, w: Math.max(1, Math.min(w, LIMITS.hifiMaxPageWidth)), h: Math.max(1, Math.min(h, LIMITS.hifiMaxPageHeight)) };
+}
+function attachStates(ctx) {
+  let budget = ctx.nodeBudget;
+  for (const raw of ctx.rawPages) {
+    if (!isObj(raw) || typeof raw.url !== "string") continue;
+    let canonical;
+    try {
+      canonical = canonicalizeUrl(parseHttpUrl(raw.url));
+    } catch {
+      continue;
+    }
+    const page = ctx.pages.find((p) => p.url === canonical);
+    if (!page) continue;
+    const pw = (msg) => {
+      if (page.warnings.length < LIMITS.hifiMaxWarnings) page.warnings.push(note(msg));
+    };
+    const rawStates = Array.isArray(raw.states) ? raw.states.filter(isObj).slice(0, 3) : [];
+    const stateRefs = ctx.assets.filter((a) => a.kind === "reference" && a.state && a.pageUrl && canonicalizeUrl(a.pageUrl) === canonical);
+    if (rawStates.length || stateRefs.length) {
+      const variants = [];
+      const base2 = rawStates.find((s) => s.seq === 0) ?? null;
+      const ordered = base2 ? [base2, ...rawStates.filter((s) => s !== base2 && s.provenance === "synthetic")] : [];
+      const firstScope = ordered.find((s) => rectOf(s.scope));
+      for (const st3 of ordered) {
+        const name3 = typeof st3.name === "string" && STATE_NAME.test(st3.name) ? st3.name : null;
+        const isBase = st3 === base2;
+        if (!name3 || isBase && name3 !== "Default") {
+          pw(`State ${String(st3.seq)} omitted: invalid name`);
+          continue;
+        }
+        if (variants.some((v) => v.name.toLowerCase() === name3.toLowerCase())) {
+          pw(`State "${name3}" omitted: duplicate name`);
+          continue;
+        }
+        if (typeof st3.error === "string" && st3.error) {
+          pw(`State "${name3}" omitted: browser step failed (${st3.error}); it reverted its own modifications`);
+          continue;
+        }
+        if (!isObj(st3.measured)) {
+          pw(`State "${name3}" omitted: no measurement`);
+          continue;
+        }
+        let sub;
+        try {
+          sub = ctx.convertOne({ url: raw.url, measured: st3.measured, ...typeof st3.html === "string" ? { html: st3.html } : {} });
+        } catch (err) {
+          pw(`State "${name3}" omitted: ${err instanceof Error ? err.message : "conversion failed"}`);
+          continue;
+        }
+        const subPage = sub.pages[0];
+        const frame = frameOf(isBase && !rectOf(st3.scope) && firstScope ? { ...st3, scope: firstScope.scope } : st3, subPage.width);
+        const cropped = cropNodes(subPage.nodes, frame, Math.min(MAX_VARIANT_NODES, budget));
+        const nodes = cropped.nodes.map((n) => {
+          if (n.kind !== "image" || n.assetId === null) return n;
+          const sha2 = sub.assets.find((a) => a.id === n.assetId)?.sha256;
+          const loaded = sha2 ? ctx.assets.find((a) => a.sha256 === sha2 && a.kind === "image") : void 0;
+          return { ...n, assetId: loaded ? ctx.assetIdFor(loaded) : null };
+        });
+        budget -= nodes.length;
+        const notes = [];
+        if (isBase) notes.push("Baseline: the page as measured, before any state modification");
+        else {
+          const applied = Array.isArray(st3.applied) ? st3.applied.filter(isObj).map((a) => `${String(a.mechanism)} ${String(a.selector)}`) : [];
+          notes.push(`SYNTHETIC state: DOM modification (${applied.join("; ").slice(0, 120) || "none applied"}), not an observed original state`);
+          notes.push("No handler side-effect guarantee: page observers/callbacks may have reacted to the modification");
+          if (Array.isArray(st3.refused) && st3.refused.length) notes.push(`${st3.refused.length} mutation(s) refused (unsafe or custom element, invalid selector)`);
+          if (Array.isArray(st3.missing) && st3.missing.length) notes.push(`${st3.missing.length} selector(s) matched nothing`);
+          if (!applied.length) pw(`State "${name3}": no modification applied; it may equal the baseline`);
+        }
+        if (typeof st3.residueFromSeq === "number") notes.push(`Revert of state ${st3.residueFromSeq} unconfirmed; may include its modifications`);
+        if (st3.truncated === true) notes.push("Measurement truncated by the per-state byte bound");
+        if (cropped.dropped) notes.push(`${cropped.dropped} node(s) omitted by the variant node cap`);
+        const ref = stateRefs.find((a) => a.state.toLowerCase() === name3.toLowerCase());
+        const vp = isObj(st3.viewport) ? st3.viewport : {};
+        const assoc = st3.screenshot === "action-order" ? "action-order" : "unassociated";
+        variants.push({
+          name: name3,
+          provenance: isBase ? "baseline" : "synthetic",
+          frame,
+          nodes,
+          referenceAssetId: ref ? ctx.assetIdFor(ref) : null,
+          screenshot: { association: assoc, scrollY: fin(st3.screenshotScrollY), viewportW: fin(vp.width), viewportH: fin(vp.height) },
+          notes: notes.slice(0, 10).map(note)
+        });
+        if (ref && assoc !== "action-order") pw(`State "${name3}": screenshot was not tied to this state by action order; check the operator's manifest label`);
+      }
+      const plannedNames = new Set(rawStates.map((s) => typeof s.name === "string" ? s.name.toLowerCase() : ""));
+      for (const ref of stateRefs) {
+        if (variants.some((v) => v.name.toLowerCase() === ref.state.toLowerCase())) continue;
+        if (plannedNames.has(ref.state.toLowerCase())) {
+          pw(`Screenshot for omitted state "${ref.state}" not used`);
+          continue;
+        }
+        if (variants.length === 0) {
+          pw(`Manual state "${ref.state}" omitted: no measured baseline variant on this page`);
+          continue;
+        }
+        if (variants.length >= 3) {
+          pw(`Manual state "${ref.state}" omitted: 3-state limit reached`);
+          continue;
+        }
+        const id = ctx.assetIdFor(ref);
+        if (!id) {
+          pw(`Manual state "${ref.state}" omitted: asset budget full`);
+          continue;
+        }
+        variants.push({
+          name: ref.state,
+          provenance: "manual",
+          frame: { x: 0, y: 0, w: ref.width, h: ref.height },
+          nodes: [{ kind: "image", name: `Manual screenshot / ${ref.state}`, x: 0, y: 0, w: ref.width, h: ref.height, assetId: id, fit: "fill", radius: [0, 0, 0, 0], prov: "measured" }],
+          referenceAssetId: null,
+          screenshot: { association: "manual", scrollY: null, viewportW: null, viewportH: null },
+          notes: [note("MANUAL state: operator-captured screenshot only; not measured, layers are not editable")]
+        });
+        budget -= 1;
+      }
+      if (variants.length) page.states = { reactions: variants.length > 1 ? ctx.reactions : "none", variants };
+    }
+    if (isObj(raw.freeze)) {
+      const f = raw.freeze;
+      const labels = (v) => Array.isArray(v) ? v.filter((x) => typeof x === "string").slice(0, 10).map(note).filter(Boolean) : [];
+      const applied = isObj(f.applied) ? Object.entries(f.applied).slice(0, 10).filter(([k, n]) => k.length > 0 && Number.isInteger(n) && n >= 0).map(([k, n]) => ({ name: cleanText(k, 60), count: Math.min(n, 1e5) })) : [];
+      page.freeze = { attempted: labels(f.attempted), applied, unavailable: labels(f.unavailable), modifications: labels(f.modifications), notFrozen: labels(f.notFrozen) };
+      if (page.freeze.modifications.length) pw(`Freeze step modified the page: ${page.freeze.modifications.join("; ")}`);
+    }
+    const base = Array.isArray(raw.states) ? raw.states.find((s) => isObj(s) && s.seq === 0) : void 0;
+    if (isObj(base) && isObj(base.motion)) {
+      const m = base.motion;
+      const rules = Array.isArray(m.rules) ? m.rules.filter(isObj).filter((r) => (r.kind === "transition" || r.kind === "animation" || r.kind === "hover") && typeof r.selector === "string" && r.selector.trim()).slice(0, 200).map((r) => ({ selector: cleanText(String(r.selector), 200) || "?", kind: r.kind, detail: cleanText(typeof r.detail === "string" ? r.detail : "", 200) })) : [];
+      const inaccessible = Number.isInteger(m.inaccessibleSheets) ? Math.min(Math.max(0, m.inaccessibleSheets), 1e3) : 0;
+      page.motion = { rules, inaccessibleSheets: inaccessible };
+      if (inaccessible) pw(`${inaccessible} stylesheet(s) were not readable (cross-origin); their transitions/animations/hover rules are unknown`);
+    }
+    if (isObj(base) && Array.isArray(base.media)) {
+      const media2 = [];
+      for (const m of base.media.filter(isObj).slice(0, 50)) {
+        const r = rectOf(m);
+        if (!r || !["video", "canvas", "lottie", "iframe"].includes(String(m.kind))) continue;
+        const poster = safeUrl(m.poster);
+        const loaded = poster ? ctx.assets.find((a) => a.kind === "image" && a.sourceUrl === poster) : void 0;
+        const stillId = loaded ? ctx.assetIdFor(loaded) : null;
+        media2.push({
+          kind: m.kind,
+          ...r,
+          poster,
+          src: safeUrl(m.src),
+          webgl: typeof m.webgl === "boolean" ? m.webgl : null,
+          stillAssetId: stillId,
+          still: stillId ? "operator-asset" : poster ? "poster-url-observed-not-downloaded" : "unavailable"
+        });
+      }
+      if (media2.length) {
+        page.media = media2;
+        const missing = media2.filter((m) => m.still !== "operator-asset").length;
+        if (missing) pw(`${missing} media item(s) (video/canvas/lottie/iframe) have no still image; shown as labelled placeholders`);
+      }
+    }
+  }
+}
+var isObj, fin, note;
+var init_convertStates = __esm({
+  "src/states/convertStates.ts"() {
+    "use strict";
+    init_limits();
+    init_text();
+    init_hifiSchema();
+    init_canonicalize();
+    init_urlGuard();
+    isObj = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+    fin = (v) => typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= 1e5 ? v : null;
+    note = (s) => cleanText(s, LIMITS.maxNoteChars);
+  }
+});
+
 // src/hifi/convert.ts
 function parseColor(v) {
   const s = str(v, 80).trim().toLowerCase();
@@ -9317,18 +9604,18 @@ function graphemeCount(s) {
 function protectEdgeSpaces(s) {
   return s.replace(/^ +/, (m) => "\xA0".repeat(m.length)).replace(/ +$/, (m) => "\xA0".repeat(m.length));
 }
-function rectOf(o) {
-  const x = fin(o.x);
-  const y = fin(o.y);
-  const w = fin(o.w);
-  const h = fin(o.h);
+function rectOf2(o) {
+  const x = fin2(o.x);
+  const y = fin2(o.y);
+  const w = fin2(o.w);
+  const h = fin2(o.h);
   if (x === null || y === null || w === null || h === null || w <= 0 || h <= 0) return null;
   return { x: round(x), y: round(y), w: round(w), h: round(h) };
 }
 function brandingOf(v) {
-  if (!isObj(v)) return null;
+  if (!isObj2(v)) return null;
   const colors = /* @__PURE__ */ Object.create(null);
-  if (isObj(v.colors)) {
+  if (isObj2(v.colors)) {
     for (const [k, val] of Object.entries(v.colors).slice(0, 40)) {
       if (Object.keys(colors).length >= 20 || !/^[A-Za-z][A-Za-z0-9]{0,31}$/.test(k)) continue;
       const s = str(val, 20).trim().toLowerCase();
@@ -9340,14 +9627,14 @@ function brandingOf(v) {
   }
   const fonts = [];
   for (const f of arr(v.fonts, 50, "branding.fonts")) {
-    const fam = cleanText(str(isObj(f) ? f.family : "", 100), 100);
+    const fam = cleanText(str(isObj2(f) ? f.family : "", 100), 100);
     if (fam && !fonts.includes(fam) && fonts.length < 10) fonts.push(fam);
   }
   return Object.keys(colors).length || fonts.length ? { colors, fonts } : null;
 }
 function convertCapture(input) {
   const cap = input.capture;
-  if (!isObj(cap) || cap.schema !== "website-to-figma/capture" || cap.schemaVersion !== 1) {
+  if (!isObj2(cap) || cap.schema !== "website-to-figma/capture" || cap.schemaVersion !== 1) {
     throw new CaptureError('capture: expected { schema: "website-to-figma/capture", schemaVersion: 1, ... }');
   }
   const label = cleanText(str(cap.label, 200), 200) || "operator capture";
@@ -9371,7 +9658,7 @@ function convertCapture(input) {
   let totalNodes = 0;
   const regionsByPage = [];
   for (const [pi, rp] of rawPages.entries()) {
-    if (!isObj(rp)) throw new CaptureError(`capture.pages[${pi}]: expected object`);
+    if (!isObj2(rp)) throw new CaptureError(`capture.pages[${pi}]: expected object`);
     const url2 = parseHttpUrl(str(rp.url, LIMITS.maxUrlChars));
     const canonical = canonicalizeUrl(url2);
     const path = displayPath(canonical);
@@ -9390,18 +9677,18 @@ function convertCapture(input) {
     }
     first ??= url2;
     const m = rp.measured;
-    if (!isObj(m)) throw new CaptureError(`capture.pages[${pi}].measured: expected object`);
+    if (!isObj2(m)) throw new CaptureError(`capture.pages[${pi}].measured: expected object`);
     const warnings = [];
     const notes = [];
-    const rawElements = arr(m.elements, LIMITS.captureMaxElements, "measured.elements").filter(isObj);
-    const rawTexts = arr(m.texts, LIMITS.captureMaxTexts, "measured.texts").filter(isObj);
-    const rawImages = arr(m.images, LIMITS.captureMaxImages, "measured.images").filter(isObj);
-    const rawSvgs = arr(m.svgs, LIMITS.captureMaxElements, "measured.svgs").filter(isObj);
-    const vw = isObj(m.viewport) ? fin(m.viewport.width) : null;
+    const rawElements = arr(m.elements, LIMITS.captureMaxElements, "measured.elements").filter(isObj2);
+    const rawTexts = arr(m.texts, LIMITS.captureMaxTexts, "measured.texts").filter(isObj2);
+    const rawImages = arr(m.images, LIMITS.captureMaxImages, "measured.images").filter(isObj2);
+    const rawSvgs = arr(m.svgs, LIMITS.captureMaxElements, "measured.svgs").filter(isObj2);
+    const vw = isObj2(m.viewport) ? fin2(m.viewport.width) : null;
     if (vw === null || vw <= 0) throw new CaptureError(`capture.pages[${pi}].measured.viewport.width: required (measured)`);
     let truncated = false;
     const refId = str(rp.referenceAssetId, 64);
-    const refAsset = refId ? byOperatorId.get(refId) : input.assets.find((a) => a.kind === "reference" && a.pageUrl && canonicalizeUrl(a.pageUrl) === canonical);
+    const refAsset = refId ? byOperatorId.get(refId) : input.assets.find((a) => a.kind === "reference" && !a.state && a.pageUrl && canonicalizeUrl(a.pageUrl) === canonical);
     const refRejected = (input.rejectedReferences ?? []).find((r) => refId ? r.operatorId === refId : !!r.pageUrl && canonicalizeUrl(r.pageUrl) === canonical);
     const refTiled = (input.referenceTiles ?? []).find((r) => refId ? r.operatorId === refId : !!r.pageUrl && canonicalizeUrl(r.pageUrl) === canonical);
     const refDims = refTiled ? { w: refTiled.width, h: refTiled.height } : refAsset && refAsset.kind === "reference" ? { w: refAsset.width, h: refAsset.height } : refRejected ? { w: refRejected.width, h: refRejected.height } : null;
@@ -9414,7 +9701,7 @@ function convertCapture(input) {
       warn(warnings, `Measured width ${round(vw)}px differs from the reference's ${refDims.w}px; measured geometry kept (opt in with --normalize-reference centered-dpr1)`);
     }
     const mapBox = (o) => {
-      const r = rectOf(o);
+      const r = rectOf2(o);
       return r ? { ...o, ...wm ? wm.apply(r) : r } : o;
     };
     let elements = rawElements.map(mapBox);
@@ -9442,10 +9729,10 @@ function convertCapture(input) {
     if (rejoined.repaired) notes.push(`Rejoined ${rejoined.repaired} text fragment(s) that the capture split inside a surrogate pair or grapheme cluster`);
     if (rejoined.removed) warn(warnings, `${rejoined.removed} unpaired UTF-16 surrogate(s) had no adjacent partner in the source runs and were removed`);
     const body = elements.find((e2) => e2.tag === "body");
-    const bodyRect = body ? rectOf(body) : null;
+    const bodyRect = body ? rectOf2(body) : null;
     let height = bodyRect ? round(bodyRect.y + bodyRect.h) : 0;
     if (!height) for (const o of [...elements, ...texts, ...images]) {
-      const r = rectOf(o);
+      const r = rectOf2(o);
       if (r) height = Math.max(height, round(r.y + r.h));
     }
     if (height <= 0) throw new CaptureError(`capture.pages[${pi}]: no measured geometry`);
@@ -9461,7 +9748,7 @@ function convertCapture(input) {
       const fix = gf.fix;
       const ids = new Map(containers.map((c) => [c.id, c]));
       const shiftObj = (o) => {
-        const r = rectOf(o);
+        const r = rectOf2(o);
         if (!r) return o;
         const moved = fix.apply(r);
         const c = ids.get(String(o.id ?? ""));
@@ -9493,12 +9780,12 @@ function convertCapture(input) {
       const c = clipOf(src, n);
       return c >= 0 ? { ...n, clip: c } : n;
     };
-    const inferredText = (r, text, s, name2, align) => {
+    const inferredText = (r, text, s, name3, align) => {
       const size = px(s.fontSize) || 16;
       return withClip({
         kind: "text",
         ...r,
-        name: name2,
+        name: name3,
         text: protectEdgeSpaces(text),
         graphemes: Math.max(1, graphemeCount(text)),
         fontStack: parseFontStack(str(s.fontFamily)),
@@ -9517,13 +9804,13 @@ function convertCapture(input) {
     };
     let missingOptionLabels = 0;
     for (const e2 of elements) {
-      const r = rectOf(e2);
+      const r = rectOf2(e2);
       if (!r || !inPage(r)) continue;
       src = e2;
-      const s = isObj(e2.style) ? e2.style : {};
+      const s = isObj2(e2.style) ? e2.style : {};
       if (s.display === "none" || s.visibility === "hidden") continue;
       const tag = str(e2.tag, 20).toLowerCase();
-      const control = isObj(e2.control) ? e2.control : null;
+      const control = isObj2(e2.control) ? e2.control : null;
       const ctype = str(control?.type, 20).toLowerCase();
       if (tag === "option") {
         const label3 = facts?.option.get(str(e2.id, 20));
@@ -9532,27 +9819,27 @@ function convertCapture(input) {
         continue;
       }
       const role2 = tag === "button" || tag === "input" && ["button", "submit", "reset"].includes(ctype) ? "button" : control ? "control" : "block";
-      const fill = parseColor(s.backgroundColor);
-      if (s.backgroundColor && !fill && !/rgba?\([^)]*,\s*0\)|transparent/.test(str(s.backgroundColor))) unparsedColors++;
+      const fill2 = parseColor(s.backgroundColor);
+      if (s.backgroundColor && !fill2 && !/rgba?\([^)]*,\s*0\)|transparent/.test(str(s.backgroundColor))) unparsedColors++;
       const sides = ["Top", "Right", "Bottom", "Left"].map((k) => ({ w: px(s[`border${k}Width`]), c: parseColor(s[`border${k}Color`]) }));
       const uniform = sides.every((x) => x.w === sides[0].w && x.c?.hex === sides[0].c?.hex && x.c?.alpha === sides[0].c?.alpha);
       const anyBorder = sides.some((x) => x.w > 0 && x.c);
-      if (fill || anyBorder || role2 !== "block") {
+      if (fill2 || anyBorder || role2 !== "block") {
         const opacityRaw = Number(str(s.opacity, 10) || "1");
-        if (fill !== null || anyBorder && uniform || role2 !== "block") {
-          const box2 = withClip({
+        if (fill2 !== null || anyBorder && uniform || role2 !== "block") {
+          const box3 = withClip({
             kind: "box",
             ...r,
             name: `${tag}${role2 === "button" ? " / button" : ""}`,
             role: role2,
-            fill,
+            fill: fill2,
             border: anyBorder && uniform ? { weight: sides[0].w, color: sides[0].c } : null,
             radius: parseRadius(s.borderRadius, r.w, r.h),
             opacity: Number.isFinite(opacityRaw) ? Math.max(0, Math.min(1, opacityRaw)) : 1,
             prov: "measured"
           });
-          boxC.push({ node: box2, prio: role2 === "block" ? 3 : 1 });
-          if (role2 === "button") buttonBoxes.push(box2);
+          boxC.push({ node: box3, prio: role2 === "block" ? 3 : 1 });
+          if (role2 === "button") buttonBoxes.push(box3);
         }
         if (anyBorder && !uniform) {
           const edges = [
@@ -9599,10 +9886,10 @@ function convertCapture(input) {
     }
     if (missingOptionLabels) warn(warnings, `${missingOptionLabels} option row(s) have no label in the saved rawHtml; left empty`);
     for (const im of images) {
-      const r = rectOf(im);
+      const r = rectOf2(im);
       if (!r || !inPage(r)) continue;
       src = im;
-      const s = isObj(im.style) ? im.style : {};
+      const s = isObj2(im.style) ? im.style : {};
       const asset = bySource.get(str(im.src, LIMITS.maxUrlChars)) ?? null;
       imgC.push({
         prio: 2,
@@ -9612,7 +9899,7 @@ function convertCapture(input) {
     }
     const svgRejects = /* @__PURE__ */ new Map();
     for (const sv of svgs) {
-      const r = rectOf(sv);
+      const r = rectOf2(sv);
       if (!r || !inPage(r)) continue;
       src = null;
       const res = sanitizeSvg(str(sv.html, 4e4), r.w, r.h, parseColor(sv.color)?.hex ?? null);
@@ -9622,7 +9909,7 @@ function convertCapture(input) {
     for (const [reason, n] of svgRejects) warn(warnings, `${n} inline SVG(s) omitted: ${reason}`);
     let shortened = 0;
     for (const t of texts) {
-      const r = rectOf(t);
+      const r = rectOf2(t);
       if (!r || !inPage(r)) continue;
       src = t;
       const raw = str(t.text, LIMITS.hifiMaxTextChars * 2);
@@ -9630,7 +9917,7 @@ function convertCapture(input) {
       if (!text.trim()) continue;
       const bounded = text.length > LIMITS.hifiMaxTextChars ? text.slice(0, LIMITS.hifiMaxTextChars) : text;
       if (typeof t.text === "string" && t.text.length > LIMITS.hifiMaxTextChars) shortened++;
-      const s = isObj(t.style) ? t.style : {};
+      const s = isObj2(t.style) ? t.style : {};
       const stack = parseFontStack(str(s.fontFamily));
       const deco = str(s.textDecorationLine);
       const cx = r.x + r.w / 2;
@@ -9664,18 +9951,18 @@ function convertCapture(input) {
     let markers = 0;
     let unanchored = 0;
     for (const e2 of facts ? listItems : []) {
-      const r = rectOf(e2);
-      const s = isObj(e2.style) ? e2.style : {};
+      const r = rectOf2(e2);
+      const s = isObj2(e2.style) ? e2.style : {};
       src = e2;
       const fact = facts.li.get(str(e2.id, 20));
       if (!r || !inPage(r) || !fact || fact.inNav || s.display !== "list-item") continue;
       const first2 = texts.find((t) => t.parent === e2.id);
-      const fr = first2 ? rectOf(first2) : null;
+      const fr = first2 ? rectOf2(first2) : null;
       if (!first2 || !fr) {
         unanchored++;
         continue;
       }
-      const fs = isObj(first2.style) ? first2.style : s;
+      const fs = isObj2(first2.style) ? first2.style : s;
       const size = px(fs.fontSize) || 16;
       const w = round(size * 2.5);
       textC.push({ prio: 1, node: inferredText({ x: round(r.x - size * 0.4 - w), y: fr.y, w, h: fr.h }, fact.marker, { ...fs, fontWeight: "400" }, `list marker ${fact.marker}`, "right") });
@@ -9764,13 +10051,26 @@ function convertCapture(input) {
     ...components.length ? { components } : {},
     ...input.fontMap && input.fontMap.length ? { fontMap: input.fontMap } : {}
   };
+  if (!input.nested) {
+    const componentNodes = components.reduce((n, c) => n + c.nodes.length, 0);
+    attachStates({
+      rawPages,
+      pages,
+      assets: input.assets,
+      assetIdFor: (a) => used.some((u) => u.sha256 === a.sha256 && u.kind === a.kind) || used.length < LIMITS.hifiMaxAssets ? assetIdFor(a) : null,
+      convertOne: (page) => convertCapture({ capture: { schema: "website-to-figma/capture", schemaVersion: 1, label, pages: [page] }, assets: input.assets.filter((a) => a.kind === "image"), assetWarnings: [], fontMap: input.fontMap, nested: true }),
+      reactions: input.stateReactions ?? "none",
+      nodeBudget: Math.max(0, LIMITS.hifiMaxNodesTotal - totalNodes - componentNodes),
+      warn: (w) => warn(docWarnings, w)
+    });
+  }
   const v = validateHifiDoc(doc);
   if (!v.ok) throw new CaptureError(`Internal error: converted document failed validation:
 ${v.errors.join("\n")}`);
   return v.doc;
 }
 function rectWithTag(e2) {
-  const r = rectOf(e2);
+  const r = rectOf2(e2);
   return r ? { tag: str(e2.tag, 20).toLowerCase(), r } : null;
 }
 function extractComponents(pages, regions) {
@@ -9844,7 +10144,7 @@ function relativize(n, region) {
   delete copy.clip;
   return copy;
 }
-var CaptureError, isObj, arr, fin, str, px, round, segmenter, NON_HTML_EXT;
+var CaptureError, isObj2, arr, fin2, str, px, round, segmenter, NON_HTML_EXT;
 var init_convert = __esm({
   "src/hifi/convert.ts"() {
     "use strict";
@@ -9858,16 +10158,17 @@ var init_convert = __esm({
     init_urlGuard();
     init_canonicalize();
     init_build();
+    init_convertStates();
     CaptureError = class extends Error {
     };
-    isObj = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+    isObj2 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
     arr = (v, max, what) => {
       if (v === void 0) return [];
       if (!Array.isArray(v)) throw new CaptureError(`${what}: expected array`);
       if (v.length > max) throw new CaptureError(`${what}: more than ${max} items`);
       return v;
     };
-    fin = (v) => typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= 1e5 ? v : null;
+    fin2 = (v) => typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= 1e5 ? v : null;
     str = (v, max = 500) => typeof v === "string" ? v.slice(0, max) : "";
     px = (v) => {
       const m = /^(-?\d+(?:\.\d+)?)px$/.exec(str(v, 40).trim());
@@ -10037,6 +10338,628 @@ var init_hifiSynthetic = __esm({
   }
 });
 
+// src/states/scripts.ts
+var FREEZE_JS, LAZY_JS, STATE_JS, REVERT_JS;
+var init_scripts = __esm({
+  "src/states/scripts.ts"() {
+    "use strict";
+    FREEZE_JS = String.raw`(() => {
+  const r = { w2f: "freeze", attempted: [], applied: {}, unavailable: [], modifications: [], notFrozen: ["JS timers", "requestAnimationFrame loops", "WebGL/canvas rendering"] };
+  const note = (k, n) => { r.attempted.push(k); if (n === null) r.unavailable.push(k); else r.applied[k] = n; };
+  try {
+    const s = document.createElement("style");
+    s.setAttribute("data-w2f", "freeze");
+    s.textContent = "*,*::before,*::after{animation-play-state:paused!important;animation-delay:0s!important;transition:none!important;scroll-behavior:auto!important;caret-color:transparent!important}";
+    (document.head || document.documentElement).appendChild(s);
+    note("css-animations-transitions", 1);
+  } catch (e) { note("css-animations-transitions", null); }
+  if (typeof document.getAnimations === "function") {
+    let n = 0; for (const a of document.getAnimations().slice(0, 5000)) { try { a.pause(); n++; } catch (e) {} } note("web-animations", n);
+  } else note("web-animations", null);
+  let v = 0; for (const el of Array.from(document.querySelectorAll("video")).slice(0, 200)) { try { el.pause(); v++; } catch (e) {} } note("video-pause", v);
+  let sw = 0; for (const el of Array.from(document.querySelectorAll(".swiper, .swiper-container")).slice(0, 50)) { const a = el.swiper && el.swiper.autoplay; if (a && typeof a.stop === "function") { try { a.stop(); sw++; } catch (e) {} } }
+  note("swiper-autoplay-stop", sw); if (sw) r.modifications.push("stopped " + sw + " Swiper autoplay instance(s) via the page's own API");
+  if (__FORCE_AOS__) {
+    let n = 0; for (const el of Array.from(document.querySelectorAll("[data-aos]")).slice(0, 2000)) { if (!el.classList.contains("aos-animate")) { el.classList.add("aos-animate"); n++; } }
+    note("force-aos-visible", n); r.modifications.push("forced .aos-animate on " + n + " element(s) (not the page's original visibility)");
+  }
+  return r;
+})()`;
+    LAZY_JS = String.raw`(async () => {
+  const maxSteps = __MAX_STEPS__, maxPx = __MAX_PX__, stepWait = __STEP_WAIT_MS__;
+  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+  let steps = 0, y = 0;
+  const step = Math.max(200, Math.min(window.innerHeight || 800, 2000));
+  while (steps < maxSteps && y < maxPx) {
+    const h = document.documentElement.scrollHeight;
+    if (y + (window.innerHeight || 800) >= h) break;
+    y = Math.min(y + step, maxPx); window.scrollTo(0, y); steps++; await sleep(stepWait);
+  }
+  const reachedBottom = y + (window.innerHeight || 800) >= document.documentElement.scrollHeight;
+  window.scrollTo(0, 0); await sleep(stepWait);
+  return { w2f: "lazy", steps, scrolledTo: y, reachedBottom, capped: !reachedBottom };
+})()`;
+    STATE_JS = String.raw`(async () => {
+  const STATE = __STATE__;
+  const MAX = { elements: 20000, texts: 20000, images: 500, svgs: 200, rules: 200, media: 50, fixed: 50, match: 5 };
+  const MAX_RETURN_CHARS = __MAX_RETURN_CHARS__;
+  const out = { w2f: "state", seq: STATE.seq, name: STATE.name, provenance: STATE.mutations.length > 0 ? "synthetic" : "baseline", applied: [], missing: [], refused: [] };
+  const ATTRS = { "open": ["details"], "aria-expanded": null, "aria-selected": null, "aria-hidden": null, "hidden": null, "data-state": null };
+  window.__w2fRevert = [];
+  const revertNow = () => { let n = 0; const list = window.__w2fRevert || []; window.__w2fRevert = []; for (const op of list.reverse()) { try { if (op[0] === "attr") { if (op[3] === null) op[1].removeAttribute(op[2]); else op[1].setAttribute(op[2], op[3]); } else op[1].classList.remove(op[2]); n++; } catch (e) {} } return n; };
+  try {
+  if (!window.__w2fToggleGuard) { window.__w2fToggleGuard = true; window.addEventListener("toggle", (e) => e.stopImmediatePropagation(), true); }
+  for (const m of STATE.mutations) {
+    let nodes = [];
+    try { nodes = Array.from(document.querySelectorAll(m.selector)).slice(0, MAX.match); } catch (e) { out.refused.push({ selector: m.selector, reason: "invalid selector" }); continue; }
+    if (!nodes.length) { out.missing.push(m.selector); continue; }
+    for (const el of nodes) {
+      const tag = el.tagName.toLowerCase();
+      if (tag.includes("-") || el.hasAttribute("is")) { out.refused.push({ selector: m.selector, reason: "refused custom element <" + tag + ">" }); continue; }
+      if (["script", "iframe", "frame", "form", "input", "textarea", "select", "button", "a", "object", "embed", "dialog", "video", "audio", "canvas"].includes(tag)) { out.refused.push({ selector: m.selector, reason: "refused element <" + tag + ">" }); continue; }
+      if (m.mechanism === "details-open") {
+        if (tag !== "details") { out.refused.push({ selector: m.selector, reason: "not a <details>" }); continue; }
+        window.__w2fRevert.push(["attr", el, "open", el.getAttribute("open")]); el.setAttribute("open", "");
+      } else if (m.mechanism === "attribute-set") {
+        const allowed = ATTRS[m.attribute];
+        if (allowed === undefined || (allowed && !allowed.includes(tag))) { out.refused.push({ selector: m.selector, reason: "attribute not allowlisted" }); continue; }
+        window.__w2fRevert.push(["attr", el, m.attribute, el.getAttribute(m.attribute)]);
+        if (m.value === null) el.removeAttribute(m.attribute); else el.setAttribute(m.attribute, m.value);
+      } else if (m.mechanism === "class-add") {
+        if (el.classList.contains(m.className)) continue;
+        window.__w2fRevert.push(["class", el, m.className]); el.classList.add(m.className);
+      } else { out.refused.push({ selector: m.selector, reason: "unknown mechanism" }); continue; }
+      out.applied.push({ selector: m.selector, mechanism: m.mechanism });
+    }
+  }
+  await new Promise((res) => setTimeout(res, __SETTLE_MS__));
+  const bounds = (e) => { const b = e.getBoundingClientRect(); return { x: b.x + scrollX, y: b.y + scrollY, w: b.width, h: b.height }; };
+  const props = ["backgroundColor","color","fontFamily","fontSize","fontWeight","fontStyle","lineHeight","textDecorationLine","borderTopWidth","borderRightWidth","borderBottomWidth","borderLeftWidth","borderTopColor","borderRightColor","borderBottomColor","borderLeftColor","borderRadius","opacity","display","visibility","position","paddingTop","paddingRight","paddingBottom","paddingLeft","objectFit"];
+  const styles = (e) => { const c = getComputedStyle(e); const o = {}; for (const k of props) o[k] = c[k]; return o; };
+  // Drop ids from any earlier state's measurement so per-state HTML ancestry is not stale.
+  for (const e of document.querySelectorAll("[data-w2f-id]")) e.removeAttribute("data-w2f-id");
+  const elements = [], images = [], svgs = [], fixed = [];
+  let n = 0;
+  for (const e of document.querySelectorAll("body, body *")) {
+    if (elements.length >= MAX.elements) break;
+    if (e.closest("svg") || ["SCRIPT","STYLE","NOSCRIPT","LINK","META","TEMPLATE"].includes(e.tagName)) continue;
+    const b = bounds(e), s = styles(e); if (!b.w || !b.h || s.display === "none" || s.visibility === "hidden") continue;
+    const id = "e" + n++; e.setAttribute("data-w2f-id", id);
+    const item = { id, tag: e.tagName.toLowerCase(), ...b, style: s, header: !!e.closest("body > header"), footer: !!e.closest("body > footer") };
+    if (["INPUT","TEXTAREA","SELECT","BUTTON"].includes(e.tagName)) item.control = { type: e.type || e.tagName.toLowerCase(), value: e.type === "password" ? "" : String(e.value || "").slice(0, 200), placeholder: String(e.placeholder || "").slice(0, 200), checked: !!e.checked, selected: e.tagName === "SELECT" && e.selectedOptions[0] ? e.selectedOptions[0].textContent.slice(0, 200) : null };
+    if (e.tagName === "IMG" && images.length < MAX.images) images.push({ ...item, src: e.currentSrc || e.src, alt: e.alt });
+    if ((s.position === "fixed" || s.position === "sticky") && fixed.length < MAX.fixed) fixed.push({ id, tag: item.tag, position: s.position, ...b });
+    elements.push(item);
+  }
+  for (const e of Array.from(document.querySelectorAll("svg")).slice(0, MAX.svgs)) { const b = bounds(e); if (b.w && b.h && e.outerHTML.length <= 32000) svgs.push({ ...b, html: e.outerHTML, color: getComputedStyle(e).color }); }
+  const texts = []; const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); let t;
+  const seg = typeof Intl !== "undefined" && Intl.Segmenter ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null;
+  while ((t = walker.nextNode()) && texts.length < MAX.texts) {
+    const p = t.parentElement; if (!p || p.closest("script,style,noscript,svg,textarea,select,option")) continue;
+    const s = styles(p); if (s.visibility === "hidden" || s.display === "none") continue;
+    const str = t.textContent; if (!str.trim()) continue;
+    const parts = seg ? Array.from(seg.segment(str), (x) => [x.index, x.segment]) : Array.from(str).reduce((a, ch) => { const i = a.length ? a[a.length - 1][0] + a[a.length - 1][1].length : 0; a.push([i, ch]); return a; }, []);
+    let last = null; const runs = [];
+    for (const [i, g] of parts) { const r = document.createRange(); r.setStart(t, i); r.setEnd(t, i + g.length); const b = r.getBoundingClientRect(); if (!b.width || !b.height) continue; const x = b.x + scrollX, y = b.y + scrollY;
+      if (last && Math.abs(last.y - y) < 1 && Math.abs(last.x + last.w - x) < 3) { last.text += g; last.w = x + b.width - last.x; last.h = Math.max(last.h, b.height); } else { last = { text: g, x, y, w: b.width, h: b.height }; runs.push(last); } }
+    for (const r of runs) if (r.text.trim() && texts.length < MAX.texts) texts.push({ ...r, style: s, tag: p.tagName.toLowerCase(), parent: p.getAttribute("data-w2f-id"), code: !!p.closest("code,pre,kbd,samp") });
+  }
+  const motion = { rules: [], inaccessibleSheets: 0 };
+  for (const sheet of Array.from(document.styleSheets).slice(0, 100)) {
+    let rules; try { rules = sheet.cssRules; } catch (e) { motion.inaccessibleSheets++; continue; }
+    for (const rule of Array.from(rules || []).slice(0, 5000)) {
+      if (motion.rules.length >= MAX.rules || !rule.selectorText || !rule.style) continue;
+      const tr = rule.style.transition || rule.style.transitionProperty, an = rule.style.animation || rule.style.animationName;
+      if (tr) motion.rules.push({ selector: rule.selectorText.slice(0, 200), kind: "transition", detail: String(tr).slice(0, 200) });
+      if (an) motion.rules.push({ selector: rule.selectorText.slice(0, 200), kind: "animation", detail: String(an).slice(0, 200) });
+      if (/:hover/.test(rule.selectorText)) motion.rules.push({ selector: rule.selectorText.slice(0, 200), kind: "hover", detail: rule.style.cssText.slice(0, 200) });
+    }
+  }
+  const media = [];
+  const mediaOf = (sel, kind, extra) => { for (const e of Array.from(document.querySelectorAll(sel)).slice(0, MAX.media)) { const b = bounds(e); if (b.w && b.h && media.length < MAX.media) media.push({ kind, ...b, ...extra(e) }); } };
+  mediaOf("video", "video", (e) => ({ poster: e.poster || null, src: (e.currentSrc || e.src || "").slice(0, 2048) || null }));
+  mediaOf("canvas", "canvas", (e) => { let webgl = false; try { webgl = !!(e.getContext && (e.getContext("webgl2") || e.getContext("webgl"))); } catch (x) {} return { webgl }; });
+  mediaOf("lottie-player, dotlottie-player, [data-animation-path]", "lottie", () => ({}));
+  mediaOf("iframe", "iframe", (e) => ({ src: String(e.src || "").slice(0, 2048) || null }));
+  let scope = null, shotY = 0;
+  if (STATE.scope) { const s = document.querySelector(STATE.scope); if (s) { scope = bounds(s); window.scrollTo(0, Math.max(0, scope.y - 40)); shotY = window.scrollY || 0; } else out.missing.push(STATE.scope); }
+  const result = { ...out, scope, screenshotScrollY: shotY, viewport: { width: innerWidth, height: innerHeight }, measured: { url: location.href, viewport: { width: innerWidth, height: innerHeight }, title: document.title, elements, texts, images, svgs }, fixed, motion, media, truncated: false };
+  // Byte bound: drop measurement tails (largest first) until the return fits.
+  for (const k of ["texts", "elements", "svgs", "images"]) {
+    while (JSON.stringify(result).length > MAX_RETURN_CHARS && result.measured[k].length) { result.measured[k].length = Math.floor(result.measured[k].length / 2); result.truncated = true; }
+  }
+  if (JSON.stringify(result).length > MAX_RETURN_CHARS) return { ...out, error: "return exceeds byte bound", reverted: revertNow() };
+  return result;
+  } catch (e) {
+    // Apply/measure failed: revert immediately so later steps see the baseline.
+    return { ...out, error: String(e && e.message || e).slice(0, 200), reverted: revertNow() };
+  }
+})()`;
+    REVERT_JS = String.raw`(() => {
+  const list = window.__w2fRevert || []; let n = 0, failed = 0;
+  try {
+    for (const op of list.reverse()) { try { if (op[0] === "attr") { if (op[3] === null) op[1].removeAttribute(op[2]); else op[1].setAttribute(op[2], op[3]); } else if (op[0] === "class") op[1].classList.remove(op[2]); n++; } catch (e) { failed++; } }
+  } finally { window.__w2fRevert = []; try { window.scrollTo(0, 0); } catch (e) {} }
+  return { w2f: "revert", seq: __SEQ__, reverted: n, failed };
+})()`;
+  }
+});
+
+// src/states/plan.ts
+function keys(o, p, allowed) {
+  for (const k of Object.keys(o)) if (!allowed.includes(k)) throw new StatePlanError(`${p}: unknown key "${k}"`);
+}
+function int(v, p, dflt, min, max) {
+  if (v === void 0) return dflt;
+  if (typeof v !== "number" || !Number.isInteger(v) || v < min || v > max) throw new StatePlanError(`${p} must be an integer ${min}..${max}`);
+  return v;
+}
+function selector(v, p) {
+  if (typeof v !== "string" || v.length === 0 || v.length > STATE_LIMITS.maxSelectorChars) throw new StatePlanError(`${p} must be a CSS selector of 1..${STATE_LIMITS.maxSelectorChars} chars`);
+  if (/[\u0000-\u001f\u007f\u2028\u2029]/.test(v)) throw new StatePlanError(`${p} contains control characters`);
+  return v;
+}
+function name(v, p) {
+  if (typeof v !== "string" || !NAME.test(v)) throw new StatePlanError(`${p} must match ${NAME}`);
+  return v;
+}
+function mutation(v, p) {
+  if (!isObj3(v)) throw new StatePlanError(`${p}: expected object`);
+  const mech = v.mechanism;
+  if (typeof mech === "string" && REFUSED_MECHANISMS[mech]) {
+    throw new StatePlanError(`${p}: mechanism "${mech}" refused: ${REFUSED_MECHANISMS[mech]}. List it under the page's "manual" entries for an operator-captured screenshot instead.`);
+  }
+  const sel = selector(v.selector, `${p}.selector`);
+  if (mech === "details-open") {
+    keys(v, p, ["mechanism", "selector"]);
+    return { mechanism: mech, selector: sel };
+  }
+  if (mech === "attribute-set") {
+    keys(v, p, ["mechanism", "selector", "attribute", "value"]);
+    if (typeof v.attribute !== "string" || !ATTRIBUTES.has(v.attribute)) throw new StatePlanError(`${p}.attribute must be one of ${[...ATTRIBUTES].join(", ")}`);
+    if (v.value !== null && (typeof v.value !== "string" || v.value.length > 100 || /[\u0000-\u001f]/.test(v.value))) throw new StatePlanError(`${p}.value must be a string <= 100 chars or null (remove)`);
+    return { mechanism: mech, selector: sel, attribute: v.attribute, value: v.value };
+  }
+  if (mech === "class-add") {
+    keys(v, p, ["mechanism", "selector", "className"]);
+    if (typeof v.className !== "string" || !CLASS.test(v.className)) throw new StatePlanError(`${p}.className must match ${CLASS}`);
+    return { mechanism: mech, selector: sel, className: v.className };
+  }
+  throw new StatePlanError(`${p}.mechanism must be details-open | attribute-set | class-add`);
+}
+function parseStatePlan(json) {
+  if (!isObj3(json) || json.schema !== "website-to-figma/state-plan" || json.schemaVersion !== 1) {
+    throw new StatePlanError('state plan: expected { schema: "website-to-figma/state-plan", schemaVersion: 1, site, pages: [...] }');
+  }
+  keys(json, "plan", ["schema", "schemaVersion", "site", "forceAos", "maxActions", "maxCombinedWaitMs", "pages"]);
+  let site;
+  try {
+    site = parseHttpUrl(String(json.site));
+  } catch (err) {
+    throw new StatePlanError(`plan.site rejected: ${err instanceof Error ? err.message : "invalid"}`);
+  }
+  if (json.forceAos !== void 0 && typeof json.forceAos !== "boolean") throw new StatePlanError("plan.forceAos must be boolean");
+  const maxActions = int(json.maxActions, "plan.maxActions", STATE_LIMITS.defaultMaxActions, 1, STATE_LIMITS.providerMaxActions);
+  const maxCombinedWaitMs = int(json.maxCombinedWaitMs, "plan.maxCombinedWaitMs", STATE_LIMITS.defaultMaxCombinedWaitMs, 0, STATE_LIMITS.providerMaxCombinedWaitMs);
+  if (!Array.isArray(json.pages) || json.pages.length === 0 || json.pages.length > STATE_LIMITS.maxPages) throw new StatePlanError(`plan.pages must hold 1..${STATE_LIMITS.maxPages} pages (one site)`);
+  const seenUrls = /* @__PURE__ */ new Set();
+  const pages = json.pages.map((raw, i) => {
+    const p = `pages[${i}]`;
+    if (!isObj3(raw)) throw new StatePlanError(`${p}: expected object`);
+    keys(raw, p, ["url", "waitMs", "settleMs", "lazy", "states", "manual"]);
+    let url2;
+    try {
+      url2 = parseHttpUrl(String(raw.url));
+    } catch (err) {
+      throw new StatePlanError(`${p}.url rejected: ${err instanceof Error ? err.message : "invalid"}`);
+    }
+    if (url2.origin !== site.origin) throw new StatePlanError(`${p}.url must be on the plan's single site ${site.origin}`);
+    if (seenUrls.has(url2.href)) throw new StatePlanError(`${p}.url repeats ${url2.href}`);
+    seenUrls.add(url2.href);
+    const lazyRaw = raw.lazy === void 0 ? {} : raw.lazy;
+    if (!isObj3(lazyRaw)) throw new StatePlanError(`${p}.lazy: expected object`);
+    keys(lazyRaw, `${p}.lazy`, ["steps", "maxPx", "stepWaitMs"]);
+    const lazy = {
+      steps: int(lazyRaw.steps, `${p}.lazy.steps`, 6, 0, STATE_LIMITS.maxLazySteps),
+      maxPx: int(lazyRaw.maxPx, `${p}.lazy.maxPx`, 2e4, 0, STATE_LIMITS.maxLazyPx),
+      stepWaitMs: int(lazyRaw.stepWaitMs, `${p}.lazy.stepWaitMs`, 300, 0, STATE_LIMITS.maxLazyStepWaitMs)
+    };
+    const rawStates = raw.states === void 0 ? [] : raw.states;
+    if (!Array.isArray(rawStates) || rawStates.length > STATE_LIMITS.maxStatesPerPage - 1) {
+      throw new StatePlanError(`${p}.states: at most ${STATE_LIMITS.maxStatesPerPage - 1} synthetic states (the baseline "Default" counts toward the ${STATE_LIMITS.maxStatesPerPage}-state total)`);
+    }
+    const states = [{ name: "Default", scope: null, mutations: [] }];
+    for (const [j, s] of rawStates.entries()) {
+      const q = `${p}.states[${j}]`;
+      if (!isObj3(s)) throw new StatePlanError(`${q}: expected object`);
+      keys(s, q, ["name", "scope", "mutations"]);
+      const n = name(s.name, `${q}.name`);
+      if (states.some((x) => x.name.toLowerCase() === n.toLowerCase())) throw new StatePlanError(`${q}.name "${n}" is not unique (Default is reserved)`);
+      if (!Array.isArray(s.mutations) || s.mutations.length === 0 || s.mutations.length > STATE_LIMITS.maxMutationsPerState) throw new StatePlanError(`${q}.mutations must hold 1..${STATE_LIMITS.maxMutationsPerState} entries`);
+      states.push({ name: n, scope: s.scope === void 0 || s.scope === null ? null : selector(s.scope, `${q}.scope`), mutations: s.mutations.map((m, k) => mutation(m, `${q}.mutations[${k}]`)) });
+    }
+    const rawManual = raw.manual === void 0 ? [] : raw.manual;
+    if (!Array.isArray(rawManual) || rawManual.length > STATE_LIMITS.maxManualPerPage) throw new StatePlanError(`${p}.manual: at most ${STATE_LIMITS.maxManualPerPage} entries`);
+    const manual = rawManual.map((m, j) => {
+      const q = `${p}.manual[${j}]`;
+      if (!isObj3(m)) throw new StatePlanError(`${q}: expected object`);
+      keys(m, q, ["name", "selector", "reason"]);
+      const reason = typeof m.reason === "string" ? m.reason.slice(0, 200) : "";
+      return { name: name(m.name, `${q}.name`), selector: selector(m.selector, `${q}.selector`), reason };
+    });
+    states[0].scope = states.find((x) => x.scope)?.scope ?? null;
+    if (states.length + manual.length > STATE_LIMITS.maxStatesPerPage) {
+      throw new StatePlanError(`${p}: ${states.length} planned + ${manual.length} manual states exceed ${STATE_LIMITS.maxStatesPerPage} total (baseline included)`);
+    }
+    return {
+      url: url2.href,
+      waitMs: int(raw.waitMs, `${p}.waitMs`, 2e3, 0, STATE_LIMITS.maxPageWaitMs),
+      settleMs: int(raw.settleMs, `${p}.settleMs`, 300, 0, STATE_LIMITS.maxSettleMs),
+      lazy,
+      states,
+      manual
+    };
+  });
+  return { site: site.origin, forceAos: json.forceAos === true, maxActions, maxCombinedWaitMs, pages };
+}
+function fill(script, values) {
+  return script.replace(/__([A-Z_]+)__/g, (m, k) => {
+    if (!(k in values)) throw new Error(`unfilled script placeholder ${m}`);
+    return JSON.stringify(values[k]);
+  });
+}
+function buildStateRequest(plan, page) {
+  const actions = [];
+  const roles = [];
+  const push = (role2, action, extra = {}) => {
+    roles.push({ index: actions.length, role: role2, ...extra });
+    actions.push(action);
+  };
+  let waits = 0;
+  if (page.waitMs > 0) {
+    push("wait", { type: "wait", milliseconds: page.waitMs });
+    waits += page.waitMs;
+  }
+  push("freeze", { type: "executeJavascript", script: fill(FREEZE_JS, { FORCE_AOS: plan.forceAos }) });
+  if (page.lazy.steps > 0) {
+    push("lazy", { type: "executeJavascript", script: fill(LAZY_JS, { MAX_STEPS: page.lazy.steps, MAX_PX: page.lazy.maxPx, STEP_WAIT_MS: page.lazy.stepWaitMs }) });
+    waits += (page.lazy.steps + 1) * page.lazy.stepWaitMs;
+  }
+  const states = [];
+  let shots = 0;
+  page.states.forEach((s, seq) => {
+    push("state", { type: "executeJavascript", script: fill(STATE_JS, { STATE: { seq, name: s.name, scope: s.scope, mutations: s.mutations }, SETTLE_MS: page.settleMs, MAX_RETURN_CHARS: STATE_LIMITS.maxStateReturnChars }) }, { state: s.name, seq });
+    waits += page.settleMs;
+    push("screenshot", { type: "screenshot", fullPage: false }, { state: s.name, seq });
+    push("scrape", { type: "scrape" }, { state: s.name, seq });
+    states.push({ seq, name: s.name, provenance: s.mutations.length ? "synthetic" : "baseline", review: s.mutations.length ? SYNTHETIC_REVIEW : null, screenshotIndex: shots, scrapeIndex: shots });
+    shots++;
+    if (s.mutations.length) push("revert", { type: "executeJavascript", script: fill(REVERT_JS, { SEQ: seq }) }, { state: s.name, seq });
+  });
+  if (actions.length > plan.maxActions) throw new StatePlanError(`${page.url}: ${actions.length} actions exceed the plan budget of ${plan.maxActions} (provider maximum ${STATE_LIMITS.providerMaxActions})`);
+  if (waits > plan.maxCombinedWaitMs) throw new StatePlanError(`${page.url}: combined waits ${waits} ms exceed the plan budget of ${plan.maxCombinedWaitMs} ms (provider maximum ${STATE_LIMITS.providerMaxCombinedWaitMs} ms)`);
+  return {
+    pageUrl: page.url,
+    sent: false,
+    body: { url: page.url, formats: ["rawHtml"], onlyMainContent: false, timeout: STATE_LIMITS.requestTimeoutMs, actions },
+    roles,
+    actionCount: actions.length,
+    combinedWaitMs: waits,
+    states,
+    manual: page.manual
+  };
+}
+function buildStatePreview(plan) {
+  const requests = plan.pages.map((p) => buildStateRequest(plan, p));
+  const manualRoute = plan.pages.flatMap(
+    (p) => p.manual.map((m) => `${p.url} "${m.name}" (${m.selector}): ${m.reason || "handler safety unprovable"} -> capture manually in your own browser, then add the PNG to the asset manifest as kind "reference" with pageUrl and state "${m.name}"`)
+  );
+  return {
+    schema: "website-to-figma/state-request-preview",
+    schemaVersion: 1,
+    sent: false,
+    executor: "none",
+    notice: PREVIEW_NOTICE,
+    site: plan.site,
+    budgets: { maxActions: plan.maxActions, maxCombinedWaitMs: plan.maxCombinedWaitMs, maxPages: STATE_LIMITS.maxPages, maxStatesPerPage: STATE_LIMITS.maxStatesPerPage, maxStateReturnChars: STATE_LIMITS.maxStateReturnChars },
+    requests,
+    manualRoute
+  };
+}
+var StatePlanError, STATE_LIMITS, ATTRIBUTES, REFUSED_MECHANISMS, NAME, CLASS, isObj3, SYNTHETIC_REVIEW, PREVIEW_NOTICE;
+var init_plan = __esm({
+  "src/states/plan.ts"() {
+    "use strict";
+    init_urlGuard();
+    init_scripts();
+    StatePlanError = class extends Error {
+    };
+    STATE_LIMITS = {
+      providerMaxActions: 50,
+      providerMaxCombinedWaitMs: 6e4,
+      defaultMaxActions: 20,
+      defaultMaxCombinedWaitMs: 3e4,
+      maxPages: 3,
+      maxStatesPerPage: 3,
+      // TOTAL, baseline included
+      maxMutationsPerState: 5,
+      maxManualPerPage: 5,
+      maxSelectorChars: 200,
+      maxNameChars: 40,
+      maxPageWaitMs: 1e4,
+      maxSettleMs: 2e3,
+      maxLazySteps: 10,
+      maxLazyPx: 3e4,
+      maxLazyStepWaitMs: 1e3,
+      requestTimeoutMs: 9e4,
+      maxStateReturnChars: 6e6
+      // per measured state, enforced in-browser and by the adapter
+    };
+    ATTRIBUTES = /* @__PURE__ */ new Set(["open", "aria-expanded", "aria-selected", "aria-hidden", "hidden", "data-state"]);
+    REFUSED_MECHANISMS = {
+      click: "selectors do not prove that a click handler is safe (it may submit, log in, buy, navigate or open outbound links)",
+      hover: "real :hover cannot be forced without a pointer event",
+      focus: "focus handlers are not provably safe",
+      write: "typing into inputs is never planned",
+      press: "key presses are never planned",
+      submit: "form submission is never planned",
+      navigate: "navigation is never planned",
+      executeJavascript: "arbitrary page JavaScript is never planned"
+    };
+    NAME = /^[A-Za-z0-9][A-Za-z0-9 _-]{0,39}$/;
+    CLASS = /^[A-Za-z_-][A-Za-z0-9_-]{0,63}$/;
+    isObj3 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+    SYNTHETIC_REVIEW = "SYNTHETIC modification (not the page's observed original state); NOT executed; operator review required: attribute/class/open changes can run page MutationObservers, toggle listeners or custom-element callbacks - no handler side-effect guarantee";
+    PREVIEW_NOTICE = [
+      "NOT SENT. This tool has no executor: automatic state capture is unsupported. Nothing was fetched, no key was read, no account API was called.",
+      "Synthetic states are DOM modifications (not observed original states) for manual operator review; no handler side-effect guarantee.",
+      "Provider cost of these requests is UNKNOWN: Firecrawl documents 1 credit per scrape but no per-action price; no estimate is given.",
+      "Screenshot URLs in a provider response expire (documented 24 h) and are never downloaded by this tool.",
+      "Not frozen: JS timers, requestAnimationFrame loops, WebGL/canvas rendering. Cross-origin stylesheets cannot be read (reported as inaccessible)."
+    ];
+  }
+});
+
+// src/states/adapt.ts
+function adaptTaggedReturns(data, name3) {
+  const actions = isObj4(data.actions) ? data.actions : null;
+  const returns = actions && Array.isArray(actions.javascriptReturns) ? actions.javascriptReturns.slice(0, STATE_LIMITS.providerMaxActions) : [];
+  const values = returns.map((r) => isObj4(r) ? r.value : void 0).filter(isObj4);
+  if (!values.some((v) => v.w2f === "state")) return null;
+  const warnings = [];
+  const out = { baseline: null, states: [], freeze: null, lazy: null, warnings, screenshotHints: [] };
+  const reverts = /* @__PURE__ */ new Map();
+  const bySeq = /* @__PURE__ */ new Map();
+  for (const v of values) {
+    if (v.w2f === "freeze" && !out.freeze) out.freeze = v;
+    else if (v.w2f === "lazy" && !out.lazy) out.lazy = v;
+    else if (v.w2f === "revert" && typeof v.seq === "number") reverts.set(v.seq, v);
+    else if (v.w2f === "state" && typeof v.seq === "number" && Number.isInteger(v.seq) && v.seq >= 0 && v.seq < STATE_LIMITS.maxStatesPerPage) {
+      if (bySeq.has(v.seq)) {
+        warnings.push(`${name3}: duplicate state seq ${v.seq} ignored`);
+        continue;
+      }
+      if (JSON.stringify(v).length > STATE_LIMITS.maxStateReturnChars) {
+        warnings.push(`${name3}: state ${v.seq} return exceeds ${STATE_LIMITS.maxStateReturnChars} chars; omitted`);
+        continue;
+      }
+      bySeq.set(v.seq, v);
+    }
+  }
+  const n = bySeq.size;
+  const contiguous = [...Array(n).keys()].every((i) => bySeq.has(i));
+  const shots = actions && Array.isArray(actions.screenshots) ? actions.screenshots : [];
+  const scrapes = actions && Array.isArray(actions.scrapes) ? actions.scrapes : [];
+  const associated = contiguous && shots.length === n && shots.every((s) => typeof s === "string");
+  const htmlAssociated = contiguous && scrapes.length === n;
+  if (!associated) warnings.push(`${name3}: ${shots.length} screenshot(s) for ${n} state return(s)${contiguous ? "" : " (non-contiguous seq)"}; screenshots NOT associated with states`);
+  if (!htmlAssociated && scrapes.length) warnings.push(`${name3}: ${scrapes.length} scrape(s) for ${n} state return(s); per-state HTML NOT associated`);
+  let tainted = null;
+  for (const seq of [...bySeq.keys()].sort((a, b) => a - b)) {
+    const s = bySeq.get(seq);
+    const synthetic = s.provenance === "synthetic";
+    const st3 = {
+      seq,
+      name: typeof s.name === "string" ? s.name.slice(0, 40) : `State ${seq}`,
+      provenance: seq === 0 ? "baseline" : synthetic ? "synthetic" : "invalid",
+      scope: isObj4(s.scope) ? s.scope : null,
+      screenshotScrollY: typeof s.screenshotScrollY === "number" ? s.screenshotScrollY : null,
+      viewport: isObj4(s.viewport) ? s.viewport : null,
+      measured: isObj4(s.measured) ? s.measured : null,
+      applied: Array.isArray(s.applied) ? s.applied.slice(0, 25) : [],
+      refused: Array.isArray(s.refused) ? s.refused.slice(0, 25) : [],
+      missing: Array.isArray(s.missing) ? s.missing.slice(0, 25) : [],
+      truncated: s.truncated === true,
+      error: typeof s.error === "string" ? s.error.slice(0, 200) : null,
+      residueFromSeq: tainted,
+      screenshot: associated ? "action-order" : "unassociated"
+    };
+    if (seq > 0 && !synthetic) warnings.push(`${name3}: state ${seq} is not labelled synthetic; omitted`);
+    if (htmlAssociated) {
+      const sc = scrapes[seq];
+      const html = isObj4(sc) ? sc.html : void 0;
+      if (typeof html === "string" && html.length <= LIMITS.maxHtmlChars) st3.html = html;
+    }
+    if (seq === 0) {
+      out.baseline = isObj4(s.measured) ? s.measured : null;
+      if (isObj4(s.motion)) st3.motion = s.motion;
+      if (Array.isArray(s.media)) st3.media = s.media.slice(0, 50);
+    }
+    if (associated) out.screenshotHints.push({ state: st3.name, seq, screenshotUrl: String(shots[seq]).slice(0, LIMITS.maxUrlChars), scrollY: st3.screenshotScrollY });
+    if (seq === 0 || synthetic) out.states.push(st3);
+    if (synthetic) {
+      const rv = reverts.get(seq);
+      if (!rv || rv.failed !== 0 || s.error === void 0 && typeof rv.reverted === "number" && Array.isArray(s.applied) && rv.reverted < s.applied.length) {
+        if (seq < Math.max(...bySeq.keys())) warnings.push(`${name3}: revert of state ${seq} unconfirmed; later states may include its modifications`);
+        tainted ??= seq;
+      }
+    }
+  }
+  return out;
+}
+var isObj4;
+var init_adapt = __esm({
+  "src/states/adapt.ts"() {
+    "use strict";
+    init_limits();
+    init_plan();
+    isObj4 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+  }
+});
+
+// src/hifi/adapter.ts
+function measuredOf(data) {
+  const actions = isObj5(data.actions) ? data.actions : null;
+  const returns = actions && Array.isArray(actions.javascriptReturns) ? actions.javascriptReturns : [];
+  for (const r of returns.slice(0, 20)) {
+    const v = isObj5(r) ? r.value : void 0;
+    if (isObj5(v) && v.w2f === void 0 && Array.isArray(v.elements) && Array.isArray(v.texts) && isObj5(v.viewport)) return v;
+  }
+  return null;
+}
+function captureFromScrapeResponses(responses, label) {
+  if (responses.length === 0) throw new CaptureError("hifi-capture: at least one --scrape file is required");
+  if (responses.length > LIMITS.hifiMaxPages * 5) throw new CaptureError("hifi-capture: too many --scrape files");
+  const pages = [];
+  const screenshotHints = [];
+  const warnings = [];
+  for (const { name: name3, json } of responses) {
+    const root = isObj5(json) ? json : null;
+    const data = root && isObj5(root.data) ? root.data : root;
+    if (!data) throw new CaptureError(`${name3}: expected a JSON object`);
+    const tagged = adaptTaggedReturns(data, name3);
+    if (tagged) warnings.push(...tagged.warnings);
+    const measured2 = tagged ? tagged.baseline : measuredOf(data);
+    if (!measured2) throw new CaptureError(`${name3}: no measured DOM value (data.actions.javascriptReturns[].value with viewport/elements/texts)`);
+    const meta = isObj5(data.metadata) ? data.metadata : {};
+    const url2 = [measured2.url, meta.url, meta.sourceURL].find((u) => typeof u === "string" && u.length > 0);
+    if (!url2) throw new CaptureError(`${name3}: no page URL (measured.url or metadata.url)`);
+    const page = { url: url2, measured: measured2 };
+    if (tagged) {
+      page.states = tagged.states;
+      if (tagged.freeze) page.freeze = tagged.freeze;
+      if (tagged.lazy) page.lazy = tagged.lazy;
+      for (const h of tagged.screenshotHints) screenshotHints.push({ pageUrl: url2, ...h });
+    }
+    if (typeof meta.contentType === "string") page.contentType = meta.contentType;
+    if (isObj5(data.branding)) page.branding = data.branding;
+    if (typeof data.rawHtml === "string" && data.rawHtml.length <= LIMITS.maxHtmlChars) page.html = data.rawHtml;
+    pages.push(page);
+    if (typeof data.screenshot === "string" && !tagged) screenshotHints.push({ pageUrl: url2, screenshotUrl: data.screenshot.slice(0, LIMITS.maxUrlChars) });
+  }
+  return { capture: { schema: "website-to-figma/capture", schemaVersion: 1, label: label.slice(0, 200) || "operator capture", pages }, screenshotHints, warnings: warnings.slice(0, LIMITS.hifiMaxWarnings) };
+}
+var isObj5;
+var init_adapter = __esm({
+  "src/hifi/adapter.ts"() {
+    "use strict";
+    init_limits();
+    init_convert();
+    init_adapt();
+    isObj5 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+  }
+});
+
+// src/fixtures/statesSynthetic.ts
+function measured(open) {
+  const faqH = open === "faq" ? 120 : 60;
+  return {
+    url: "https://example.com/",
+    viewport: { width: 800, height: 600 },
+    title: "Synthetic States",
+    elements: [
+      { id: "e0", tag: "body", x: 0, y: 0, w: 800, h: 700, style: box2({ backgroundColor: "rgb(255, 255, 255)" }) },
+      { id: "e1", tag: "section", x: 40, y: 100, w: 400, h: faqH + 20, style: box2() },
+      { id: "e2", tag: "details", x: 40, y: 110, w: 400, h: faqH, style: box2({ backgroundColor: open === "faq" ? "rgb(232, 240, 254)" : "rgb(245, 245, 245)", borderRadius: "6px" }) },
+      { id: "e3", tag: "div", x: 480, y: 100, w: 120, h: 40, style: box2({ backgroundColor: open === "tab" ? "rgb(13, 71, 161)" : "rgb(220, 220, 220)" }) }
+    ],
+    texts: [
+      { text: "Synthetic question?", x: 56, y: 126, w: 160, h: 20, tag: "summary", parent: "e2", style: st2({ fontWeight: "700" }) },
+      ...open === "faq" ? [{ text: "Synthetic answer text.", x: 56, y: 170, w: 180, h: 20, tag: "p", parent: "e2", style: st2() }] : [],
+      { text: "Tab two", x: 500, y: 110, w: 60, h: 20, tag: "div", parent: "e3", style: st2({ color: open === "tab" ? "rgb(255, 255, 255)" : "rgb(33, 33, 33)" }) }
+    ],
+    images: [],
+    svgs: []
+  };
+}
+function syntheticStateResponse(opts = {}) {
+  const state = (seq, name3, open, scope, applied) => ({
+    w2f: "state",
+    seq,
+    name: name3,
+    provenance: seq === 0 ? "baseline" : "synthetic",
+    applied,
+    missing: [],
+    refused: seq === 2 ? [{ selector: "x-menu", reason: "refused custom element <x-menu>" }] : [],
+    scope,
+    screenshotScrollY: scope ? Math.max(0, scope.y - 40) : 0,
+    viewport: { width: 800, height: 600 },
+    measured: measured(open),
+    fixed: [],
+    motion,
+    media,
+    truncated: false
+  });
+  const faqScope = { x: 40, y: 100, w: 400, h: 80 };
+  const states = [
+    state(0, "Default", "none", faqScope, []),
+    opts.errorState ? { w2f: "state", seq: 1, name: "FAQ open", provenance: "synthetic", applied: [], missing: [], refused: [], error: "boom", reverted: 1 } : state(1, "FAQ open", "faq", { ...faqScope, h: 140 }, [{ selector: "#faq details", mechanism: "details-open" }]),
+    state(2, "Tab two", "tab", null, [{ selector: "#tab2", mechanism: "attribute-set" }])
+  ];
+  const shots = ["https://example.com/shot-0.png", "https://example.com/shot-1.png", "https://example.com/shot-2.png"];
+  return {
+    success: true,
+    data: {
+      metadata: { url: "https://example.com/", contentType: "text/html; charset=utf-8" },
+      rawHtml: "<html><body></body></html>",
+      actions: {
+        javascriptReturns: [
+          { type: "object", value: { w2f: "freeze", attempted: ["css-animations-transitions", "web-animations", "video-pause", "swiper-autoplay-stop", "force-aos-visible"], applied: { "css-animations-transitions": 1, "web-animations": 3, "video-pause": 1, "swiper-autoplay-stop": 0, "force-aos-visible": 2 }, unavailable: [], modifications: ["forced .aos-animate on 2 element(s) (not the page's original visibility)"], notFrozen: ["JS timers", "requestAnimationFrame loops", "WebGL/canvas rendering"] } },
+          { type: "object", value: { w2f: "lazy", steps: 2, scrolledTo: 1200, reachedBottom: true, capped: false } },
+          { type: "object", value: states[0] },
+          { type: "object", value: states[1] },
+          { type: "object", value: { w2f: "revert", seq: 1, reverted: opts.errorState ? 0 : 1, failed: opts.failRevert ? 1 : 0 } },
+          { type: "object", value: states[2] },
+          { type: "object", value: { w2f: "revert", seq: 2, reverted: 1, failed: 0 } }
+        ],
+        screenshots: opts.dropScreenshot ? shots.slice(0, 2) : shots,
+        scrapes: [0, 1, 2].map(() => ({ url: "https://example.com/", html: "<html><body></body></html>" }))
+      }
+    }
+  };
+}
+function syntheticStateAssets() {
+  return [
+    loadedFromBytes("poster", "image", syntheticPng(32, 18, [20, 20, 20], [200, 200, 200]), "https://example.com/poster.png"),
+    { ...loadedFromBytes("shot-faq", "reference", syntheticPng(800, 600, [255, 255, 255], [232, 240, 254]), null), pageUrl: "https://example.com/", state: "FAQ open" },
+    { ...loadedFromBytes("manual-menu", "reference", syntheticPng(320, 240, [250, 250, 250], [13, 71, 161]), null), pageUrl: "https://example.com/", state: "Menu open" }
+  ];
+}
+function buildStatesFixture(opts = {}) {
+  const { capture } = captureFromScrapeResponses([{ name: "synthetic-states.json", json: syntheticStateResponse() }], STATES_FIXTURE_LABEL);
+  const assets = syntheticStateAssets().filter((a) => opts.manual || a.operatorId !== "manual-menu");
+  const doc = convertCapture({ capture, assets, assetWarnings: [], stateReactions: opts.reactions ?? "click-cycle" });
+  return { ...doc, source: { mode: "fixture", label: STATES_FIXTURE_LABEL } };
+}
+var STATES_FIXTURE_LABEL, sans2, st2, box2, motion, media;
+var init_statesSynthetic = __esm({
+  "src/fixtures/statesSynthetic.ts"() {
+    "use strict";
+    init_adapter();
+    init_convert();
+    init_hifiSynthetic();
+    STATES_FIXTURE_LABEL = "SYNTHETIC STATE FIXTURE - not a real website";
+    sans2 = "Inter, sans-serif";
+    st2 = (o = {}) => ({ fontFamily: sans2, fontSize: "16px", fontWeight: "400", fontStyle: "normal", color: "rgb(33, 33, 33)", textDecorationLine: "none", ...o });
+    box2 = (o = {}) => ({ backgroundColor: "rgba(0, 0, 0, 0)", borderTopWidth: "0px", borderRightWidth: "0px", borderBottomWidth: "0px", borderLeftWidth: "0px", borderTopColor: "rgb(0, 0, 0)", borderRightColor: "rgb(0, 0, 0)", borderBottomColor: "rgb(0, 0, 0)", borderLeftColor: "rgb(0, 0, 0)", borderRadius: "0px", opacity: "1", display: "block", visibility: "visible", ...o });
+    motion = { rules: [{ selector: ".btn", kind: "transition", detail: "opacity 0.2s" }, { selector: ".btn:hover", kind: "hover", detail: "opacity: 0.5;" }], inaccessibleSheets: 1 };
+    media = [
+      { kind: "video", x: 40, y: 400, w: 320, h: 180, poster: "https://example.com/poster.png", src: "https://example.com/clip.mp4" },
+      { kind: "canvas", x: 400, y: 400, w: 200, h: 180, webgl: true }
+    ];
+  }
+});
+
 // src/hifi/files.ts
 import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
@@ -10059,10 +10982,10 @@ function readBoundedFile(path, max, root) {
     throw new CaptureError(code === "ELOOP" ? "not a regular file (symlinks are refused)" : "file not found or unreadable");
   }
   try {
-    const st2 = fstatSync(fd);
-    if (!st2.isFile()) throw new CaptureError("not a regular file");
-    if (st2.size > max) throw new CaptureError(`larger than ${max} bytes`);
-    const buf = new Uint8Array(Math.min(st2.size, max) + 1);
+    const st3 = fstatSync(fd);
+    if (!st3.isFile()) throw new CaptureError("not a regular file");
+    if (st3.size > max) throw new CaptureError(`larger than ${max} bytes`);
+    const buf = new Uint8Array(Math.min(st3.size, max) + 1);
     let n = 0;
     while (n < buf.length) {
       const r = readSync(fd, buf, n, buf.length - n, null);
@@ -10131,6 +11054,12 @@ function loadAssetManifest(manifestPath) {
         continue;
       }
     }
+    let state = null;
+    if (a.state !== void 0 && a.state !== null) {
+      if (a.kind !== "reference" || !pageUrl) throw new CaptureError(`asset manifest: assets[${i}].state needs kind "reference" and a pageUrl`);
+      if (typeof a.state !== "string" || !STATE_NAME.test(a.state)) throw new CaptureError(`asset manifest: assets[${i}].state must match ${STATE_NAME}`);
+      state = a.state;
+    }
     let sourceUrl = null;
     if (a.sourceUrl !== void 0 && a.sourceUrl !== null) {
       try {
@@ -10170,14 +11099,14 @@ function loadAssetManifest(manifestPath) {
       reject("not a PNG, JPEG or GIF");
       continue;
     }
-    if (a.kind === "reference" && info.mime === "image/png" && info.width >= 1 && info.width <= LIMITS.hifiMaxImageDim && info.height > LIMITS.hifiMaxImageDim && info.height <= LIMITS.refTileMaxSourceHeight) {
+    if (a.kind === "reference" && !state && info.mime === "image/png" && info.width >= 1 && info.width <= LIMITS.hifiMaxImageDim && info.height > LIMITS.hifiMaxImageDim && info.height <= LIMITS.refTileMaxSourceHeight) {
       tallReferences.push({ operatorId: id, pageUrl, width: info.width, height: info.height, sha256: actual, bytes });
       continue;
     }
     if (info.width < 1 || info.height < 1 || info.width > LIMITS.hifiMaxImageDim || info.height > LIMITS.hifiMaxImageDim) {
       const why = `${info.width}x${info.height}px exceeds Figma's ${LIMITS.hifiMaxImageDim}px image limit${a.kind === "reference" ? " (only PNG references up to " + LIMITS.hifiMaxImageDim + "px wide and " + LIMITS.refTileMaxSourceHeight + "px tall can be tiled)" : ""}`;
       reject(why);
-      if (a.kind === "reference" && info.width >= 1 && info.height >= 1 && info.width <= 1e5 && info.height <= 1e6) {
+      if (a.kind === "reference" && !state && info.width >= 1 && info.height >= 1 && info.width <= 1e5 && info.height <= 1e6) {
         rejectedReferences.push({ operatorId: id, pageUrl, width: info.width, height: info.height, reason: why });
       }
       continue;
@@ -10188,7 +11117,7 @@ function loadAssetManifest(manifestPath) {
       continue;
     }
     pixels += info.width * info.height;
-    assets.push({ operatorId: id, kind: a.kind, mime: info.mime, width: info.width, height: info.height, sha256: actual, sourceUrl, pageUrl, bytes });
+    assets.push({ operatorId: id, kind: a.kind, mime: info.mime, width: info.width, height: info.height, sha256: actual, sourceUrl, pageUrl, ...state ? { state } : {}, bytes });
   }
   return { assets, warnings, rejectedReferences, tallReferences };
 }
@@ -10202,50 +11131,8 @@ var init_assets = __esm({
     init_urlGuard();
     init_convert();
     init_files();
+    init_hifiSchema();
     MAX_MANIFEST_BYTES = 1e6;
-  }
-});
-
-// src/hifi/adapter.ts
-function measuredOf(data) {
-  const actions = isObj2(data.actions) ? data.actions : null;
-  const returns = actions && Array.isArray(actions.javascriptReturns) ? actions.javascriptReturns : [];
-  for (const r of returns.slice(0, 20)) {
-    const v = isObj2(r) ? r.value : void 0;
-    if (isObj2(v) && Array.isArray(v.elements) && Array.isArray(v.texts) && isObj2(v.viewport)) return v;
-  }
-  return null;
-}
-function captureFromScrapeResponses(responses, label) {
-  if (responses.length === 0) throw new CaptureError("hifi-capture: at least one --scrape file is required");
-  if (responses.length > LIMITS.hifiMaxPages * 5) throw new CaptureError("hifi-capture: too many --scrape files");
-  const pages = [];
-  const screenshotHints = [];
-  for (const { name: name2, json } of responses) {
-    const root = isObj2(json) ? json : null;
-    const data = root && isObj2(root.data) ? root.data : root;
-    if (!data) throw new CaptureError(`${name2}: expected a JSON object`);
-    const measured = measuredOf(data);
-    if (!measured) throw new CaptureError(`${name2}: no measured DOM value (data.actions.javascriptReturns[].value with viewport/elements/texts)`);
-    const meta = isObj2(data.metadata) ? data.metadata : {};
-    const url2 = [measured.url, meta.url, meta.sourceURL].find((u) => typeof u === "string" && u.length > 0);
-    if (!url2) throw new CaptureError(`${name2}: no page URL (measured.url or metadata.url)`);
-    const page = { url: url2, measured };
-    if (typeof meta.contentType === "string") page.contentType = meta.contentType;
-    if (isObj2(data.branding)) page.branding = data.branding;
-    if (typeof data.rawHtml === "string" && data.rawHtml.length <= LIMITS.maxHtmlChars) page.html = data.rawHtml;
-    pages.push(page);
-    if (typeof data.screenshot === "string") screenshotHints.push({ pageUrl: url2, screenshotUrl: data.screenshot.slice(0, LIMITS.maxUrlChars) });
-  }
-  return { capture: { schema: "website-to-figma/capture", schemaVersion: 1, label: label.slice(0, 200) || "operator capture", pages }, screenshotHints };
-}
-var isObj2;
-var init_adapter = __esm({
-  "src/hifi/adapter.ts"() {
-    "use strict";
-    init_limits();
-    init_convert();
-    isObj2 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
   }
 });
 
@@ -10326,7 +11213,7 @@ function assertOperatorPrerequisites(limit, useMap, a) {
   return estimate;
 }
 var CrawlPolicyError, MAX_EXCLUDES, CREDITS_PER_MAP_CALL, MAX_CREDITS_PER_PAGE, SCRAPE_OPTIONS, LIVE_MAX_PAGES;
-var init_plan = __esm({
+var init_plan2 = __esm({
   "src/crawl/plan.ts"() {
     "use strict";
     init_limits();
@@ -10356,10 +11243,10 @@ var init_plan = __esm({
 });
 
 // node_modules/@mendable/firecrawl-js/dist/chunk-XUICRV7P.js
-var name, version, description, main, types, exports, type, scripts, repository, author, license, dependencies, bugs, homepage, devDependencies, keywords, engines, package_default;
+var name2, version, description, main, types, exports, type, scripts, repository, author, license, dependencies, bugs, homepage, devDependencies, keywords, engines, package_default;
 var init_chunk_XUICRV7P = __esm({
   "node_modules/@mendable/firecrawl-js/dist/chunk-XUICRV7P.js"() {
-    name = "@mendable/firecrawl-js";
+    name2 = "@mendable/firecrawl-js";
     version = "4.52.0";
     description = "JavaScript SDK for Firecrawl, the context API for AI agents: search, scrape, parse, crawl, map, and interact with the web, run Agent and Monitor jobs, and search scientific papers (PubMed, bioRxiv, medRxiv, arXiv)";
     main = "dist/index.js";
@@ -10433,7 +11320,7 @@ var init_chunk_XUICRV7P = __esm({
       node: ">=18.0.0"
     };
     package_default = {
-      name,
+      name: name2,
       version,
       description,
       main,
@@ -10503,11 +11390,11 @@ function forEach(obj, fn, { allOwnKeys = false } = {}) {
     if (isBuffer(obj)) {
       return;
     }
-    const keys = allOwnKeys ? Object.getOwnPropertyNames(obj) : Object.keys(obj);
-    const len = keys.length;
+    const keys2 = allOwnKeys ? Object.getOwnPropertyNames(obj) : Object.keys(obj);
+    const len = keys2.length;
     let key;
     for (i = 0; i < len; i++) {
-      key = keys[i];
+      key = keys2[i];
       fn.call(null, obj[key], key, obj);
     }
   }
@@ -10517,11 +11404,11 @@ function findKey(obj, key) {
     return null;
   }
   key = key.toLowerCase();
-  const keys = Object.keys(obj);
-  let i = keys.length;
+  const keys2 = Object.keys(obj);
+  let i = keys2.length;
   let _key;
   while (i-- > 0) {
-    _key = keys[i];
+    _key = keys2[i];
     if (key === _key.toLowerCase()) {
       return _key;
     }
@@ -10851,20 +11738,20 @@ var init_utils = __esm({
     reduceDescriptors = (obj, reducer) => {
       const descriptors = Object.getOwnPropertyDescriptors(obj);
       const reducedDescriptors = {};
-      forEach(descriptors, (descriptor, name2) => {
+      forEach(descriptors, (descriptor, name3) => {
         let ret;
-        if ((ret = reducer(descriptor, name2, obj)) !== false) {
-          reducedDescriptors[name2] = ret || descriptor;
+        if ((ret = reducer(descriptor, name3, obj)) !== false) {
+          reducedDescriptors[name3] = ret || descriptor;
         }
       });
       Object.defineProperties(obj, reducedDescriptors);
     };
     freezeMethods = (obj) => {
-      reduceDescriptors(obj, (descriptor, name2) => {
-        if (isFunction(obj) && ["arguments", "caller", "callee"].includes(name2)) {
+      reduceDescriptors(obj, (descriptor, name3) => {
+        if (isFunction(obj) && ["arguments", "caller", "callee"].includes(name3)) {
           return false;
         }
-        const value = obj[name2];
+        const value = obj[name3];
         if (!isFunction(value)) return;
         descriptor.enumerable = false;
         if ("writable" in descriptor) {
@@ -10873,7 +11760,7 @@ var init_utils = __esm({
         }
         if (!descriptor.set) {
           descriptor.set = () => {
-            throw Error("Can not rewrite read-only method '" + name2 + "'");
+            throw Error("Can not rewrite read-only method '" + name3 + "'");
           };
         }
       });
@@ -11190,11 +12077,11 @@ function parseParameters(value) {
     if (equals < 1) {
       return;
     }
-    const name2 = trimOWS(part.slice(0, equals));
-    if (!parameterNameRE.test(name2)) {
+    const name3 = trimOWS(part.slice(0, equals));
+    if (!parameterNameRE.test(name3)) {
       return;
     }
-    const normalizedName = name2.toLowerCase();
+    const normalizedName = name3.toLowerCase();
     if (normalizedName === "__proto__" || normalizedName === "constructor" || normalizedName === "prototype") {
       return;
     }
@@ -11357,11 +12244,11 @@ var init_AxiosHeaders = __esm({
         return deleted;
       }
       clear(matcher2) {
-        const keys = Object.keys(this);
-        let i = keys.length;
+        const keys2 = Object.keys(this);
+        let i = keys2.length;
         let deleted = false;
         while (i--) {
-          const key = keys[i];
+          const key = keys2[i];
           if (!matcher2 || matchHeaderValue(this, this[key], key, matcher2, true)) {
             delete this[key];
             deleted = true;
@@ -21339,26 +22226,26 @@ var require_get_intrinsic = __commonJS({
       }
     }
     var errorProto;
-    var doEval = function doEval2(name2) {
+    var doEval = function doEval2(name3) {
       var value;
-      if (name2 === "%AsyncFunction%") {
+      if (name3 === "%AsyncFunction%") {
         value = getEvalledConstructor("async function () {}");
-      } else if (name2 === "%GeneratorFunction%") {
+      } else if (name3 === "%GeneratorFunction%") {
         value = getEvalledConstructor("function* () {}");
-      } else if (name2 === "%AsyncGeneratorFunction%") {
+      } else if (name3 === "%AsyncGeneratorFunction%") {
         value = getEvalledConstructor("async function* () {}");
-      } else if (name2 === "%AsyncGenerator%") {
+      } else if (name3 === "%AsyncGenerator%") {
         var fn = doEval2("%AsyncGeneratorFunction%");
         if (fn) {
           value = fn.prototype;
         }
-      } else if (name2 === "%AsyncIteratorPrototype%") {
+      } else if (name3 === "%AsyncIteratorPrototype%") {
         var gen = doEval2("%AsyncGenerator%");
         if (gen && getProto) {
           value = getProto(gen.prototype);
         }
       }
-      INTRINSICS[name2] = value;
+      INTRINSICS[name3] = value;
       return value;
     };
     var LEGACY_ALIASES = {
@@ -21438,8 +22325,8 @@ var require_get_intrinsic = __commonJS({
       });
       return result;
     };
-    var getBaseIntrinsic = function getBaseIntrinsic2(name2, allowMissing) {
-      var intrinsicName = name2;
+    var getBaseIntrinsic = function getBaseIntrinsic2(name3, allowMissing) {
+      var intrinsicName = name3;
       var alias;
       if (hasOwn(LEGACY_ALIASES, intrinsicName)) {
         alias = LEGACY_ALIASES[intrinsicName];
@@ -21451,7 +22338,7 @@ var require_get_intrinsic = __commonJS({
           value = doEval(intrinsicName);
         }
         if (typeof value === "undefined" && !allowMissing) {
-          throw new $TypeError("intrinsic " + name2 + " exists, but is not available. Please file an issue!");
+          throw new $TypeError("intrinsic " + name3 + " exists, but is not available. Please file an issue!");
         }
         return {
           alias,
@@ -21459,19 +22346,19 @@ var require_get_intrinsic = __commonJS({
           value
         };
       }
-      throw new $SyntaxError("intrinsic " + name2 + " does not exist!");
+      throw new $SyntaxError("intrinsic " + name3 + " does not exist!");
     };
-    module.exports = function GetIntrinsic(name2, allowMissing) {
-      if (typeof name2 !== "string" || name2.length === 0) {
+    module.exports = function GetIntrinsic(name3, allowMissing) {
+      if (typeof name3 !== "string" || name3.length === 0) {
         throw new $TypeError("intrinsic name must be a non-empty string");
       }
       if (arguments.length > 1 && typeof allowMissing !== "boolean") {
         throw new $TypeError('"allowMissing" argument must be a boolean');
       }
-      if ($exec(/^%?[^%]*%?$/, name2) === null) {
+      if ($exec(/^%?[^%]*%?$/, name3) === null) {
         throw new $SyntaxError("`%` may not be present anywhere but at the beginning and end of the intrinsic name");
       }
-      var parts = stringToPath(name2);
+      var parts = stringToPath(name3);
       var intrinsicBaseName = parts.length > 0 ? parts[0] : "";
       var intrinsic = getBaseIntrinsic("%" + intrinsicBaseName + "%", allowMissing);
       var intrinsicRealName = intrinsic.name;
@@ -21499,7 +22386,7 @@ var require_get_intrinsic = __commonJS({
         } else if (value != null) {
           if (!(part in value)) {
             if (!allowMissing) {
-              throw new $TypeError("base intrinsic for " + name2 + " exists, but the property is not available.");
+              throw new $TypeError("base intrinsic for " + name3 + " exists, but the property is not available.");
             }
             return void undefined2;
           }
@@ -21950,8 +22837,8 @@ function toFormData(obj, formData, options) {
     throw new TypeError("target must be an object");
   }
   formData = formData || new (FormData_default || FormData)();
-  const option = (name2, fallback) => {
-    const value = utils_default.getSafeProp(options, name2);
+  const option = (name3, fallback) => {
+    const value = utils_default.getSafeProp(options, name3);
     return utils_default.isUndefined(value) ? fallback : value;
   };
   const metaTokens = option("metaTokens", true);
@@ -22109,8 +22996,8 @@ var init_AxiosURLSearchParams = __esm({
     "use strict";
     init_toFormData();
     prototype = AxiosURLSearchParams.prototype;
-    prototype.append = function append2(name2, value) {
-      this._pairs.push([name2, value]);
+    prototype.append = function append2(name3, value) {
+      this._pairs.push([name3, value]);
     };
     prototype.toString = function toString2(encoder) {
       const _encode = encoder ? (value) => encoder.call(this, value, encode2) : encode2;
@@ -22435,11 +23322,11 @@ function throwIfDepthExceeded(index) {
     );
   }
 }
-function parsePropPath(name2) {
+function parsePropPath(name3) {
   const path = [];
   const pattern = /[^.[\]]+|\[([^.[\]]*)]/g;
   let match;
-  while ((match = pattern.exec(name2)) !== null) {
+  while ((match = pattern.exec(name3)) !== null) {
     throwIfDepthExceeded(path.length);
     path.push(match[0] === "[]" ? "" : match[1] || match[0]);
   }
@@ -22447,12 +23334,12 @@ function parsePropPath(name2) {
 }
 function arrayToObject(arr2) {
   const obj = {};
-  const keys = Object.keys(arr2);
+  const keys2 = Object.keys(arr2);
   let i;
-  const len = keys.length;
+  const len = keys2.length;
   let key;
   for (i = 0; i < len; i++) {
-    key = keys[i];
+    key = keys2[i];
     obj[key] = arr2[key];
   }
   return obj;
@@ -22460,32 +23347,32 @@ function arrayToObject(arr2) {
 function formDataToJSON(formData) {
   function buildPath(path, value, target, index) {
     throwIfDepthExceeded(index);
-    let name2 = path[index++];
-    if (name2 === "__proto__") return true;
-    const isNumericKey = Number.isFinite(+name2);
+    let name3 = path[index++];
+    if (name3 === "__proto__") return true;
+    const isNumericKey = Number.isFinite(+name3);
     const isLast = index >= path.length;
-    name2 = !name2 && utils_default.isArray(target) ? target.length : name2;
+    name3 = !name3 && utils_default.isArray(target) ? target.length : name3;
     if (isLast) {
-      if (utils_default.hasOwnProp(target, name2)) {
-        target[name2] = utils_default.isArray(target[name2]) ? target[name2].concat(value) : [target[name2], value];
+      if (utils_default.hasOwnProp(target, name3)) {
+        target[name3] = utils_default.isArray(target[name3]) ? target[name3].concat(value) : [target[name3], value];
       } else {
-        target[name2] = value;
+        target[name3] = value;
       }
       return !isNumericKey;
     }
-    if (!utils_default.hasOwnProp(target, name2) || !utils_default.isObject(target[name2])) {
-      target[name2] = [];
+    if (!utils_default.hasOwnProp(target, name3) || !utils_default.isObject(target[name3])) {
+      target[name3] = [];
     }
-    const result = buildPath(path, value, target[name2], index);
-    if (result && utils_default.isArray(target[name2])) {
-      target[name2] = arrayToObject(target[name2]);
+    const result = buildPath(path, value, target[name3], index);
+    if (result && utils_default.isArray(target[name3])) {
+      target[name3] = arrayToObject(target[name3]);
     }
     return !isNumericKey;
   }
   if (utils_default.isFormData(formData) && utils_default.isFunction(formData.entries)) {
     const obj = {};
-    utils_default.forEachEntry(formData, (name2, value) => {
-      buildPath(parsePropPath(name2), value, obj, 0);
+    utils_default.forEachEntry(formData, (name3, value) => {
+      buildPath(parsePropPath(name3), value, obj, 0);
     });
     return obj;
   }
@@ -23021,9 +23908,9 @@ var require_ms = __commonJS({
       }
       return ms + " ms";
     }
-    function plural(ms, msAbs, n, name2) {
+    function plural(ms, msAbs, n, name3) {
       var isPlural = msAbs >= n * 1.5;
-      return Math.round(ms / n) + " " + name2 + (isPlural ? "s" : "");
+      return Math.round(ms / n) + " " + name3 + (isPlural ? "s" : "");
     }
   }
 });
@@ -23176,14 +24063,14 @@ var require_common = __commonJS({
         createDebug.enable("");
         return namespaces;
       }
-      function enabled(name2) {
+      function enabled(name3) {
         for (const skip of createDebug.skips) {
-          if (matchesTemplate(name2, skip)) {
+          if (matchesTemplate(name3, skip)) {
             return false;
           }
         }
         for (const ns of createDebug.names) {
-          if (matchesTemplate(name2, ns)) {
+          if (matchesTemplate(name3, ns)) {
             return true;
           }
         }
@@ -23499,15 +24386,15 @@ var require_node = __commonJS({
       return "colors" in exports2.inspectOpts ? Boolean(exports2.inspectOpts.colors) : tty.isatty(process.stderr.fd);
     }
     function formatArgs(args) {
-      const { namespace: name2, useColors: useColors2 } = this;
+      const { namespace: name3, useColors: useColors2 } = this;
       if (useColors2) {
         const c = this.color;
         const colorCode = "\x1B[3" + (c < 8 ? c : "8;5;" + c);
-        const prefix = `  ${colorCode};1m${name2} \x1B[0m`;
+        const prefix = `  ${colorCode};1m${name3} \x1B[0m`;
         args[0] = prefix + args[0].split("\n").join("\n" + prefix);
         args.push(colorCode + "m+" + module.exports.humanize(this.diff) + "\x1B[0m");
       } else {
-        args[0] = getDate() + name2 + " " + args[0];
+        args[0] = getDate() + name3 + " " + args[0];
       }
     }
     function getDate() {
@@ -23531,9 +24418,9 @@ var require_node = __commonJS({
     }
     function init(debug) {
       debug.inspectOpts = {};
-      const keys = Object.keys(exports2.inspectOpts);
-      for (let i = 0; i < keys.length; i++) {
-        debug.inspectOpts[keys[i]] = exports2.inspectOpts[keys[i]];
+      const keys2 = Object.keys(exports2.inspectOpts);
+      for (let i = 0; i < keys2.length; i++) {
+        debug.inspectOpts[keys2[i]] = exports2.inspectOpts[keys2[i]];
       }
     }
     module.exports = require_common()(exports2);
@@ -23935,8 +24822,8 @@ var require_agent = __commonJS({
           }
           headers.Host = host;
           headers.Connection = "close";
-          for (const name2 of Object.keys(headers)) {
-            payload += `${name2}: ${headers[name2]}\r
+          for (const name3 of Object.keys(headers)) {
+            payload += `${name3}: ${headers[name3]}\r
 `;
           }
           const proxyResponsePromise = parse_proxy_response_1.default(socket);
@@ -23978,11 +24865,11 @@ var require_agent = __commonJS({
     function isHTTPS(protocol) {
       return typeof protocol === "string" ? /^https:?$/i.test(protocol) : false;
     }
-    function omit(obj, ...keys) {
+    function omit(obj, ...keys2) {
       const ret = {};
       let key;
       for (key in obj) {
-        if (!keys.includes(key)) {
+        if (!keys2.includes(key)) {
           ret[key] = obj[key];
         }
       }
@@ -24184,13 +25071,13 @@ var require_follow_redirects = __commonJS({
         this._ending = true;
       }
     };
-    RedirectableRequest.prototype.setHeader = function(name2, value) {
-      this._options.headers[name2] = value;
-      this._currentRequest.setHeader(name2, value);
+    RedirectableRequest.prototype.setHeader = function(name3, value) {
+      this._options.headers[name3] = value;
+      this._currentRequest.setHeader(name3, value);
     };
-    RedirectableRequest.prototype.removeHeader = function(name2) {
-      delete this._options.headers[name2];
-      this._currentRequest.removeHeader(name2);
+    RedirectableRequest.prototype.removeHeader = function(name3) {
+      delete this._options.headers[name3];
+      this._currentRequest.removeHeader(name3);
     };
     RedirectableRequest.prototype.setTimeout = function(msecs, callback) {
       var self2 = this;
@@ -24793,10 +25680,10 @@ var init_formDataToStream = __esm({
     CRLF_BYTES = textEncoder.encode(CRLF);
     CRLF_BYTES_COUNT = 2;
     FormDataPart = class {
-      constructor(name2, value) {
+      constructor(name3, value) {
         const { escapeName } = this.constructor;
         const isStringValue = utils_default.isString(value);
-        let headers = `Content-Disposition: form-data; name="${escapeName(name2)}"${!isStringValue && value.name ? `; filename="${escapeName(value.name)}"` : ""}${CRLF}`;
+        let headers = `Content-Disposition: form-data; name="${escapeName(name3)}"${!isStringValue && value.name ? `; filename="${escapeName(value.name)}"` : ""}${CRLF}`;
         if (isStringValue) {
           value = textEncoder.encode(String(value).replace(/\r?\n|\r\n?/g, CRLF));
         } else {
@@ -24806,7 +25693,7 @@ var init_formDataToStream = __esm({
         this.headers = textEncoder.encode(headers + CRLF);
         this.contentLength = isStringValue ? value.byteLength : value.size;
         this.size = this.headers.byteLength + this.contentLength + CRLF_BYTES_COUNT;
-        this.name = name2;
+        this.name = name3;
         this.value = value;
       }
       async *encode() {
@@ -24819,8 +25706,8 @@ var init_formDataToStream = __esm({
         }
         yield CRLF_BYTES;
       }
-      static escapeName(name2) {
-        return String(name2).replace(
+      static escapeName(name3) {
+        return String(name3).replace(
           /[\r\n"]/g,
           (match) => ({
             "\r": "%0D",
@@ -24845,8 +25732,8 @@ var init_formDataToStream = __esm({
       const boundaryBytes = textEncoder.encode("--" + boundary + CRLF);
       const footerBytes = textEncoder.encode("--" + boundary + "--" + CRLF);
       let contentLength = footerBytes.byteLength;
-      const parts = Array.from(form.entries()).map(([name2, value]) => {
-        const part = new FormDataPart(name2, value);
+      const parts = Array.from(form.entries()).map(([name3, value]) => {
+        const part = new FormDataPart(name3, value);
         contentLength += part.size;
         return part;
       });
@@ -25684,9 +26571,9 @@ function setProxy(options, configProxy, location, isRedirect, configHttpsAgent, 
     }
   }
   if (isRedirect && options.headers) {
-    for (const name2 of Object.keys(options.headers)) {
-      if (name2.toLowerCase() === "proxy-authorization") {
-        delete options.headers[name2];
+    for (const name3 of Object.keys(options.headers)) {
+      if (name3.toLowerCase() === "proxy-authorization") {
+        delete options.headers[name3];
       }
     }
   }
@@ -25745,8 +26632,8 @@ function setProxy(options, configProxy, location, isRedirect, configHttpsAgent, 
         options.headers["Proxy-Authorization"] = "Basic " + base642;
       }
       let hasUserHostHeader = false;
-      for (const name2 of Object.keys(options.headers)) {
-        if (name2.toLowerCase() === "host") {
+      for (const name3 of Object.keys(options.headers)) {
+        if (name3.toLowerCase() === "host") {
           hasUserHostHeader = true;
           break;
         }
@@ -25920,8 +26807,8 @@ var init_http = __esm({
           [HTTP2_HEADER_METHOD]: options.method,
           [HTTP2_HEADER_PATH]: options.path
         };
-        utils_default.forEach(headers, (header, name2) => {
-          name2.charAt(0) !== ":" && (http2Headers[name2] = header);
+        utils_default.forEach(headers, (header, name3) => {
+          name3.charAt(0) !== ":" && (http2Headers[name3] = header);
         });
         const req = session.request(http2Headers);
         req.once("response", (responseHeaders) => {
@@ -26663,9 +27550,9 @@ var init_cookies = __esm({
     cookies_default = platform_default.hasStandardBrowserEnv ? (
       // Standard browser envs support document.cookie
       {
-        write(name2, value, expires, path, domain, secure, sameSite) {
+        write(name3, value, expires, path, domain, secure, sameSite) {
           if (typeof document === "undefined") return;
-          const cookie = [`${name2}=${encodeURIComponent(value)}`];
+          const cookie = [`${name3}=${encodeURIComponent(value)}`];
           if (utils_default.isNumber(expires)) {
             cookie.push(`expires=${new Date(expires).toUTCString()}`);
           }
@@ -26683,13 +27570,13 @@ var init_cookies = __esm({
           }
           document.cookie = cookie.join("; ");
         },
-        read(name2) {
+        read(name3) {
           if (typeof document === "undefined") return null;
           const cookies = document.cookie.split(";");
           for (let i = 0; i < cookies.length; i++) {
             const cookie = cookies[i].replace(/^\s+/, "");
             const eq = cookie.indexOf("=");
-            if (eq !== -1 && cookie.slice(0, eq) === name2) {
+            if (eq !== -1 && cookie.slice(0, eq) === name3) {
               try {
                 return decodeURIComponent(cookie.slice(eq + 1));
               } catch (e2) {
@@ -26699,8 +27586,8 @@ var init_cookies = __esm({
           }
           return null;
         },
-        remove(name2) {
-          this.write(name2, "", Date.now() - 864e5, "/");
+        remove(name3) {
+          this.write(name3, "", Date.now() - 864e5, "/");
         }
       }
     ) : (
@@ -27874,10 +28761,10 @@ function assertOptions(options, schema, allowUnknown) {
   if (typeof options !== "object" || options === null) {
     throw new AxiosError_default("options must be an object", AxiosError_default.ERR_BAD_OPTION_VALUE);
   }
-  const keys = Object.keys(options);
-  let i = keys.length;
+  const keys2 = Object.keys(options);
+  let i = keys2.length;
   while (i-- > 0) {
-    const opt = keys[i];
+    const opt = keys2[i];
     const validator = Object.prototype.hasOwnProperty.call(schema, opt) ? schema[opt] : void 0;
     if (validator) {
       const value = options[opt];
@@ -28566,7 +29453,7 @@ function newError(Definition) {
   return new Definition();
 }
 // @__NO_SIDE_EFFECTS__
-function $constructor(name2, initializer2, proto, params) {
+function $constructor(name3, initializer2, proto, params) {
   const zodProto = {};
   function Internals(def) {
     this.def = def;
@@ -28584,10 +29471,10 @@ function $constructor(name2, initializer2, proto, params) {
       } finally {
         _zodDesc.value = void 0;
       }
-    } else if (inst._zod.traits.has(name2)) {
+    } else if (inst._zod.traits.has(name3)) {
       return;
     }
-    inst._zod.traits.add(name2);
+    inst._zod.traits.add(name3);
     initializer2(inst, def);
     if (initialized) {
       const own3 = Object.getPrototypeOf(inst);
@@ -28613,7 +29500,7 @@ function $constructor(name2, initializer2, proto, params) {
   const Parent = params?.Parent ?? Object;
   class Definition extends Parent {
   }
-  Object.defineProperty(Definition, "name", { value: name2 });
+  Object.defineProperty(Definition, "name", { value: name3 });
   function _(def) {
     const inst = params?.Parent ? newError(Definition) : this;
     init(inst, def);
@@ -28634,10 +29521,10 @@ function $constructor(name2, initializer2, proto, params) {
     value: (inst) => {
       if (params?.Parent && inst instanceof params.Parent)
         return true;
-      return inst?._zod?.traits?.has(name2);
+      return inst?._zod?.traits?.has(name3);
     }
   });
-  Object.defineProperty(_, "name", { value: name2 });
+  Object.defineProperty(_, "name", { value: name3 });
   return _;
 }
 var _a, _zodDesc, _E, globalConfig;
@@ -29029,8 +29916,8 @@ function compactTypeUnion(schema) {
     if (!option || typeof option !== "object")
       return;
     compactTypeUnion(option);
-    const keys = Object.keys(option);
-    if (keys.length !== 1 || keys[0] !== "type")
+    const keys2 = Object.keys(option);
+    if (keys2.length !== 1 || keys2[0] !== "type")
       return;
     const type2 = option.type;
     for (const member of Array.isArray(type2) ? type2 : [type2]) {
@@ -30261,11 +31148,11 @@ var init_Refs = __esm({
         flags: { hasReferencedOpenAiAnyType: false },
         currentPath,
         propertyPath: void 0,
-        seen: new Map(Object.entries(_options.definitions).map(([name2, def]) => [
+        seen: new Map(Object.entries(_options.definitions).map(([name3, def]) => [
           def._def,
           {
             def: def._def,
-            path: [..._options.basePath, _options.definitionPath, name2],
+            path: [..._options.basePath, _options.definitionPath, name3],
             // Resolution of references will be forced even though seen, so it's ok that the schema is undefined here for now.
             jsonSchema: void 0
           }
@@ -30345,13 +31232,13 @@ var init_util2 = __esm({
         });
       };
       util5.objectKeys = typeof Object.keys === "function" ? (obj) => Object.keys(obj) : (object) => {
-        const keys = [];
+        const keys2 = [];
         for (const key in object) {
           if (Object.prototype.hasOwnProperty.call(object, key)) {
-            keys.push(key);
+            keys2.push(key);
           }
         }
-        return keys;
+        return keys2;
       };
       util5.find = (arr2, checker) => {
         for (const item of arr2) {
@@ -32679,8 +33566,8 @@ var init_types = __esm({
         if (this._cached !== null)
           return this._cached;
         const shape = this._def.shape();
-        const keys = util4.objectKeys(shape);
-        this._cached = { shape, keys };
+        const keys2 = util4.objectKeys(shape);
+        this._cached = { shape, keys: keys2 };
         return this._cached;
       }
       _parse(input) {
@@ -34976,7 +35863,7 @@ function parseMapDef(def, refs) {
   if (refs.mapStrategy === "record") {
     return parseRecordDef(def, refs);
   }
-  const keys = parseDef(def.keyType._def, {
+  const keys2 = parseDef(def.keyType._def, {
     ...refs,
     currentPath: [...refs.currentPath, "items", "items", "0"]
   }) || parseAnyDef(refs);
@@ -34989,7 +35876,7 @@ function parseMapDef(def, refs) {
     maxItems: 125,
     items: {
       type: "array",
-      items: [keys, values],
+      items: [keys2, values],
       minItems: 2,
       maxItems: 2
     }
@@ -35637,17 +36524,17 @@ var init_zodToJsonSchema = __esm({
     init_any();
     zodToJsonSchema = (schema, options) => {
       const refs = getRefs(options);
-      let definitions = typeof options === "object" && options.definitions ? Object.entries(options.definitions).reduce((acc, [name3, schema2]) => ({
+      let definitions = typeof options === "object" && options.definitions ? Object.entries(options.definitions).reduce((acc, [name4, schema2]) => ({
         ...acc,
-        [name3]: parseDef(schema2._def, {
+        [name4]: parseDef(schema2._def, {
           ...refs,
-          currentPath: [...refs.basePath, refs.definitionPath, name3]
+          currentPath: [...refs.basePath, refs.definitionPath, name4]
         }, true) ?? parseAnyDef(refs)
       }), {}) : void 0;
-      const name2 = typeof options === "string" ? options : options?.nameStrategy === "title" ? void 0 : options?.name;
-      const main3 = parseDef(schema._def, name2 === void 0 ? refs : {
+      const name3 = typeof options === "string" ? options : options?.nameStrategy === "title" ? void 0 : options?.name;
+      const main3 = parseDef(schema._def, name3 === void 0 ? refs : {
         ...refs,
-        currentPath: [...refs.basePath, refs.definitionPath, name2]
+        currentPath: [...refs.basePath, refs.definitionPath, name3]
       }, false) ?? parseAnyDef(refs);
       const title = typeof options === "object" && options.name !== void 0 && options.nameStrategy === "title" ? options.name : void 0;
       if (title !== void 0) {
@@ -35671,18 +36558,18 @@ var init_zodToJsonSchema = __esm({
           };
         }
       }
-      const combined = name2 === void 0 ? definitions ? {
+      const combined = name3 === void 0 ? definitions ? {
         ...main3,
         [refs.definitionPath]: definitions
       } : main3 : {
         $ref: [
           ...refs.$refStrategy === "relative" ? [] : refs.basePath,
           refs.definitionPath,
-          name2
+          name3
         ].join("/"),
         [refs.definitionPath]: {
           ...definitions,
-          [name2]: main3
+          [name3]: main3
         }
       };
       if (refs.target === "jsonSchema7") {
@@ -35758,7 +36645,7 @@ __export(package_5OJCIGXY_exports, {
   keywords: () => keywords,
   license: () => license,
   main: () => main,
-  name: () => name,
+  name: () => name2,
   repository: () => repository,
   scripts: () => scripts,
   type: () => type,
@@ -36049,8 +36936,8 @@ function describeValidationIssues(details) {
   if (!Array.isArray(details)) return void 0;
   const parts = details.slice(0, 3).flatMap((issue) => {
     if (!issue || typeof issue !== "object") return [];
-    const { path, message, keys } = issue;
-    const what = Array.isArray(keys) && keys.length > 0 ? `unrecognized key(s) ${keys.join(", ")}` : typeof message === "string" ? message : void 0;
+    const { path, message, keys: keys2 } = issue;
+    const what = Array.isArray(keys2) && keys2.length > 0 ? `unrecognized key(s) ${keys2.join(", ")}` : typeof message === "string" ? message : void 0;
     if (!what) return [];
     return Array.isArray(path) && path.length > 0 ? [`${path.join(".")}: ${what}`] : [what];
   });
@@ -37486,8 +38373,8 @@ function packageOf(file) {
   const at = path.lastIndexOf(NODE_MODULES);
   if (at < 0) return null;
   const [first, second] = path.slice(at + NODE_MODULES.length).split("/");
-  const name2 = first?.startsWith("@") ? second ? `${first}/${second}` : "" : first;
-  return name2 && !name2.startsWith(".") ? name2 : null;
+  const name3 = first?.startsWith("@") ? second ? `${first}/${second}` : "" : first;
+  return name3 && !name3.startsWith(".") ? name3 : null;
 }
 function frameFile(line) {
   const text = line.trim().replace(/^at /, "");
@@ -37496,8 +38383,8 @@ function frameFile(line) {
   const match = /^(.*):\d+:\d+$/.exec(location);
   return match && !match[1].startsWith("node:") ? match[1] : null;
 }
-function slugify(name2) {
-  return name2.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48).replace(/-+$/, "");
+function slugify(name3) {
+  return name3.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48).replace(/-+$/, "");
 }
 function detectCallerPackage(stack) {
   try {
@@ -37522,9 +38409,9 @@ function detectCallerPackage(stack) {
         ownPackage = packageOf(file);
       }
       if (file === ownFile) continue;
-      const name2 = packageOf(file);
-      if (name2 && name2 === ownPackage) continue;
-      const slug = name2 ? slugify(name2) : "";
+      const name3 = packageOf(file);
+      if (name3 && name3 === ownPackage) continue;
+      const slug = name3 ? slugify(name3) : "";
       return slug && !slug.includes("playground") ? slug : null;
     }
   } catch {
@@ -40120,11 +41007,11 @@ var init_dist2 = __esm({
       }
     };
     (function exposeV2MethodsOnTopLevel() {
-      for (const name2 of Object.getOwnPropertyNames(FirecrawlClient.prototype)) {
-        if (name2 === "constructor") continue;
-        if (Object.prototype.hasOwnProperty.call(Firecrawl.prototype, name2)) continue;
-        const desc = Object.getOwnPropertyDescriptor(FirecrawlClient.prototype, name2);
-        if (desc) Object.defineProperty(Firecrawl.prototype, name2, desc);
+      for (const name3 of Object.getOwnPropertyNames(FirecrawlClient.prototype)) {
+        if (name3 === "constructor") continue;
+        if (Object.prototype.hasOwnProperty.call(Firecrawl.prototype, name3)) continue;
+        const desc = Object.getOwnPropertyDescriptor(FirecrawlClient.prototype, name3);
+        if (desc) Object.defineProperty(Firecrawl.prototype, name3, desc);
       }
     })();
     index_default = Firecrawl;
@@ -40149,7 +41036,7 @@ function underStartPath(u, start) {
   return u.pathname === base || u.pathname.startsWith(base + "/");
 }
 function countDiscovered(map2, start, excludes = []) {
-  const keys = /* @__PURE__ */ new Set();
+  const keys2 = /* @__PURE__ */ new Set();
   for (const link of (map2.links ?? []).slice(0, LIMITS.maxMapLinks)) {
     if (typeof link?.url !== "string") continue;
     try {
@@ -40157,11 +41044,11 @@ function countDiscovered(map2, start, excludes = []) {
       if (!isSameSite(u, start) || !underStartPath(u, start)) continue;
       const c = new URL(canonicalizeUrl(u));
       if (isExcludedPath(c.pathname, excludes)) continue;
-      keys.add(siteKey(c.hostname) + c.pathname);
+      keys2.add(siteKey(c.hostname) + c.pathname);
     } catch {
     }
   }
-  return keys.size;
+  return keys2.size;
 }
 async function processCrawlDocuments(docs, start, resolver, excludes = []) {
   const pages = [];
@@ -40364,7 +41251,7 @@ var init_firecrawl = __esm({
     init_boundedBuild();
     init_canonicalize();
     init_limits();
-    init_plan();
+    init_plan2();
     MAX_TIMEOUT_SEC = 300;
     POLL_MS = 3e3;
     CALL_TIMEOUT_MS = { map: 45e3, start: 3e4, status: 6e4, cancel: 15e3, errors: 3e4 };
@@ -40392,7 +41279,7 @@ function parseFlags(args) {
     const a = args[i];
     if (a === "--yes" || a === "--help" || a === "-h" || a === "--no-map" || a === "--confirm-existing-credits" || a === "--confirm-no-topup") {
       flags.set(a.replace(/^-+/, ""), true);
-    } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label" || a === "--font-map" || a === "--normalize-reference") {
+    } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label" || a === "--font-map" || a === "--normalize-reference" || a === "--plan" || a === "--state-reactions") {
       const v = args[++i];
       if (v === void 0) throw new UsageError(`${a} needs a value`);
       if (a === "--exclude") excludes.push(v);
@@ -40404,9 +41291,9 @@ function parseFlags(args) {
   }
   return { positional, flags, excludes, scrapes, fontMaps };
 }
-function intFlag(v, name2, fallback) {
+function intFlag(v, name3, fallback) {
   if (v === void 0) return fallback;
-  if (v === true || !/^\d+$/.test(v)) throw new UsageError(`--${name2} must be a whole number`);
+  if (v === true || !/^\d+$/.test(v)) throw new UsageError(`--${name3} must be a whole number`);
   return Number(v);
 }
 function writeHifi(doc, out) {
@@ -40421,6 +41308,7 @@ function hifiSummary(doc, path) {
   const lines = [`Wrote ${path} (schemaVersion 2, ${doc.source.mode}: ${doc.source.label})`, `  assets: ${doc.assets.length} (${doc.assets.map((a) => `${a.id} ${a.kind} ${a.width}x${a.height} sha256 ${a.sha256.slice(0, 12)}`).join("; ") || "none"})`];
   for (const p of doc.pages) {
     lines.push(`  ${p.path}: ${p.nodes.length} nodes, ${p.width}x${p.height}, reference ${p.referenceAssetId ?? "none"}${p.truncated ? ", TRUNCATED" : ""}`);
+    if (p.states) lines.push(`    states (${p.states.reactions}): ${p.states.variants.map((v) => `${v.name} [${v.provenance}, ${v.nodes.length} nodes]`).join(", ")}`);
     for (const w of p.warnings) lines.push(`    warning: ${w}`);
   }
   for (const w of doc.warnings) lines.push(`  warning: ${w}`);
@@ -40458,19 +41346,42 @@ async function main2(argv) {
     console.log(hifiSummary(doc, writeHifi(doc, out)));
     return 0;
   }
+  if (cmd === "fixture" && positional[0] === "hifi-states") {
+    const doc = buildStatesFixture();
+    const out = typeof flags.get("out") === "string" ? flags.get("out") : "out/hifi-states-synthetic.json";
+    console.log(hifiSummary(doc, writeHifi(doc, out)));
+    return 0;
+  }
   if (cmd === "hifi-capture") {
     const out = flags.get("out");
     if (scrapes.length === 0 || typeof out !== "string") throw new UsageError("hifi-capture needs --scrape FILE (repeatable) and --out FILE");
     const label = typeof flags.get("label") === "string" ? flags.get("label") : "operator capture";
     const responses = scrapes.map((f) => ({ name: f, json: readBoundedJson(f, LIMITS.hifiMaxJsonBytes, f) }));
-    const { capture, screenshotHints } = captureFromScrapeResponses(responses, label);
+    const { capture, screenshotHints, warnings } = captureFromScrapeResponses(responses, label);
     const text = JSON.stringify(capture) + "\n";
     if (utf8Length(text) > LIMITS.hifiMaxJsonBytes) throw new CaptureError("capture output too large; not written");
     const path = resolve3(out);
     mkdirSync(dirname3(path), { recursive: true });
     writeFileSync(path, text);
     console.log(`Wrote ${path} (${capture.pages.length} page(s); nothing fetched)`);
-    for (const h of screenshotHints) console.log(`  screenshot URL present for ${h.pageUrl} (NOT downloaded; add local bytes to the asset manifest with kind "reference" and pageUrl)`);
+    for (const h of screenshotHints) console.log(`  screenshot URL present for ${h.pageUrl}${h.state ? ` state "${h.state}" (scrollY ${h.scrollY ?? "unknown"})` : ""} (NOT downloaded; add local bytes to the asset manifest with kind "reference", pageUrl${h.state ? " and state" : ""})`);
+    for (const w of warnings) console.log(`  warning: ${w}`);
+    return 0;
+  }
+  if (cmd === "states-plan") {
+    const planPath = flags.get("plan");
+    const out = flags.get("out");
+    if (typeof planPath !== "string" || typeof out !== "string") throw new UsageError("states-plan needs --plan FILE and --out FILE");
+    const preview = buildStatePreview(parseStatePlan(readBoundedJson(planPath, 1e6, "state plan")));
+    const path = resolve3(out);
+    mkdirSync(dirname3(path), { recursive: true });
+    writeFileSync(path, JSON.stringify(preview, null, 2) + "\n");
+    console.log(`Wrote ${path} (request PREVIEWS only; NOTHING was sent)`);
+    for (const r of preview.requests) {
+      console.log(`  ${r.pageUrl}: ${r.actionCount} actions (budget ${preview.budgets.maxActions}), combined waits ${r.combinedWaitMs} ms (budget ${preview.budgets.maxCombinedWaitMs}), states ${r.states.map((s) => `${s.name} [${s.provenance}]`).join(", ")}`);
+    }
+    for (const m of preview.manualRoute) console.log(`  manual: ${m}`);
+    for (const n of preview.notice) console.log(`  note: ${n}`);
     return 0;
   }
   if (cmd === "hifi") {
@@ -40506,7 +41417,9 @@ async function main2(argv) {
     if (fontMap.length > 16) throw new UsageError("at most 16 --font-map entries");
     const norm = flags.get("normalize-reference");
     if (norm !== void 0 && norm !== "centered-dpr1") throw new UsageError('--normalize-reference accepts only "centered-dpr1"');
-    const doc = convertCapture({ capture, assets: loaded.assets, assetWarnings: loaded.warnings, rejectedReferences: loaded.rejectedReferences, referenceTiles, fontMap, normalizeReference: norm === "centered-dpr1" ? "centered-dpr1" : void 0 });
+    const reactions = flags.get("state-reactions");
+    if (reactions !== void 0 && reactions !== "click-cycle") throw new UsageError('--state-reactions accepts only "click-cycle"');
+    const doc = convertCapture({ capture, assets: loaded.assets, assetWarnings: loaded.warnings, rejectedReferences: loaded.rejectedReferences, referenceTiles, fontMap, normalizeReference: norm === "centered-dpr1" ? "centered-dpr1" : void 0, stateReactions: reactions === "click-cycle" ? "click-cycle" : "none" });
     console.log(hifiSummary(doc, writeHifi(doc, out)));
     return 0;
   }
@@ -40608,15 +41521,17 @@ var init_cli = __esm({
     init_schema();
     init_hifiSchema();
     init_hifiSynthetic();
+    init_statesSynthetic();
     init_convert();
     init_tileReference();
     init_assets();
     init_files();
     init_adapter();
     init_urlGuard();
+    init_plan();
     init_build();
     init_firecrawl();
-    init_plan();
+    init_plan2();
     USAGE = `Usage:
   website-to-figma fixture <5|10|20> [--out FILE]
       Write a deterministic SYNTHETIC fixture site map (no network, no key).
@@ -40632,14 +41547,21 @@ var init_cli = __esm({
       printed standard estimate (limit x 1) is not a worst case.
   website-to-figma fixture hifi [--out FILE]
       Write a SYNTHETIC hi-fi (schemaVersion 2) sample with generated images.
+  website-to-figma fixture hifi-states [--out FILE]
+      Write a SYNTHETIC sample with state variants, freeze/motion/media records.
   website-to-figma hifi --capture FILE [--assets MANIFEST] [--font-map MATCH=Family]...
-                        [--normalize-reference centered-dpr1] --out FILE
+                        [--normalize-reference centered-dpr1] [--state-reactions click-cycle] --out FILE
       Offline: convert an operator-supplied measured DOM capture plus local,
       SHA-256-pinned PNG/JPEG/GIF assets into a schemaVersion 2 import file.
       Never fetches anything.
   website-to-figma hifi-capture --scrape FILE [--scrape FILE]... [--label TEXT] --out FILE
       Offline adapter: locally saved scrape responses whose measured DOM is in
       data.actions.javascriptReturns[].value -> capture format. Never fetches.
+  website-to-figma states-plan --plan FILE --out FILE
+      Offline PLANNER only: validate a state plan (1 site, <=3 pages, <=3 states
+      per page incl. baseline, declarative synthetic mutations only) and write
+      exact Firecrawl request PREVIEWS. Sends NOTHING; there is no executor, so
+      automatic state capture is unsupported. Provider cost is unknown.
   website-to-figma validate <FILE>
       Validate a site map JSON file (schemaVersion 1 or 2).`;
     UsageError = class extends Error {
@@ -40647,7 +41569,7 @@ var init_cli = __esm({
     main2(process.argv.slice(2)).then(
       (code) => process.exit(code),
       (err) => {
-        if (err instanceof CrawlPolicyError) {
+        if (err instanceof CrawlPolicyError || err instanceof StatePlanError) {
           console.error(err.message);
           process.exit(3);
         }

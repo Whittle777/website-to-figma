@@ -17,6 +17,7 @@ import { isSameSite, parseHttpUrl } from "../security/urlGuard";
 import { canonicalizeUrl, displayPath } from "../normalize/canonicalize";
 import { GENERATOR_VERSION } from "../normalize/build";
 import type { ImageMime } from "../shared/imageInfo";
+import { attachStates } from "../states/convertStates";
 
 export class CaptureError extends Error {}
 
@@ -30,6 +31,8 @@ export interface LoadedAsset {
   sourceUrl: string | null;
   // For kind "reference": the page URL it depicts (structurally checked), if given.
   pageUrl?: string | null;
+  // For kind "reference": the state variant it depicts (state screenshots only).
+  state?: string;
   bytes: Uint8Array;
 }
 
@@ -146,6 +149,10 @@ export interface ConvertInput {
   normalizeReference?: "centered-dpr1";
   // Tall reference PNGs tiled offline (see tileReference.ts).
   referenceTiles?: TiledReference[];
+  // Optional native prototype reactions between state variants.
+  stateReactions?: "none" | "click-cycle";
+  // internal: converting one state's measurement (no nested states)
+  nested?: boolean;
 }
 
 export interface TiledReference {
@@ -221,7 +228,7 @@ export function convertCapture(input: ConvertInput): HifiDoc {
     // width reconciliation and hidden-scrollbar normalization (also for a
     // reference that was rejected for import, e.g. taller than 4096px).
     const refId = str(rp.referenceAssetId, 64);
-    const refAsset = refId ? byOperatorId.get(refId) : input.assets.find((a) => a.kind === "reference" && a.pageUrl && canonicalizeUrl(a.pageUrl) === canonical);
+    const refAsset = refId ? byOperatorId.get(refId) : input.assets.find((a) => a.kind === "reference" && !a.state && a.pageUrl && canonicalizeUrl(a.pageUrl) === canonical);
     const refRejected = (input.rejectedReferences ?? []).find((r) => (refId ? r.operatorId === refId : !!r.pageUrl && canonicalizeUrl(r.pageUrl) === canonical));
     const refTiled = (input.referenceTiles ?? []).find((r) => (refId ? r.operatorId === refId : !!r.pageUrl && canonicalizeUrl(r.pageUrl) === canonical));
     const refDims = refTiled ? { w: refTiled.width, h: refTiled.height } : refAsset && refAsset.kind === "reference" ? { w: refAsset.width, h: refAsset.height } : refRejected ? { w: refRejected.width, h: refRejected.height } : null;
@@ -622,6 +629,19 @@ export function convertCapture(input: ConvertInput): HifiDoc {
     ...(components.length ? { components } : {}),
     ...(input.fontMap && input.fontMap.length ? { fontMap: input.fontMap } : {}),
   };
+  if (!input.nested) {
+    const componentNodes = components.reduce((n, c) => n + c.nodes.length, 0);
+    attachStates({
+      rawPages,
+      pages,
+      assets: input.assets,
+      assetIdFor: (a) => (used.some((u) => u.sha256 === a.sha256 && u.kind === a.kind) || used.length < LIMITS.hifiMaxAssets ? assetIdFor(a) : null),
+      convertOne: (page) => convertCapture({ capture: { schema: "website-to-figma/capture", schemaVersion: 1, label, pages: [page] }, assets: input.assets.filter((a) => a.kind === "image"), assetWarnings: [], fontMap: input.fontMap, nested: true }),
+      reactions: input.stateReactions ?? "none",
+      nodeBudget: Math.max(0, LIMITS.hifiMaxNodesTotal - totalNodes - componentNodes),
+      warn: (w) => warn(docWarnings, w),
+    });
+  }
   const v = validateHifiDoc(doc);
   if (!v.ok) throw new CaptureError(`Internal error: converted document failed validation:\n${v.errors.join("\n")}`);
   return v.doc;

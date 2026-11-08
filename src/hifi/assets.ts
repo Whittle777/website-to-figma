@@ -12,6 +12,7 @@ import { cleanText } from "../shared/text";
 import { parseHttpUrl } from "../security/urlGuard";
 import { CaptureError, type LoadedAsset, type RejectedReference } from "./convert";
 import { readBoundedFile, readBoundedJson } from "./files";
+import { STATE_NAME } from "../shared/hifiSchema";
 
 const MAX_MANIFEST_BYTES = 1_000_000;
 
@@ -61,6 +62,13 @@ export function loadAssetManifest(manifestPath: string): { assets: LoadedAsset[]
         continue;
       }
     }
+    // Optional: the state variant (by name) that this reference screenshot depicts.
+    let state: string | null = null;
+    if (a.state !== undefined && a.state !== null) {
+      if (a.kind !== "reference" || !pageUrl) throw new CaptureError(`asset manifest: assets[${i}].state needs kind "reference" and a pageUrl`);
+      if (typeof a.state !== "string" || !STATE_NAME.test(a.state)) throw new CaptureError(`asset manifest: assets[${i}].state must match ${STATE_NAME}`);
+      state = a.state;
+    }
     let sourceUrl: string | null = null;
     if (a.sourceUrl !== undefined && a.sourceUrl !== null) {
       try {
@@ -101,7 +109,7 @@ export function loadAssetManifest(manifestPath: string): { assets: LoadedAsset[]
       continue;
     }
     // Tall REFERENCE PNGs (not body images) are tiled offline by the caller.
-    if (a.kind === "reference" && info.mime === "image/png" && info.width >= 1 && info.width <= LIMITS.hifiMaxImageDim && info.height > LIMITS.hifiMaxImageDim && info.height <= LIMITS.refTileMaxSourceHeight) {
+    if (a.kind === "reference" && !state && info.mime === "image/png" && info.width >= 1 && info.width <= LIMITS.hifiMaxImageDim && info.height > LIMITS.hifiMaxImageDim && info.height <= LIMITS.refTileMaxSourceHeight) {
       tallReferences.push({ operatorId: id, pageUrl, width: info.width, height: info.height, sha256: actual, bytes });
       continue;
     }
@@ -109,7 +117,7 @@ export function loadAssetManifest(manifestPath: string): { assets: LoadedAsset[]
       const why = `${info.width}x${info.height}px exceeds Figma's ${LIMITS.hifiMaxImageDim}px image limit${a.kind === "reference" ? " (only PNG references up to " + LIMITS.hifiMaxImageDim + "px wide and " + LIMITS.refTileMaxSourceHeight + "px tall can be tiled)" : ""}`;
       reject(why);
       // Hash-verified header size is still evidence for width/height reconciliation.
-      if (a.kind === "reference" && info.width >= 1 && info.height >= 1 && info.width <= 100_000 && info.height <= 1_000_000) {
+      if (a.kind === "reference" && !state && info.width >= 1 && info.height >= 1 && info.width <= 100_000 && info.height <= 1_000_000) {
         rejectedReferences.push({ operatorId: id, pageUrl, width: info.width, height: info.height, reason: why });
       }
       continue;
@@ -120,7 +128,7 @@ export function loadAssetManifest(manifestPath: string): { assets: LoadedAsset[]
       continue;
     }
     pixels += info.width * info.height;
-    assets.push({ operatorId: id, kind: a.kind, mime: info.mime, width: info.width, height: info.height, sha256: actual, sourceUrl, pageUrl, bytes });
+    assets.push({ operatorId: id, kind: a.kind, mime: info.mime, width: info.width, height: info.height, sha256: actual, sourceUrl, pageUrl, ...(state ? { state } : {}), bytes });
   }
   return { assets, warnings, rejectedReferences, tallReferences };
 }

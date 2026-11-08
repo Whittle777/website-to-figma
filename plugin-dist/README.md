@@ -18,7 +18,8 @@ Built by `npm run dist` from this commit's sources; not hand-edited. Bundled inp
    into `manifest.json` here, replacing `REPLACE-WITH-FIGMA-GENERATED-ID`.
 2. Import this folder's `manifest.json` from Figma's development plugin menu.
 3. Run it and choose a JSON file: `samples/fixture-5.json` (schemaVersion 1, low-fi) or
-   `samples/hifi-synthetic.json` (schemaVersion 2, measured hi-fi; SYNTHETIC, not a real site).
+   `samples/hifi-synthetic.json` (schemaVersion 2, measured hi-fi; SYNTHETIC, not a real site), or
+   `samples/hifi-states-synthetic.json` (SYNTHETIC state variants: combineAsVariants + ON_CLICK/CHANGE_TO).
 
 The plugin has `networkAccess: none`, validates everything before creating nodes, verifies each
 embedded image (length, SHA-256, PNG/JPEG/GIF header, <= 4096 px) and rolls back on failure.

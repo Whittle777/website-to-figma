@@ -89,7 +89,7 @@ figma.ui.onmessage = async (raw: unknown) => {
       const h = await buildV2(result.doc);
       post({
         type: "done",
-        text: `Created ${h.pages} hi-fi page(s): ${h.nodes} measured node(s), ${h.images} image fill(s), ${h.placeholders} missing-image placeholder(s), ${h.fitted} width-fitted text run(s).`,
+        text: `Created ${h.pages} hi-fi page(s): ${h.nodes} measured node(s), ${h.images} image fill(s), ${h.placeholders} missing-image placeholder(s), ${h.fitted} width-fitted text run(s)${h.variantSets ? `, ${h.variantSets} state variant set(s) with ${h.variants} variant(s) and ${h.reactions} prototype reaction(s)` : ""}${h.media ? `, ${h.media} media placeholder(s)` : ""}.`,
         details: h.warnings,
       });
       return;

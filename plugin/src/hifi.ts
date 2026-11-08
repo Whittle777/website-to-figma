@@ -22,6 +22,10 @@ export interface HifiStats {
   components: number;
   instances: number;
   edges: number;
+  variantSets: number;
+  variants: number;
+  reactions: number;
+  media: number;
   warnings: string[];
 }
 
@@ -74,7 +78,7 @@ export async function resolveFonts(doc: HifiDoc): Promise<{ byNode: Map<HifiText
   const byNode = new Map<HifiText, ResolvedFont>();
   for (let round = 0; round < 6; round++) {
     const needed = new Map<string, FontName>();
-    for (const list of [...doc.pages.map((p) => p.nodes), ...(doc.components ?? []).map((c) => c.nodes)]) {
+    for (const list of [...doc.pages.map((p) => p.nodes), ...doc.pages.flatMap((p) => (p.states?.variants ?? []).map((v) => v.nodes)), ...(doc.components ?? []).map((c) => c.nodes)]) {
       for (const n of list) {
         if (n.kind !== "text") continue;
         const r = resolveFont(n.fontStack, n.generic, n.weight, n.italic, available, mappedFamily(n.fontStack, n.generic, doc.fontMap));
@@ -330,6 +334,7 @@ async function buildPage(track: Track, section: SectionNode, page: HifiPage, y: 
     ...fontLines(page.nodes, fonts),
     ...failedLoads.map((f) => `Font load failure: ${f}`),
     ...(page.instances?.length ? [`Shared components: ${page.instances.length} instance(s) (${page.instances.map((i) => `${i.component}${i.overrides.length ? ` with ${i.overrides.length} override(s)` : ""}`).join(", ")})`] : []),
+    ...stateLines(page),
     ...(page.branding ? [`Branding (page-level, not per-element): ${Object.entries(page.branding.colors).map(([k, v]) => `${k} ${v}`).join(", ")}${page.branding.fonts.length ? `; fonts ${page.branding.fonts.join(", ")}` : ""}`] : []),
   ];
   const head = label(track, section, notes.join("\n"), 14, false, x0, y, Math.max(600, page.width));
@@ -364,6 +369,25 @@ async function buildPage(track: Track, section: SectionNode, page: HifiPage, y: 
       }
     }
     stats.instances++;
+  }
+  for (const m of page.media ?? []) {
+    const r = track(figma.createRectangle());
+    frame.appendChild(r);
+    r.x = m.x;
+    r.y = m.y;
+    r.resize(Math.max(0.01, m.w), Math.max(0.01, m.h));
+    if (m.stillAssetId && hashes.has(m.stillAssetId)) {
+      r.name = `MEDIA STILL / ${m.kind} (operator still for the observed poster URL; not playing)`;
+      r.fills = [{ type: "IMAGE", imageHash: hashes.get(m.stillAssetId)!, scaleMode: "FILL" }];
+    } else {
+      r.name = `MEDIA PLACEHOLDER / ${m.kind} (${m.still === "poster-url-observed-not-downloaded" ? "poster URL observed, not downloaded" : "no still available"}${m.webgl ? "; WebGL" : ""})`;
+      r.fills = [{ type: "SOLID", color: { r: 0.85, g: 0.85, b: 0.85 }, opacity: 0.6 }];
+      r.dashPattern = [6, 4];
+      r.strokes = [{ type: "SOLID", color: { r: 0.4, g: 0.4, b: 0.4 } }];
+      r.strokeWeight = 1;
+    }
+    r.setPluginData("w2f", JSON.stringify({ media: m.kind, still: m.still, poster: m.poster, src: m.src, webgl: m.webgl }));
+    stats.media++;
   }
   if (unfitted) {
     head.characters = head.characters + `\nWidth fit skipped for ${unfitted} measured text run(s) (difference too large); natural width kept.`;
@@ -411,7 +435,71 @@ async function buildPage(track: Track, section: SectionNode, page: HifiPage, y: 
     }
     bottom = Math.max(bottom, top + rt.sourceHeight);
   }
+  if (page.states) bottom = await buildStates(track, section, page, bottom + 80, fonts, hashes, doc, stats);
   return { bottom, frame };
+}
+
+function stateLines(page: HifiPage): string[] {
+  const out: string[] = [];
+  if (page.states) out.push(`States: ${page.states.variants.map((v) => `${v.name} (${v.provenance})`).join(", ")}. Synthetic = DOM modification, not an observed original state; manual = operator screenshot only.`);
+  if (page.freeze) out.push(`Freeze: applied ${page.freeze.applied.map((a) => `${a.name} ${a.count}`).join(", ") || "none"}; unavailable ${page.freeze.unavailable.join(", ") || "none"}; NOT frozen: ${page.freeze.notFrozen.join(", ")}`);
+  for (const m of page.freeze?.modifications ?? []) out.push(`Freeze modification: ${m}`);
+  if (page.motion) out.push(`Motion (static notes, not animated): ${page.motion.rules.length} transition/animation/hover rule(s); ${page.motion.inaccessibleSheets} unreadable stylesheet(s)`);
+  if (page.media?.length) out.push(`Media: ${page.media.length} placeholder(s) (video/canvas/lottie/iframe do not play in Figma)`);
+  return out;
+}
+
+async function buildStates(track: Track, section: SectionNode, page: HifiPage, y: number, fonts: Map<HifiText, ResolvedFont>, hashes: Map<string, string>, doc: HifiDoc, stats: HifiStats): Promise<number> {
+  const st = page.states!;
+  const x0 = 80;
+  const head = label(track, section, `States / ${page.path}: native component variants (${st.variants.map((v) => `${v.name}: ${v.provenance}`).join(", ")}). Synthetic states are DOM modifications, not observed original states.${st.reactions === "click-cycle" && st.variants.length > 1 ? " Prototype: ON_CLICK -> CHANGE_TO next variant." : ""}`, 14, true, x0, y, 1200);
+  const top = y + head.height + 16;
+  const comps: ComponentNode[] = [];
+  let x = 0;
+  for (const v of st.variants) {
+    const c = track(figma.createComponent());
+    section.appendChild(c);
+    c.name = `State=${v.name}`;
+    c.x = x0 + x;
+    c.y = top;
+    c.resize(Math.max(1, v.frame.w), Math.max(1, v.frame.h));
+    c.fills = [];
+    c.clipsContent = true;
+    c.description = v.notes.join("\n");
+    c.setPluginData("w2f", JSON.stringify({ state: v.name, provenance: v.provenance, frame: v.frame, screenshot: v.screenshot }));
+    const ref = v.referenceAssetId ? doc.assets.find((a) => a.id === v.referenceAssetId) : undefined;
+    if (ref && v.screenshot && v.screenshot.scrollY !== null) {
+      // Hidden 1:1 provider screenshot, positioned where it was taken (viewport at scrollY).
+      const r = track(figma.createRectangle());
+      c.appendChild(r);
+      r.name = `Reference screenshot / ${v.name} (hidden; ${v.screenshot.association})`;
+      r.x = -v.frame.x;
+      r.y = v.screenshot.scrollY - v.frame.y;
+      r.resize(ref.width, ref.height);
+      r.fills = [{ type: "IMAGE", imageHash: hashes.get(ref.id)!, scaleMode: "FILL" }];
+      r.visible = false;
+      r.locked = true;
+    }
+    await renderNodes(track, c, v.nodes, [], fonts, hashes, stats, () => "");
+    comps.push(c);
+    x += v.frame.w + 40;
+    stats.variants++;
+  }
+  const set = track(figma.combineAsVariants(comps, section));
+  set.name = `States / ${page.path}`;
+  set.x = x0;
+  set.y = top;
+  stats.variantSets++;
+  if (st.reactions === "click-cycle" && comps.length > 1) {
+    for (const [i, c] of comps.entries()) {
+      const next = comps[(i + 1) % comps.length]!;
+      const action: Action = { type: "NODE", destinationId: next.id, navigation: "CHANGE_TO", transition: null };
+      const reaction: Reaction = { trigger: { type: "ON_CLICK" }, actions: [action] };
+      await c.setReactionsAsync([reaction]);
+      stats.reactions++;
+    }
+  }
+  return top + Math.max(...st.variants.map((v) => v.frame.h)) + 40;
 }
 
 async function edge(track: Track, section: SectionNode, from: FrameNode, to: FrameNode): Promise<VectorNode> {
@@ -447,7 +535,7 @@ export async function buildHifiDoc(doc: HifiDoc, track: Track, created: SceneNod
   const hashes = new Map<string, string>();
   for (const [id, b] of bytes) hashes.set(id, figma.createImage(b).hash);
 
-  const stats: HifiStats = { pages: 0, nodes: 0, images: 0, placeholders: 0, fontFallbacks: 0, fitted: 0, unfitted: 0, shapes: 0, svgs: 0, components: 0, instances: 0, edges: 0, warnings: [...doc.warnings] };
+  const stats: HifiStats = { pages: 0, nodes: 0, images: 0, placeholders: 0, fontFallbacks: 0, fitted: 0, unfitted: 0, shapes: 0, svgs: 0, components: 0, instances: 0, edges: 0, variantSets: 0, variants: 0, reactions: 0, media: 0, warnings: [...doc.warnings] };
   const section = track(figma.createSection());
   created.push(section);
   section.name = `website-to-figma · Hi-fi (measured) · ${doc.site.host}`;

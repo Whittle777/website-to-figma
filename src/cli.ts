@@ -10,12 +10,14 @@ import { LIMITS } from "./shared/limits";
 import { utf8Length, type SiteMapDoc } from "./shared/schema";
 import { parseImportJson, type HifiDoc } from "./shared/hifiSchema";
 import { buildHifiFixture } from "./fixtures/hifiSynthetic";
+import { buildStatesFixture } from "./fixtures/statesSynthetic";
 import { CaptureError, convertCapture, type TiledReference } from "./hifi/convert";
 import { tileReference } from "./hifi/tileReference";
 import { loadAssetManifest } from "./hifi/assets";
 import { readBoundedFile, readBoundedJson } from "./hifi/files";
 import { captureFromScrapeResponses } from "./hifi/adapter";
 import { parseHttpUrl } from "./security/urlGuard";
+import { buildStatePreview, parseStatePlan, StatePlanError } from "./states/plan";
 import { assertLimit } from "./normalize/build";
 import { MAX_TIMEOUT_SEC, planCrawl, runCrawl } from "./crawl/firecrawl";
 import { assertOperatorPrerequisites, CrawlPolicyError, normalizeExcludes, standardEstimate } from "./crawl/plan";
@@ -35,14 +37,21 @@ const USAGE = `Usage:
       printed standard estimate (limit x 1) is not a worst case.
   website-to-figma fixture hifi [--out FILE]
       Write a SYNTHETIC hi-fi (schemaVersion 2) sample with generated images.
+  website-to-figma fixture hifi-states [--out FILE]
+      Write a SYNTHETIC sample with state variants, freeze/motion/media records.
   website-to-figma hifi --capture FILE [--assets MANIFEST] [--font-map MATCH=Family]...
-                        [--normalize-reference centered-dpr1] --out FILE
+                        [--normalize-reference centered-dpr1] [--state-reactions click-cycle] --out FILE
       Offline: convert an operator-supplied measured DOM capture plus local,
       SHA-256-pinned PNG/JPEG/GIF assets into a schemaVersion 2 import file.
       Never fetches anything.
   website-to-figma hifi-capture --scrape FILE [--scrape FILE]... [--label TEXT] --out FILE
       Offline adapter: locally saved scrape responses whose measured DOM is in
       data.actions.javascriptReturns[].value -> capture format. Never fetches.
+  website-to-figma states-plan --plan FILE --out FILE
+      Offline PLANNER only: validate a state plan (1 site, <=3 pages, <=3 states
+      per page incl. baseline, declarative synthetic mutations only) and write
+      exact Firecrawl request PREVIEWS. Sends NOTHING; there is no executor, so
+      automatic state capture is unsupported. Provider cost is unknown.
   website-to-figma validate <FILE>
       Validate a site map JSON file (schemaVersion 1 or 2).`;
 
@@ -58,7 +67,7 @@ function parseFlags(args: string[]): { positional: string[]; flags: Map<string, 
     const a = args[i]!;
     if (a === "--yes" || a === "--help" || a === "-h" || a === "--no-map" || a === "--confirm-existing-credits" || a === "--confirm-no-topup") {
       flags.set(a.replace(/^-+/, ""), true);
-    } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label" || a === "--font-map" || a === "--normalize-reference") {
+    } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label" || a === "--font-map" || a === "--normalize-reference" || a === "--plan" || a === "--state-reactions") {
       const v = args[++i];
       if (v === undefined) throw new UsageError(`${a} needs a value`);
       if (a === "--exclude") excludes.push(v);
@@ -90,6 +99,7 @@ function hifiSummary(doc: HifiDoc, path: string): string {
   const lines = [`Wrote ${path} (schemaVersion 2, ${doc.source.mode}: ${doc.source.label})`, `  assets: ${doc.assets.length} (${doc.assets.map((a) => `${a.id} ${a.kind} ${a.width}x${a.height} sha256 ${a.sha256.slice(0, 12)}`).join("; ") || "none"})`];
   for (const p of doc.pages) {
     lines.push(`  ${p.path}: ${p.nodes.length} nodes, ${p.width}x${p.height}, reference ${p.referenceAssetId ?? "none"}${p.truncated ? ", TRUNCATED" : ""}`);
+    if (p.states) lines.push(`    states (${p.states.reactions}): ${p.states.variants.map((v) => `${v.name} [${v.provenance}, ${v.nodes.length} nodes]`).join(", ")}`);
     for (const w of p.warnings) lines.push(`    warning: ${w}`);
   }
   for (const w of doc.warnings) lines.push(`  warning: ${w}`);
@@ -132,19 +142,44 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
+  if (cmd === "fixture" && positional[0] === "hifi-states") {
+    const doc = buildStatesFixture();
+    const out = typeof flags.get("out") === "string" ? (flags.get("out") as string) : "out/hifi-states-synthetic.json";
+    console.log(hifiSummary(doc, writeHifi(doc, out)));
+    return 0;
+  }
+
   if (cmd === "hifi-capture") {
     const out = flags.get("out");
     if (scrapes.length === 0 || typeof out !== "string") throw new UsageError("hifi-capture needs --scrape FILE (repeatable) and --out FILE");
     const label = typeof flags.get("label") === "string" ? (flags.get("label") as string) : "operator capture";
     const responses = scrapes.map((f) => ({ name: f, json: readBoundedJson(f, LIMITS.hifiMaxJsonBytes, f) }));
-    const { capture, screenshotHints } = captureFromScrapeResponses(responses, label);
+    const { capture, screenshotHints, warnings } = captureFromScrapeResponses(responses, label);
     const text = JSON.stringify(capture) + "\n";
     if (utf8Length(text) > LIMITS.hifiMaxJsonBytes) throw new CaptureError("capture output too large; not written");
     const path = resolve(out);
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, text);
     console.log(`Wrote ${path} (${capture.pages.length} page(s); nothing fetched)`);
-    for (const h of screenshotHints) console.log(`  screenshot URL present for ${h.pageUrl} (NOT downloaded; add local bytes to the asset manifest with kind "reference" and pageUrl)`);
+    for (const h of screenshotHints) console.log(`  screenshot URL present for ${h.pageUrl}${h.state ? ` state "${h.state}" (scrollY ${h.scrollY ?? "unknown"})` : ""} (NOT downloaded; add local bytes to the asset manifest with kind "reference", pageUrl${h.state ? " and state" : ""})`);
+    for (const w of warnings) console.log(`  warning: ${w}`);
+    return 0;
+  }
+
+  if (cmd === "states-plan") {
+    const planPath = flags.get("plan");
+    const out = flags.get("out");
+    if (typeof planPath !== "string" || typeof out !== "string") throw new UsageError("states-plan needs --plan FILE and --out FILE");
+    const preview = buildStatePreview(parseStatePlan(readBoundedJson(planPath, 1_000_000, "state plan")));
+    const path = resolve(out);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify(preview, null, 2) + "\n");
+    console.log(`Wrote ${path} (request PREVIEWS only; NOTHING was sent)`);
+    for (const r of preview.requests) {
+      console.log(`  ${r.pageUrl}: ${r.actionCount} actions (budget ${preview.budgets.maxActions}), combined waits ${r.combinedWaitMs} ms (budget ${preview.budgets.maxCombinedWaitMs}), states ${r.states.map((s) => `${s.name} [${s.provenance}]`).join(", ")}`);
+    }
+    for (const m of preview.manualRoute) console.log(`  manual: ${m}`);
+    for (const n of preview.notice) console.log(`  note: ${n}`);
     return 0;
   }
 
@@ -182,7 +217,9 @@ async function main(argv: string[]): Promise<number> {
     if (fontMap.length > 16) throw new UsageError("at most 16 --font-map entries");
     const norm = flags.get("normalize-reference");
     if (norm !== undefined && norm !== "centered-dpr1") throw new UsageError('--normalize-reference accepts only "centered-dpr1"');
-    const doc = convertCapture({ capture, assets: loaded.assets, assetWarnings: loaded.warnings, rejectedReferences: loaded.rejectedReferences, referenceTiles, fontMap, normalizeReference: norm === "centered-dpr1" ? "centered-dpr1" : undefined });
+    const reactions = flags.get("state-reactions");
+    if (reactions !== undefined && reactions !== "click-cycle") throw new UsageError('--state-reactions accepts only "click-cycle"');
+    const doc = convertCapture({ capture, assets: loaded.assets, assetWarnings: loaded.warnings, rejectedReferences: loaded.rejectedReferences, referenceTiles, fontMap, normalizeReference: norm === "centered-dpr1" ? "centered-dpr1" : undefined, stateReactions: reactions === "click-cycle" ? "click-cycle" : "none" });
     console.log(hifiSummary(doc, writeHifi(doc, out)));
     return 0;
   }
@@ -290,7 +327,7 @@ async function main(argv: string[]): Promise<number> {
 main(process.argv.slice(2)).then(
   (code) => process.exit(code),
   (err: unknown) => {
-    if (err instanceof CrawlPolicyError) {
+    if (err instanceof CrawlPolicyError || err instanceof StatePlanError) {
       console.error(err.message);
       process.exit(3);
     }

@@ -20,6 +20,7 @@ Early development. What has and has not been verified:
 | CLI + plugin typecheck and build | `npm run typecheck`, `npm run build` |
 | Firecrawl live crawl | **Never run yet.** It requires operator-confirmed account prerequisites, which the CLI doesn't verify. Request code is typed against `@mendable/firecrawl-js` 4.52.0 and tested with fake clients only. |
 | Hi-fi (schemaVersion 2) converter and renderer | Unit-tested with synthetic captures and a fake `figma` object; **not** imported into real Figma from this repo. |
+| Interactive states / motion | **Planner only.** `states-plan` writes request *previews* and sends nothing. There is **no automatic state-capture pipeline and no safe-click support**: only declarative synthetic DOM modifications are planned, and they come with **no guarantee against handler side effects**. Provider cost is **unknown**. The converter and plugin variants are tested with synthetic data only. |
 | Importing into Figma | **Not verified yet.** The plugin builds and typechecks against `@figma/plugin-typings`, but nobody has imported it into Figma from this repo yet. |
 
 ## Requirements
@@ -268,6 +269,82 @@ translated or guessed.
   - Importing into real Figma has **not** been verified from this repo. The renderer is tested
     against a fake `figma` object only.
 
+## Interactive states and motion (offline planner; NOT an automatic capture pipeline)
+
+> **Limitations, stated up front**
+> - **Planner only.** `states-plan` validates a state plan and writes exact Firecrawl `/v2/scrape`
+>   request **previews**. It sends nothing, reads no key, makes no account call and resolves no DNS.
+>   This tool has no executor: **automatic state capture is not supported.**
+> - **No clicks.** A selector does not prove that a click handler is safe: it could submit a form,
+>   log in, make a purchase, follow an outbound link or navigate. So `click`, `hover`, `focus`,
+>   typing, key presses, submit, navigation and arbitrary JavaScript are refused. Put such states
+>   under `manual` and capture them yourself.
+> - **Synthetic, not observed.** The only planned mechanisms are declarative DOM modifications:
+>   `details-open`, `attribute-set` (`open` on `<details>`, `aria-expanded`, `aria-selected`,
+>   `aria-hidden`, `hidden`, `data-state`) and `class-add`. Variants built from them are labelled
+>   **synthetic**, not the page's observed original state.
+> - **No handler side-effect guarantee.** Attribute, class and `open` changes can still run page
+>   code: MutationObservers, `toggle` listeners and custom-element callbacks. The scripts do what
+>   they can:
+>   - refuse custom elements and form, link, button, embedding and media elements
+>   - stop `toggle` in the capture phase
+>   - revert after measuring (including on error)
+>
+>   Page observers cannot be prevented, which is why previews exist for manual operator review only.
+> - **Cost unknown.** Firecrawl documents 1 credit per scrape and no per-action price. No estimate
+>   is given and no paid command is provided.
+> - **Freeze is partial.** CSS animations and transitions, Web Animations, `<video>` and Swiper
+>   autoplay are paused where present. JS timers, `requestAnimationFrame` loops and WebGL/canvas
+>   rendering are **not** frozen. Forcing `.aos-animate` (`forceAos`) is optional and recorded as a
+>   modification.
+> - **Bounds.**
+>   - 1 site, ≤ 3 pages, and ≤ 3 states per page *including* the baseline and manual states.
+>   - ≤ 50 actions per request (the provider maximum; default budget 20). Every wait, freeze,
+>     lazy-scroll, state, screenshot, scrape and revert step counts.
+>   - Combined waits ≤ 60 s (default 30 s), including in-script sleeps.
+>   - Each state's measurement is ≤ 6,000,000 chars, and screenshots are viewport-only.
+
+```sh
+website-to-figma states-plan --plan state-plan.json --out out/state-requests.preview.json
+```
+
+```json
+{
+  "schema": "website-to-figma/state-plan", "schemaVersion": 1,
+  "site": "https://example.com",
+  "pages": [{
+    "url": "https://example.com/",
+    "states": [
+      { "name": "FAQ open", "scope": "#faq",
+        "mutations": [{ "mechanism": "details-open", "selector": "#faq details" }] }
+    ],
+    "manual": [{ "name": "Menu open", "selector": "#burger", "reason": "JS click handler" }]
+  }]
+}
+```
+
+How the rest of the path works once a response exists:
+
+- **Adapter.** If an operator obtains a response for such a request by their own means,
+  `hifi-capture` reads the tagged returns (`freeze`, `lazy`, `state`, `revert`). It ties
+  `actions.screenshots[i]` and `actions.scrapes[i]` to state *i* only when every state returned and
+  the counts match. Otherwise screenshots stay unassociated. A failed revert marks the later states.
+- **Screenshots.** Screenshot URLs are listed and never downloaded. To use one, add the local PNG to
+  the asset manifest with `"kind": "reference"`, `pageUrl` and `"state": "<name>"`. A screenshot
+  named after a state that is not in the response becomes a **manual** variant (image only, not
+  measured).
+- **Converter.** `hifi` converts each state from its own measurement and crops it to the state's
+  scope. It writes the optional schema v2 fields `states`, `freeze`, `motion` and `media`, and
+  older v2 files stay valid. Failed states are omitted with a warning. Media gets a still only
+  from an operator-supplied local image whose `sourceUrl` equals the observed poster URL. Otherwise
+  it is reported as `poster-url-observed-not-downloaded` or `unavailable`. Unreadable cross-origin
+  stylesheets are counted and warned about.
+- **Plugin.** The plugin builds native component variants (`State=<name>`) with
+  `figma.combineAsVariants`, each carrying its provenance. `hifi --state-reactions click-cycle`
+  optionally adds `ON_CLICK` → `CHANGE_TO` reactions (`setReactionsAsync`). Media becomes a
+  labelled still or placeholder. Every node is tracked, and any failure rolls back the whole import.
+- **Fixture.** `website-to-figma fixture hifi-states` writes a SYNTHETIC sample.
+
 ## Figma plugin (development)
 
 ```sh
@@ -330,18 +407,21 @@ URL checks (`src/security/urlGuard.ts`) run on the start URL and on every page's
   [`ipaddr.js`](https://github.com/whitequark/ipaddr.js), which covers private, loopback,
   link-local (including `169.254.169.254`), CGNAT, ULA, multicast, reserved, and IPv4-mapped,
   NAT64, 6to4 and Teredo forms.
-- **One owner-approved exception (2026-11-07):** for URLs sent to or returned by *hosted Firecrawl*
-  whose hostname is exactly `simplecss.org`, the local DNS-answer lookup is skipped. That means
-  only the crawl start URL and Firecrawl's reported final URLs. It does not cover `www.`,
-  subdomains, a trailing dot or any other host. The operator's local resolver is a FakeIP proxy
-  (`198.18.0.0/15`), so its answers say nothing about the hosted fetch.
+- **Two owner-approved exceptions (`simplecss.org` 2026-11-07, `bootstrapmade.com` 2026-11-08):**
+  for URLs sent to or returned by *hosted Firecrawl* whose hostname is exactly `simplecss.org` or
+  exactly `bootstrapmade.com`, the local DNS-answer lookup is skipped. That means only the crawl
+  start URL and Firecrawl's reported final URLs. It does not cover `www.`, subdomains, a trailing
+  dot, IP literals or any other host, and never applies to a local fetch. The operator's local
+  resolver is a FakeIP proxy (`198.18.0.0/15`), so its answers say nothing about the hosted fetch.
   - All structural checks still apply: scheme, credentials, ports, IP literals (`198.18.0.0/15`
     literals are always rejected), local/reserved names, exact same-site matching, exclusions and
     query handling.
-  - **Risk:** for this one hostname, whether it resolves to a private address, DNS rebinding and
+  - **Risk:** for these two hostnames, whether they resolve to a private address, DNS rebinding and
     redirect hops all depend only on Firecrawl's own documented "Network protections"
     (https://docs.firecrawl.dev/security). This project has not independently verified those
     controls. Every other host, and any local fetch, keeps the full local DNS check.
+  - The first planned state/motion candidate is `https://bootstrapmade.com/content/demo/Bootslander/`
+    (documentation only: nothing has been fetched or sent for it).
 - same-site means the same hostname, with one leading `www.` treated as equivalent. There is no
   suffix matching, so `evil.example.com` and `example.com.evil.net` are both different sites.
 

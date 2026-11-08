@@ -15,9 +15,11 @@
   },
   "devDependencies": {
     "@figma/plugin-typings": "^1.142.0",
+    "@types/jsdom": "^30.0.0",
     "@types/node": "^26.6.6",
     "@types/pngjs": "^6.0.5",
     "esbuild": "^0.28.2",
+    "jsdom": "^31.0.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^5.1.0"
@@ -27,10 +29,10 @@
   },
   "scripts": {
     "cli": "tsx src/cli.ts",
-    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.plugin.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.plugin.json && tsc -p tsconfig.dom-tests.json",
     "test": "vitest run",
     "build": "node scripts/build.mjs",
-    "samples": "tsx src/cli.ts fixture 5 --out samples/fixture-5.json && tsx src/cli.ts fixture 10 --out samples/fixture-10.json && tsx src/cli.ts fixture 20 --out samples/fixture-20.json && tsx src/cli.ts fixture hifi --out samples/hifi-synthetic.json",
+    "samples": "tsx src/cli.ts fixture 5 --out samples/fixture-5.json && tsx src/cli.ts fixture 10 --out samples/fixture-10.json && tsx src/cli.ts fixture 20 --out samples/fixture-20.json && tsx src/cli.ts fixture hifi --out samples/hifi-synthetic.json && tsx src/cli.ts fixture hifi-states --out samples/hifi-states-synthetic.json",
     "package": "npm run build && node scripts/package.mjs",
     "dist": "node scripts/build-dist.mjs"
   }
