@@ -96,11 +96,14 @@ function fakeConnector(fonts = ["Inter|Regular", "Inter|Bold", "Roboto|Regular",
       (w as any).cloneOf = comp;
       return w;
     },
-    variants: (comps: W[], p: any) => {
-      if (!Array.isArray(comps) || comps.some((c) => c.type !== "COMPONENT")) throw new Error("fake $fig.variants: components only");
-      const w = new W("COMPONENT_SET", { ...p });
+    // Official figma-use signature only: $fig.variants(options, children).
+    variants: (...args: unknown[]) => {
+      const [opts, comps] = args as [any, W[]];
+      if (args.length !== 2 || typeof opts !== "object" || opts === null || Array.isArray(opts) || typeof opts.name !== "string") throw new Error("fake $fig.variants: expected (options, children) with options.name");
+      if (!Array.isArray(comps) || comps.length === 0 || comps.some((c) => !(c instanceof W) || c.type !== "COMPONENT")) throw new Error("fake $fig.variants: children must be $fig.component wrappers");
+      const w = new W("COMPONENT_SET", { ...opts });
       (w as any).members = comps;
-      log.push(`variants:${p.name}:${comps.length}`);
+      log.push(`variants:${opts.name}:${comps.length}`);
       return w;
     },
     get: (id: string) => {
@@ -286,6 +289,13 @@ describe("connector adapter: same renderer, planned $fig host (fake connector)",
     expect(img.props.fills).toEqual([{ type: "IMAGE", imageHash: "a".repeat(40), scaleMode: "FILL" }]);
     expect(() => parseImageHashMap({ schema: "website-to-figma/connector-image-hashes", schemaVersion: 1, hashes: { [photo.sha256]: "not-a-hash" } })).toThrow(/invalid entry/);
     expect(() => new PlannedHost({} as never, {} as never, { a0: "xyz" })).toThrow(/40-hex/);
+  });
+
+  it("the fake connector rejects the old (children, options) argument order", async () => {
+    const env = fakeConnector();
+    await expect(env.run(`const c = $fig.component({ name: "A", width: 1, height: 1 }); $fig.variants([c], { name: "X" });`)).rejects.toThrow(/expected \(options, children\)/);
+    await env.run(`const c = $fig.component({ name: "A", width: 1, height: 1 }); $fig.variants({ name: "X" }, [c]); await $fig.done();`);
+    expect(env.log).toContain("variants:X:1");
   });
 
   it("refuses duplicate roots and reads before flush", async () => {

@@ -42654,7 +42654,7 @@ async function main2(argv) {
       run: "Run each job's script with the Figma connector, strictly in this order; stop at the first error. Each job returns { rootId, ids, created, unsupported, warnings }.",
       imageFills: mappedCount ? `${mappedCount} asset(s) mapped to origin-supplied existing Figma image hashes (IMAGE paints); others are placeholders` : "none mapped: every image is a labelled placeholder (supply --image-hashes from a sanctioned upload to fill them)",
       notSupported: ["image fills without an origin-supplied hash mapping", "pluginData provenance", "vector networks (SVG polylines)", "edge grouping"],
-      unverified: ["$fig.variants(components, { name }) argument shape", "these jobs have not been run against Figma"],
+      unverified: ["these jobs have not been run against Figma; geometry is validated only by synthetic fake-connector tests"],
       jobs: plan.jobs.map((j) => ({ file: j.file, kind: j.kind, pageId: j.pageId, chars: j.chars, sha256: j.sha256, note: j.note }))
     };
     writeExclusive(join2(dir, "jobs.json"), JSON.stringify(manifest, null, 2) + "\n");

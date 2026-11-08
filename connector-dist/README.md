@@ -10,4 +10,4 @@ ordered job scripts that embed this file verbatim plus one job input each.
 
 Not supported by this host (reported in every job result, never faked): image fills (placeholders
 with sha256 instead), pluginData provenance, vector networks (SVG polylines instead), edge grouping.
-UNVERIFIED here: the argument shape of $fig.variants(components, { name }). Not run against Figma.
+$fig.variants is called with the figma-use signature: $fig.variants({ name }, components). Not run against Figma.

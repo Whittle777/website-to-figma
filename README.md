@@ -561,9 +561,11 @@ Not supported and reported in every job result, never faked:
 - vector networks (generated SVG polylines are used instead)
 - edge grouping
 
-Unverified here: the `$fig.variants(components, { name })` argument shape. The jobs have **not**
-been run against Figma; they are tested only with a fake connector that enforces plan and flush
-semantics.
+`$fig.variants` is called with the figma-use signature, options first and children second:
+`$fig.variants({ name }, components)`. The jobs have **not** been run against Figma. They are
+tested only with a fake connector that enforces that signature and the plan and flush semantics.
+Only those synthetic tests validate geometry; nothing here shows the variants are correct in a
+live file.
 
 ## Figma plugin (development)
 

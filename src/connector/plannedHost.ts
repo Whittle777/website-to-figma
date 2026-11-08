@@ -8,10 +8,9 @@
 // $fig surface used (as used by the original prototype scripts): frame,
 // rectangle, text, svg, component, instance, ellipse, get, done; wrapper
 // .append(child), .set(props), .query(selector).set(props), .node.
-// $fig.variants is listed by the figma-use skill; its argument shape here is
-// `$fig.variants(componentWrappers, { name })` and is UNVERIFIED in this repo
-// (isolated in variants() below). Variants are NOT positioned by $fig: an
-// explicit grid and resize are applied after a flush.
+// $fig.variants follows the figma-use skill signature: OPTIONS FIRST, CHILDREN
+// SECOND - `$fig.variants({ name }, componentWrappers)`. Variants are NOT
+// positioned by $fig: an explicit grid and resize (.set) follow a flush.
 //
 // Not supported in this host (reported, never faked): image fills
 // (no image-hash creation in the connector -> labelled placeholders),
@@ -35,7 +34,7 @@ export interface FigBuilder {
   component(p: Record<string, unknown>): FigWrapper;
   instance(componentId: string, p: Record<string, unknown>): FigWrapper;
   ellipse(p: Record<string, unknown>): FigWrapper;
-  variants(components: FigWrapper[], p: Record<string, unknown>): FigWrapper;
+  variants(options: Record<string, unknown>, components: FigWrapper[]): FigWrapper;
   get(id: string): FigWrapper;
   done(): Promise<unknown>;
 }
@@ -218,8 +217,8 @@ export class PlannedHost implements Host<FigWrapper> {
     return true;
   }
   async variants(parent: FigWrapper, comps: FigWrapper[], p: { name: string; x: number; y: number; gap: number }): Promise<FigWrapper> {
-    // UNVERIFIED argument shape (see header). Grid + resize after a flush.
-    const set = this.fig.variants(comps, { name: p.name });
+    // figma-use signature: options first, children second. Grid + resize after a flush.
+    const set = this.fig.variants({ name: p.name }, comps);
     parent.append(set);
     this.mark(p.name);
     await this.flush();
