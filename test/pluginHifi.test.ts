@@ -102,7 +102,9 @@ function node(type: string): FakeNode {
   return n;
 }
 
+let images: Uint8Array[] = [];
 beforeEach(() => {
+  images = [];
   created = [];
   loadedFonts = [];
   events = [];
@@ -123,7 +125,7 @@ beforeEach(() => {
       if (failFonts.has(key)) throw new Error("font failed");
       loadedFonts.push(key);
     },
-    createImage: (b: Uint8Array) => ({ hash: `img-${b.length}` }),
+    createImage: (b: Uint8Array) => (images.push(b), { hash: `img-${b.length}` }),
     createSection: () => node("SECTION"),
     createComponent: () => node("COMPONENT"),
     createEllipse: () => node("ELLIPSE"),
@@ -169,6 +171,24 @@ const track = <T,>(n: T): T => {
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 
 describe("native hi-fi renderer (fake figma)", () => {
+  it("accepts a JPEG asset end to end (verify header/size/SHA-256, createImage with the JPEG bytes, image fill) and rejects a JPEG declared as PNG", async () => {
+    const { syntheticJpeg } = await import("../src/fixtures/hifiSynthetic");
+    const { createHash } = await import("node:crypto");
+    const doc = clone(buildHifiFixture()) as HifiDoc;
+    const a = doc.assets[0]!;
+    const jpg = syntheticJpeg(a.width, a.height, 500);
+    Object.assign(a, { mime: "image/jpeg", bytes: jpg.length, sha256: createHash("sha256").update(jpg).digest("hex"), dataBase64: Buffer.from(jpg).toString("base64") });
+    const stats = await buildHifiDoc(doc, track as never, [], 0);
+    expect(stats.images).toBe(1);
+    expect(images).toHaveLength(doc.assets.length); // every verified asset is registered via createImage
+    const jpegs = images.filter((b) => b[0] === 0xff && b[1] === 0xd8 && b[b.length - 2] === 0xff && b[b.length - 1] === 0xd9);
+    expect(jpegs).toHaveLength(1);
+    expect(jpegs[0]!.length).toBe(jpg.length);
+    const wrong = clone(doc);
+    wrong.assets[0]!.mime = "image/png";
+    expect(() => verifyAssets(wrong)).toThrow(/image header does not match/);
+  });
+
   it("refuses tampered asset bytes before creating any node", async () => {
     const doc = clone(buildHifiFixture()) as HifiDoc;
     const b = Buffer.from(doc.assets[0]!.dataBase64, "base64");

@@ -401,7 +401,7 @@ async function main(argv: string[]): Promise<number> {
         if (existsSync(".env")) process.loadEnvFile(".env");
         return process.env.FIRECRAWL_API_KEY;
       },
-      savePng: (seq, bytes) => writeExclusive(join(runDir, `state-${seq}.png`), bytes),
+      saveImage: (seq, bytes) => writeExclusive(join(runDir, `state-${seq}.jpg`), bytes),
       saveRaw: (text) => writeExecuteRawFile(join(runDir, "execute-raw.json"), text),
       log: (m) => console.error(sanitizeString(m)),
     });
@@ -436,8 +436,8 @@ async function main(argv: string[]): Promise<number> {
     const rec = readBoundedJson(join(runDir, "sandbox.json"), 30_000_000, "sandbox record") as SandboxRecord;
     if (rec?.schema !== "website-to-figma/sandbox-run") throw new UsageError("not a sandbox run record");
     const dir = createExclusiveDir(out, `sandbox-capture-${rec.runId}`);
-    const files = rec.states.map((s) => `state-${s.seq}.png`);
-    for (const f of files) writeExclusive(join(dir, f), readBoundedFile(join(runDir, f), SANDBOX.maxPngBytes));
+    const files = rec.states.map((s) => `state-${s.seq}.jpg`);
+    for (const f of files) writeExclusive(join(dir, f), readBoundedFile(join(runDir, f), SANDBOX.maxImageBytes));
     const { capture, manifest } = sandboxToCapture(rec, files);
     writeExclusive(join(dir, "capture.json"), JSON.stringify(capture) + "\n");
     writeExclusive(join(dir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");

@@ -21,7 +21,8 @@ import { initLedger, readLedger, resolveEntry, unresolved, recordOp as realRecor
 import { hostedDnsExemptHostnames } from "../src/security/urlGuard";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { syntheticPng } from "../src/fixtures/hifiSynthetic";
+import { loadedFromBytes, syntheticJpeg, syntheticPng } from "../src/fixtures/hifiSynthetic";
+import { jpegHasSoiEoi } from "../src/shared/imageInfo";
 import { captureFromScrapeResponses } from "../src/hifi/adapter";
 import { convertCapture } from "../src/hifi/convert";
 import { validateHifiDoc } from "../src/shared/hifiSchema";
@@ -48,7 +49,7 @@ const UPSTREAM: Record<string, { status: number; location?: string }> = {
   "https://bootstrapmade.com/content/vendors/redirector.js": { status: 302, location: "https://evil.example/payload.js" },
   "https://bootstrapmade.com/content/vendors/moved.js": { status: 301, location: "/content/vendors/moved-here.js" },
 };
-function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: boolean; main3xx?: boolean; serviceWorker?: boolean; popup?: boolean; noBrowser?: boolean; newContextThrows?: boolean; noRouteWebSocket?: boolean; subresources?: string[]; swiperBindAfterMs?: number; pageError?: string; hangAt?: "goto" | "screenshot"; closeHangs?: boolean; sharedWorld?: boolean; unbindAfterReady?: boolean; slideNextThrows?: boolean; jitter?: boolean; noScrollSeq0?: boolean; pngPad?: number } = {}) {
+function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: boolean; main3xx?: boolean; serviceWorker?: boolean; popup?: boolean; noBrowser?: boolean; newContextThrows?: boolean; noRouteWebSocket?: boolean; subresources?: string[]; swiperBindAfterMs?: number; pageError?: string; hangAt?: "goto" | "screenshot"; closeHangs?: boolean; sharedWorld?: boolean; unbindAfterReady?: boolean; slideNextThrows?: boolean; jitter?: boolean; noScrollSeq0?: boolean; imgPad?: number } = {}) {
   const calls: string[] = [];
   const html = `<!doctype html><html><body><section id="hero">Hero</section><section id="testimonials"><div class="swiper init-swiper"><div class="swiper-wrapper"><div class="swiper-slide"><h3 id="slide">Slide 0</h3></div></div></div></section></body></html>`;
   const d = new JSDOM(html, { runScripts: "outside-only", virtualConsole: new VirtualConsole(), url: SANDBOX_URL });
@@ -255,8 +256,12 @@ function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: 
     screenshot: async (s: { clip: { width: number; height: number } }) => {
       calls.push(`screenshot:${s.clip.width}x${Math.round(s.clip.height)}`);
       if (o.hangAt === "screenshot") await new Promise(() => {});
-      const png = Buffer.from(syntheticPng(s.clip.width, Math.max(1, Math.round(s.clip.height)), [idx * 40, 30, 60], [200, 200, 200]));
-      return o.pngPad ? Buffer.concat([png, Buffer.alloc(o.pngPad, 7)]) : png;
+      const t = (s as any).type;
+      calls.push(`screenshotType:${t}:q${(s as any).quality}`);
+      const w2 = s.clip.width, h2 = Math.max(1, Math.round(s.clip.height));
+      // JPEG requested: structurally valid JPEG bytes (SOI..EOI); imgPad grows the scan data
+      if (t === "jpeg") return Buffer.from(syntheticJpeg(w2, h2, 64 + idx + (o.imgPad ?? 0)));
+      return Buffer.from(syntheticPng(w2, h2, [idx * 40, 30, 60], [200, 200, 200]));
     },
   };
   return { page: defaultPage, calls, guard, network };
@@ -354,7 +359,7 @@ describe("the fixed page code against a fake Playwright page", () => {
     expect(r.states.map((s: any) => s.measured.texts.find((t: any) => t.text.startsWith("Slide")).text)).toEqual(["Slide 0", "Slide 1", "Slide 2"]);
     expect(r.states[1].trigger).toMatchObject({ valid: true, moved: true, before: { realIndex: 0 }, after: { realIndex: 1 } });
     expect(r.states[0].measured.probe).toMatchObject({ scrollY: 4000, innerHeight: 1080 });
-    expect(parsed.pngs).toHaveLength(3);
+    expect(parsed.images).toHaveLength(3);
   });
   it("refuses a redirect chain, an unapplied viewport, and a missing Swiper (fail closed, still emits a result)", async () => {
     for (const [o, re] of [
@@ -443,28 +448,36 @@ describe("the fixed page code against a fake Playwright page", () => {
     expect(parsed.ok && (parsed.result as any).popupsClosed).toBe(1);
   });
 
-  it("bounds output and PNGs before decoding", async () => {
+  it("bounds output and images before decoding; JPEG magic + SOI/EOI + size + pixel caps", async () => {
     const good = await runCode(fakePage());
     expect(parseSandboxOutput({ ...good, truncated: true })).toMatchObject({ ok: false, status: "ambiguous" });
     expect(parseSandboxOutput({ ...good, killed: true })).toMatchObject({ ok: false, status: "ambiguous" });
     expect(parseSandboxOutput({ ...good, stdout: good.stdout.slice(0, 500) })).toMatchObject({ ok: false, status: "ambiguous" });
     expect(parseSandboxOutput({ ...good, stdout: "W2F_RESULT " + "x".repeat(SANDBOX.maxOutputChars) })).toMatchObject({ ok: false, status: "rejected" });
     const r = JSON.parse(good.stdout.slice(good.stdout.indexOf("W2F_RESULT ") + 11));
-    const big = clone(r);
-    big.states[0].png = "A".repeat(Math.ceil(SANDBOX.maxPngBytes / 3) * 4 + 4);
-    expect(parseSandboxOutput({ ...good, stdout: "W2F_RESULT " + JSON.stringify(big) })).toMatchObject({ ok: false, reason: expect.stringMatching(/over 400000 bytes/) });
-    const notPng = clone(r);
-    notPng.states[0].png = Buffer.from("GIF89a-not-a-png!!!").toString("base64");
-    expect(parseSandboxOutput({ ...good, stdout: "W2F_RESULT " + JSON.stringify(notPng) })).toMatchObject({ ok: false });
+    const bad = (mut: (x: any) => void) => {
+      const c = clone(r);
+      mut(c);
+      return parseSandboxOutput({ ...good, stdout: "W2F_RESULT " + JSON.stringify(c) });
+    };
+    const b64 = (u: Uint8Array) => Buffer.from(u).toString("base64");
+    const jpg = syntheticJpeg(600, 40, 100);
+    expect(bad((x) => (x.states[0].img = "A".repeat(Math.ceil(SANDBOX.maxImageBytes / 3) * 4 + 4)))).toMatchObject({ ok: false, reason: expect.stringMatching(/over 250000 bytes/) });
+    expect(bad((x) => (x.states[0].img = b64(syntheticPng(600, 40, [0, 0, 0], [1, 1, 1]))))).toMatchObject({ ok: false, reason: "state 0 is not a JPEG" });
+    expect(bad((x) => (x.states[1].img = Buffer.from("GIF89a-not-a-jpeg!!").toString("base64")))).toMatchObject({ ok: false, reason: "state 1 is not a JPEG" });
+    expect(bad((x) => (x.states[2].img = b64(jpg.subarray(0, jpg.length - 1))))).toMatchObject({ ok: false, reason: expect.stringMatching(/^state 2 (JPEG is truncated \(no SOI\/EOI\)|image base64 invalid)/) });
+    expect(bad((x) => (x.states[2].img = b64(jpg.subarray(0, jpg.length - 2))))).toMatchObject({ ok: false, reason: "state 2 JPEG is truncated (no SOI/EOI)" });
+    const badMagic = new Uint8Array(jpg);
+    badMagic[1] = 0xd9;
+    expect(bad((x) => (x.states[0].img = b64(badMagic)))).toMatchObject({ ok: false, reason: "state 0 is not a JPEG" });
+    expect(bad((x) => (x.states[0].img = b64(syntheticJpeg(1920, 1200))))).toMatchObject({ ok: false, reason: expect.stringMatching(/outside the pixel caps/) });
+    expect(bad((x) => delete x.states[1].img)).toMatchObject({ ok: false, status: "ambiguous", reason: "state 1 malformed" });
     const moved = clone(r);
     moved.states[2].measured.region.y += 5000;
     expect(parseSandboxOutput({ ...good, stdout: "W2F_RESULT " + JSON.stringify(moved) })).toMatchObject({ ok: false, reason: expect.stringMatching(/different region geometry/) });
     const badClip = clone(r);
     badClip.states[1].clip.y += 50;
     expect(parseSandboxOutput({ ...good, stdout: "W2F_RESULT " + JSON.stringify(badClip) })).toMatchObject({ ok: false, reason: expect.stringMatching(/clip is not the measured slider box/) });
-    const tooTall = clone(r);
-    tooTall.states[0].png = Buffer.from(syntheticPng(1920, 1200, [0, 0, 0], [1, 1, 1])).toString("base64");
-    expect(parseSandboxOutput({ ...good, stdout: "W2F_RESULT " + JSON.stringify(tooTall) })).toMatchObject({ ok: false, reason: expect.stringMatching(/outside the pixel caps/) });
   });
 });
 
@@ -518,7 +531,7 @@ describe("lifecycle (fake client): ledger before each op, one attempt each, dele
     const events: string[] = [];
     const asked: string[] = [];
     const pngs: number[] = [];
-    const rec = await runSandboxLifecycle({ ...s, resolver: fakeIp(asked), getApiKey: () => (events.push("key"), KEY), createClient: async () => (events.push("client"), client(events, s.ledgerPath)), savePng: (i) => pngs.push(i) });
+    const rec = await runSandboxLifecycle({ ...s, resolver: fakeIp(asked), getApiKey: () => (events.push("key"), KEY), createClient: async () => (events.push("client"), client(events, s.ledgerPath)), saveImage: (i) => pngs.push(i) });
     expect(events).toEqual(["key", "client", `create {"ttl":120,"activityTtl":60} [attempting/create:attempting]`, "execute sess_1 node [attempting/execute:attempting]", "delete sess_1 [attempting/delete:attempting]"]);
     expect(asked).toEqual([]); // exact bootstrapmade.com hosted exception: no local DNS
     expect(rec).toMatchObject({ status: "accepted", sessionId: "sess_1", creditsBilled: 1, chargeStatus: "pending_reconciliation", incomplete: true });
@@ -799,9 +812,9 @@ describe("offline conversion: one region, valid 3-state group", () => {
   it("sandbox record -> capture -> hifi: 3 page-api/baseline variants of #testimonials with screenshots", async () => {
     const s = setup();
     const files: Record<number, Uint8Array> = {};
-    const rec = await runSandboxLifecycle({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async () => client([], s.ledgerPath), savePng: (i, b) => (files[i] = b) });
-    const { capture, manifest } = sandboxToCapture(rec, ["state-0.png", "state-1.png", "state-2.png"]);
-    const assets = (manifest.assets as any[]).map((a, i) => ({ operatorId: a.id, kind: "reference" as const, mime: "image/png" as const, width: rec.states[i]!.png.width, height: rec.states[i]!.png.height, sha256: a.sha256, sourceUrl: null, pageUrl: SANDBOX_URL, state: a.state, bytes: files[i]! }));
+    const rec = await runSandboxLifecycle({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async () => client([], s.ledgerPath), saveImage: (i, b) => (files[i] = b) });
+    const { capture, manifest } = sandboxToCapture(rec, ["state-0.jpg", "state-1.jpg", "state-2.jpg"]);
+    const assets = (manifest.assets as any[]).map((a, i) => ({ operatorId: a.id, kind: "reference" as const, mime: "image/jpeg" as const, width: rec.states[i]!.image.width, height: rec.states[i]!.image.height, sha256: a.sha256, sourceUrl: null, pageUrl: SANDBOX_URL, state: a.state, bytes: files[i]! }));
     const cap = captureFromScrapeResponses([{ name: "x", json: { data: { metadata: { url: SANDBOX_URL }, actions: { javascriptReturns: [{ value: { viewport: { width: 1920, height: 1080 }, elements: [], texts: [] } }] } } } }], "x");
     void cap;
     const doc = convertCapture({ capture, assets, assetWarnings: [] });
@@ -811,6 +824,21 @@ describe("offline conversion: one region, valid 3-state group", () => {
     expect(vs.every((v) => v.referenceAssetId !== null)).toBe(true);
     expect(vs.map((v) => v.nodes.filter((n) => n.kind === "text").map((n: any) => n.text).find((t: string) => t.startsWith("Slide")))).toEqual(["Slide 0", "Slide 1", "Slide 2"]);
     expect(doc.pages[0]!.warnings.join()).not.toMatch(/suppressed/);
+  });
+  it("JPEG state screenshots flow through the REAL asset loader and the hifi schema (embedded bytes keep SOI/EOI)", async () => {
+    const s = setup();
+    const files: Record<number, Uint8Array> = {};
+    const rec = await runSandboxLifecycle({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async () => client([], s.ledgerPath), saveImage: (i, b) => (files[i] = b) });
+    expect(rec.states.map((x) => x.image.mime)).toEqual(["image/jpeg", "image/jpeg", "image/jpeg"]);
+    const { capture, manifest } = sandboxToCapture(rec, ["state-0.jpg", "state-1.jpg", "state-2.jpg"]);
+    const assets = (manifest.assets as any[]).map((a, i) => ({ ...loadedFromBytes(a.id, "reference", files[i]!, null), pageUrl: SANDBOX_URL, state: a.state }));
+    expect(assets.map((a) => a.mime)).toEqual(["image/jpeg", "image/jpeg", "image/jpeg"]); // mime from the bytes, not declared
+    expect(assets.map((a) => a.sha256)).toEqual(rec.states.map((x) => x.image.sha256));
+    const doc = convertCapture({ capture, assets, assetWarnings: [] });
+    expect(validateHifiDoc(doc).ok).toBe(true);
+    expect(doc.assets.map((a) => a.mime)).toEqual(["image/jpeg", "image/jpeg", "image/jpeg"]);
+    for (const a of doc.assets) expect(jpegHasSoiEoi(new Uint8Array(Buffer.from(a.dataBase64, "base64")))).toBe(true);
+    // (the native plugin's verify + createImage of JPEG assets is exercised in test/pluginHifi.test.ts)
   });
 });
 
@@ -1364,52 +1392,77 @@ describe("OUTPUT BUDGET: measured in-browser against maxEmitChars; never relies 
     expect(SANDBOX.maxEmitChars).toBe(900_000);
     expect(SANDBOX.maxOutputChars - SANDBOX.maxEmitChars).toBeGreaterThanOrEqual(100_000);
   });
-  it("within budget: complete, valid JSON; budget recorded; PNGs kept and parsed", async () => {
-    const out = await runCode(fakePage({ pngPad: 150_000 })); // ~200k base64 per state, ~600k total
+  it("sandbox screenshots are JPEG quality 85 (type + quality passed to page.screenshot)", async () => {
+    const p = fakePage();
+    const parsed = parseSandboxOutput(await runCode(p));
+    expect(parsed.ok).toBe(true);
+    expect(SANDBOX).toMatchObject({ imageType: "jpeg", jpegQuality: 85, maxImageBytes: 250_000 });
+    expect(p.calls.filter((c) => c.startsWith("screenshotType:"))).toEqual(Array(3).fill("screenshotType:jpeg:q85"));
+    const r = (parsed as any).result;
+    expect(r.states.map((x: any) => x.imgType)).toEqual(["jpeg", "jpeg", "jpeg"]);
+  });
+  it("within budget (3 x ~133k base64, the ~100 KB target): all images kept, complete JSON, nothing omitted", async () => {
+    const out = await runCode(fakePage({ imgPad: 100_000 }));
     expect(emitted(out.stdout)).toBeLessThanOrEqual(SANDBOX.maxEmitChars);
     const parsed = parseSandboxOutput(out);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    expect((parsed.result as any).budget).toMatchObject({ maxEmitChars: 900_000, pngsOmitted: false, measurementsOmitted: false });
-    expect((parsed.result as any).budget.measuredChars).toBeGreaterThan(600_000);
-    expect((parsed.result as any).budget.measuredChars).toBeLessThanOrEqual(SANDBOX.maxEmitChars);
-    expect(parsed.pngs.map((b) => b.length)).toEqual((parsed.result as any).states.map((s2: any) => s2.pngBytes));
+    expect((parsed.result as any).budget).toMatchObject({ maxEmitChars: 900_000, imagesOmitted: 0, keptImageSeqs: null, omittedImages: null, measurementsOmitted: false });
+    expect(parsed.images.map((b) => b.length)).toEqual((parsed.result as any).states.map((s2: any) => s2.imgBytes));
   });
-  it("over budget (3 x ~440k base64, like run 0cdd8852fb33): valid JSON within budget, PNGs omitted with exact sizes, fail closed", async () => {
-    const out = await runCode(fakePage({ pngPad: 330_000 }));
+  it("over budget (3 x ~320k base64 > 900k): keeps WHOLE images in state order (0,1), omits 2 with its size; REJECTED, never success", async () => {
+    const out = await runCode(fakePage({ imgPad: 240_000 }));
     expect(emitted(out.stdout)).toBeLessThanOrEqual(SANDBOX.maxEmitChars);
     const r = JSON.parse(lineOf(out.stdout).slice("W2F_RESULT ".length)); // complete JSON, never truncated
-    expect(r.budget.pngsOmitted).toBe(true);
+    expect(r.budget).toMatchObject({ imagesOmitted: 1, keptImageSeqs: [0, 1], measurementsOmitted: false });
     expect(r.budget.measuredChars).toBeGreaterThan(SANDBOX.maxEmitChars);
-    expect(r.budget.omittedPngs.map((x: any) => x.seq)).toEqual([0, 1, 2]);
-    for (const x of r.budget.omittedPngs) {
-      expect(x.bytes).toBeGreaterThan(330_000);
-      expect(x.base64Chars).toBe(Math.ceil(x.bytes / 3) * 4);
-    }
-    expect(r.states.every((s2: any) => s2.png === null && s2.measured)).toBe(true);
+    expect(r.budget.omittedImages).toHaveLength(1);
+    expect(r.budget.omittedImages[0]).toMatchObject({ seq: 2, base64Chars: Math.ceil(r.budget.omittedImages[0].bytes / 3) * 4 });
+    expect(r.budget.omittedImages[0].bytes).toBeGreaterThan(240_000);
+    expect(r.states.map((s2: any) => typeof s2.img)).toEqual(["string", "string", "object"]);
     const parsed = parseSandboxOutput(out);
     expect(parsed).toMatchObject({ ok: false, status: "rejected" });
-    expect((parsed as any).reason).toMatch(/^in-browser step failed at stage done: result line over the 900000-char output budget \(\d+\): PNGs omitted, capture rejected$/);
+    expect((parsed as any).reason).toMatch(/^in-browser step failed at stage done: result line over the 900000-char output budget \(\d+\): 1 image\(s\) omitted \(kept states \[0,1\]\), capture rejected$/);
   });
-  it("lifecycle: an over-budget run is rejected with diagnostics and NO PNG saved; no replay", async () => {
-    const { rec, events } = await runWith(await runCode(fakePage({ pngPad: 330_000 })));
+  it("lifecycle: the kept prefix is validated and saved as evidence; status REJECTED; no conversion; no replay", async () => {
+    const saved: number[] = [];
+    const s0 = setup();
+    const events: string[] = [];
+    const exec = await runCode(fakePage({ imgPad: 240_000 }));
+    const rec = await runSandboxLifecycle({ ...s0, resolver: fakeIp(), getApiKey: () => KEY, createClient: async () => client(events, s0.ledgerPath, { execute: exec }), saveImage: (i) => saved.push(i) });
     expect(rec.status).toBe("rejected");
     expect(rec.states).toEqual([]);
+    expect(saved).toEqual([0, 1]);
+    expect(rec.partialImages!.map((x) => [x.seq, x.mime])).toEqual([[0, "image/jpeg"], [1, "image/jpeg"]]);
+    expect(rec.budget).toMatchObject({ imagesOmitted: 1, keptImageSeqs: [0, 1] });
+    expect(rec.warnings.join()).toMatch(/kept 2 whole image\(s\) in state order as evidence, 1 omitted; the run is REJECTED/);
+    expect(() => sandboxToCapture(rec, ["a", "b", "c"])).toThrow(/only accepted runs/);
     expect(events.filter((e) => e.startsWith("execute"))).toHaveLength(1);
     expect(events.filter((e) => e.startsWith("delete"))).toHaveLength(1);
   });
-  it("progressive omission (budgets derived from the measured size): PNGs, then measurements, then a minimal record; always valid JSON within the budget", async () => {
-    const full = JSON.parse(lineOf((await runCode(fakePage())).stdout).slice("W2F_RESULT ".length));
+  it("progressive partial keep (budgets derived from the measured size): [0,1] -> [0] -> none -> measurements -> minimal; always valid JSON, always rejected", async () => {
+    const full = JSON.parse(lineOf((await runCode(fakePage({ imgPad: 2_000 }))).stdout).slice("W2F_RESULT ".length));
     const X = full.budget.measuredChars as number;
-    const P = full.states.reduce((n: number, s2: any) => n + s2.png.length, 0);
-    for (const [budget, level] of [[X - 10, "pngs"], [X - P - 200, "measurements"], [600, "minimal"], [120, "minimal"]] as const) {
-      const out = await runMut2(fakePage(), withEmit(budget));
+    const L = full.states.map((s2: any) => s2.img.length as number);
+    const slack = 400; // room for the budget/error metadata added on omission
+    for (const [budget, kept] of [
+      [X - 10, [0, 1]],
+      [X - L[2] - L[1] + slack, [0]],
+      [X - L[2] - L[1] - L[0] + slack, []],
+      [X - L[2] - L[1] - L[0] - 300, "measurements"],
+      [600, "minimal"],
+      [120, "minimal"],
+    ] as const) {
+      const out = await runMut2(fakePage({ imgPad: 2_000 }), withEmit(budget));
       expect(emitted(out.stdout)).toBeLessThanOrEqual(budget);
       const r = JSON.parse(lineOf(out.stdout).slice("W2F_RESULT ".length));
       expect(r.error).toMatch(/output budget/);
-      if (level === "pngs") expect(r.states.every((s2: any) => s2.png === null && s2.measured !== null)).toBe(true);
-      if (level === "measurements") expect(r.states.every((s2: any) => s2.png === null && s2.measured === null)).toBe(true);
-      if (level === "minimal") expect(r.states).toEqual([]);
+      if (Array.isArray(kept)) {
+        expect(r.budget.keptImageSeqs).toEqual(kept);
+        expect(r.states.filter((s2: any) => typeof s2.img === "string").map((s2: any) => s2.seq)).toEqual(kept);
+      }
+      if (kept === "measurements") expect(r.states.every((s2: any) => s2.img === null && s2.measured === null)).toBe(true);
+      if (kept === "minimal") expect(r.states).toEqual([]);
       expect(parseSandboxOutput(out)).toMatchObject({ ok: false, status: "rejected" });
     }
   });

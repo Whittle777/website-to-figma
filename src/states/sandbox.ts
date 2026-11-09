@@ -39,7 +39,7 @@
 // known page's semantics (no side-effect-free promise); slideNext(0) states
 // are not observed animation completions; creditsBilled is undocumented.
 import { assertHostedFirecrawlUrl, systemResolver, type Resolver } from "../security/urlGuard";
-import { inspectImage, sha256Hex } from "../shared/imageInfo";
+import { inspectImage, jpegHasSoiEoi, sha256Hex } from "../shared/imageInfo";
 import { canonicalJson, classify, sha256, StateRunPolicyError, withTimeout } from "./execute";
 import { safeSlice, sanitizeString, sanitizeValue, utf8Bytes } from "./sanitize";
 import { writeExclusive } from "./runFiles";
@@ -78,8 +78,12 @@ export const SANDBOX = {
   scope: "#testimonials",
   swiper: "#testimonials .swiper.init-swiper",
   states: ["Default", "Testimonial next", "Testimonial next 2"],
-  maxPngBytes: 400_000,
-  maxPngPixels: 1920 * 1080,
+  // state screenshots are JPEG (run 34a4f0464337: the photo-background PNGs alone exceeded the emit
+  // budget); target ~60-100 KB each, hard cap per image below
+  imageType: "jpeg",
+  jpegQuality: 85,
+  maxImageBytes: 250_000,
+  maxImagePixels: 1920 * 1080,
   // the provider truncated execute stdout at exactly 1,048,576 chars (run 0cdd8852fb33, observed, not
   // documented); the page code emits at most maxEmitChars (headroom) or omits PNGs and fails closed
   maxOutputChars: 1_048_576,
@@ -179,7 +183,7 @@ const W2F_MEASURE = (a) => {
 };`;
 
 export const SANDBOX_CODE = String.raw`// website-to-figma fixed sandbox code (reviewed; takes no inputs)
-const W = ${JSON.stringify({ url: SANDBOX.url, host: "bootstrapmade.com", vw: SANDBOX.viewport.width, vh: SANDBOX.viewport.height, localDeadlineMs: SANDBOX.localDeadlineMs, closeBoundMs: SANDBOX.closeBoundMs, screenshotMs: SANDBOX.screenshotMs, navTimeoutMs: SANDBOX.navTimeoutMs, settleMs: SANDBOX.settleMs, swiperReadyMs: SANDBOX.swiperReadyMs, swiperOpMs: SANDBOX.swiperOpMs, stateWaitMs: SANDBOX.stateWaitMs, frameStableMs: SANDBOX.frameStableMs, framePollMs: SANDBOX.framePollMs, maxEmitChars: SANDBOX.maxEmitChars, scope: SANDBOX.scope, swiper: SANDBOX.swiper, states: SANDBOX.states, maxPngBytes: SANDBOX.maxPngBytes, max: { maxElements: SANDBOX.maxElements, maxTexts: SANDBOX.maxTexts, maxImages: SANDBOX.maxImages, maxTextChars: SANDBOX.maxTextChars } })};
+const W = ${JSON.stringify({ url: SANDBOX.url, host: "bootstrapmade.com", vw: SANDBOX.viewport.width, vh: SANDBOX.viewport.height, localDeadlineMs: SANDBOX.localDeadlineMs, closeBoundMs: SANDBOX.closeBoundMs, screenshotMs: SANDBOX.screenshotMs, navTimeoutMs: SANDBOX.navTimeoutMs, settleMs: SANDBOX.settleMs, swiperReadyMs: SANDBOX.swiperReadyMs, swiperOpMs: SANDBOX.swiperOpMs, stateWaitMs: SANDBOX.stateWaitMs, frameStableMs: SANDBOX.frameStableMs, framePollMs: SANDBOX.framePollMs, maxEmitChars: SANDBOX.maxEmitChars, scope: SANDBOX.scope, swiper: SANDBOX.swiper, states: SANDBOX.states, imageType: SANDBOX.imageType, jpegQuality: SANDBOX.jpegQuality, maxImageBytes: SANDBOX.maxImageBytes, max: { maxElements: SANDBOX.maxElements, maxTexts: SANDBOX.maxTexts, maxImages: SANDBOX.maxImages, maxTextChars: SANDBOX.maxTextChars } })};
 ${PAGE_FUNCS}
 // stage = the step in progress when an error is thrown; routeInstalled says whether blocked/served/
 // incomplete were OBSERVED by the guard (false => they are unobserved defaults, not evidence)
@@ -352,9 +356,9 @@ try {
     const ct = m.clipTarget; const cx = Math.max(0, ct.viewLeft), cy = Math.max(0, ct.viewTop);
     const clip = { x: cx, y: cy, width: Math.min(W.vw, ct.viewLeft + ct.width) - cx, height: Math.min(W.vh, ct.viewBottom) - cy };
     if (clip.width < 1 || clip.height < 1) throw new Error("target not visible for the screenshot");
-    const png = await within("screenshot", () => own.screenshot({ type: "png", clip, timeout: tmo(W.screenshotMs) }));
-    if (png.length > W.maxPngBytes) throw new Error("screenshot over the byte cap (" + png.length + " > " + W.maxPngBytes + ")");
-    out.states.push({ seq, name: W.states[seq], trigger, framing, measured: m, clip, pngBytes: png.length, png: png.toString("base64") });
+    const img = await within("screenshot", () => own.screenshot({ type: W.imageType, quality: W.jpegQuality, clip, timeout: tmo(W.screenshotMs) }));
+    if (img.length > W.maxImageBytes) throw new Error("screenshot over the byte cap (" + img.length + " > " + W.maxImageBytes + ")");
+    out.states.push({ seq, name: W.states[seq], trigger, framing, measured: m, clip, imgType: W.imageType, imgBytes: img.length, img: img.toString("base64") });
   }
 } catch (e) {
   out.error = String((e && e.message) || e).slice(0, 300);
@@ -372,23 +376,33 @@ try {
   }
 }
 // OUTPUT BUDGET: the provider truncates stdout (observed at 1,048,576 chars). The serialized line is
-// measured HERE (max of UTF-16 length and UTF-8 bytes) against W.maxEmitChars. Over budget: PNGs are
-// omitted (sizes reported) and the run fails closed; still over: measurements omitted; still over: a
-// minimal record. The emitted line is ALWAYS complete, valid JSON within the budget.
+// measured HERE (max of UTF-16 length and UTF-8 bytes) against W.maxEmitChars. Over budget: whole
+// images are dropped from the LAST state backwards, so the kept images are the longest prefix in state
+// order (0, then 1, then 2) that fits; omitted ones are reported with their sizes and the run fails
+// closed (never success with any image omitted). Still over with no images: measurements omitted;
+// then a minimal record. The emitted line is ALWAYS complete, valid JSON within the budget.
 const W2F_EMIT = () => {
   const P = "W2F_RESULT ";
   const size = (t) => P.length + Math.max(t.length, typeof Buffer !== "undefined" ? Buffer.byteLength(t, "utf8") : t.length * 3);
-  out.budget = { maxEmitChars: W.maxEmitChars, measuredChars: null, pngsOmitted: false, measurementsOmitted: false, omittedPngs: null };
+  out.budget = { maxEmitChars: W.maxEmitChars, measuredChars: null, imagesOmitted: 0, keptImageSeqs: null, omittedImages: null, measurementsOmitted: false };
   let line = JSON.stringify(out);
   out.budget.measuredChars = size(line);
   line = JSON.stringify(out);
   if (size(line) <= W.maxEmitChars) return P + line;
-  out.budget.pngsOmitted = true;
-  out.budget.omittedPngs = out.states.map((st) => ({ seq: st.seq, bytes: st.pngBytes, base64Chars: typeof st.png === "string" ? st.png.length : 0 }));
-  for (const st of out.states) st.png = null;
-  out.error = (out.error ? out.error + "; " : "") + "result line over the " + W.maxEmitChars + "-char output budget (" + out.budget.measuredChars + "): PNGs omitted, capture rejected";
-  line = JSON.stringify(out);
-  if (size(line) <= W.maxEmitChars) return P + line;
+  const base = out.error;
+  const omitted = [];
+  for (let k = out.states.length - 1; k >= 0; k--) {
+    const st = out.states[k];
+    if (typeof st.img !== "string") continue;
+    omitted.unshift({ seq: st.seq, bytes: st.imgBytes, base64Chars: st.img.length });
+    st.img = null; st.imgOmitted = true;
+    out.budget.imagesOmitted = omitted.length;
+    out.budget.omittedImages = omitted;
+    out.budget.keptImageSeqs = out.states.filter((x) => typeof x.img === "string").map((x) => x.seq);
+    out.error = (base ? base + "; " : "") + "result line over the " + W.maxEmitChars + "-char output budget (" + out.budget.measuredChars + "): " + omitted.length + " image(s) omitted (kept states [" + out.budget.keptImageSeqs.join(",") + "]), capture rejected";
+    line = JSON.stringify(out);
+    if (size(line) <= W.maxEmitChars) return P + line;
+  }
   out.budget.measurementsOmitted = true;
   for (const st of out.states) st.measured = null;
   line = JSON.stringify(out);
@@ -452,7 +466,7 @@ export function buildSandboxPreview(): SandboxPreview {
       "Every request (main document and subresources) passes ONE structural policy: http/https (data:/blob: only for subresources), no credentials, no non-default port, no IP-literal or local-name host, exact hostname bootstrapmade.com (exact raw URL for the main navigation). Allowed http(s) requests are made once by route.fetch({ maxRedirects: 0, maxRetries: 0 }); any 3xx is aborted before anything is served, so no redirect hop is requested (an allowed asset behind a redirect is missing, not followed). route.continue() is used only for data:/blob:. WebSockets are refused via context.routeWebSocket (missing => fail closed). Any aborted subresource marks the capture incomplete.",
       "route.fetch requests are made by Playwright inside the hosted sandbox with the owned context's cookies, not by this tool; no DNS lookups are made by the policy and the hosted DNS exception is not expanded. Remote-browser egress is the provider's (docs/security, docs/features/threat-protection); this tool's local DNS guard covers only its own fetches.",
       "JS worlds: on the hosted browser page.evaluate was observed NOT to see el.swiper / window.Swiper while page.waitForFunction did (run da1ae3f40f44; isolated-world evaluate is a hypothesis, not confirmed by docs). Every read of page-JS state (readiness, diag, stop-autoplay, slideNext) therefore runs through page.waitForFunction (main world) + JSHandle.jsonValue(); the page functions always return a non-null object, so each resolves on its first evaluation. DOM-only steps (probe, into-view, measure, screenshots) stay on page.evaluate. The diag runs in both worlds and records evaluateIsolated; the run fails closed if the main-world diag cannot see el.swiper after readiness. No undocumented evaluate flag is used.",
-      "Output budget: the provider truncated execute stdout at exactly 1,048,576 chars in run 0cdd8852fb33 (observed, not documented). The page code measures the serialized result line itself (max of UTF-16 length and UTF-8 bytes) against 900,000; over budget, PNGs are omitted with their exact sizes reported and the run fails closed (then measurements, then a minimal record), so the emitted line is always complete JSON. The result line is located line-anchored. Measurement dump trimmed (300 elements, 250 text runs of <= 500 chars, 20 images); per-PNG cap 400,000 bytes.",
+      "Output budget: the provider truncated execute stdout at exactly 1,048,576 chars in run 0cdd8852fb33 (observed, not documented). The page code measures the serialized result line itself (max of UTF-16 length and UTF-8 bytes) against 900,000. State screenshots are JPEG quality 85 (run 34a4f0464337: photo-background PNGs alone exceeded the budget), each <= 250,000 bytes, validated by JPEG magic (SOI), end-of-image (EOI), SOF dimensions and pixel caps. Over budget, WHOLE images are dropped from the last state backwards, so the kept images are the longest prefix in state order that fits; omitted ones are reported with sizes and the run is REJECTED (kept images are validated and saved as evidence only, never converted); then measurements, then a minimal record, so the emitted line is always complete JSON. The result line is located line-anchored. Measurement dump trimmed (300 elements, 250 text runs of <= 500 chars, 20 images).",
       "Screenshots are the slider box (#testimonials .swiper.init-swiper) intersected with the viewport, validated against the measured box and the measured scope target; conversion shifts each state so the clip's left edge is x 0 and uses the clip box as the variant frame (the renderer places reference images at page x 0). Framing: scrollIntoView behavior instant, then a bounded poll (1 s, 100 ms) until the slider's viewport position is unchanged between reads; every state, incl. state 0, must have the slider fully in the viewport, else fail closed.",
       "Swiper readiness: after goto + settle, page.waitForFunction (polling 100 ms, timeout 10 s) waits until the page's own Swiper instance is bound to the source-verified element (#testimonials .swiper.init-swiper); if it never binds the run fails closed with read-only diagnostics (stage, served/blocked requests, page errors, Swiper/script snapshot). Why an earlier run found it unbound is NOT determined.",
       "Failure diagnostics: a well-formed W2F_RESULT is recovered even when the execute envelope fails (success false, killed, truncated, nonzero exit); the run stays rejected/ambiguous. Observed browser fields are kept; unobserved fields are null (guard fields need routeInstalled, page/listener fields need listenersInstalled). Everything persisted or printed (sandbox.json, execute-raw.json, every ledger write via the ledger's single serializer, CLI logs and errors) is sanitized first: API keys, complete Authorization values (scheme + credential), URL userinfo, credential/session/token and long opaque query values, CDP/DevTools/live-view/session/WebSocket URLs, credential key=value pairs, JWTs. execute-raw.json is always valid JSON within 200,000 UTF-8 bytes (serialized size) with explicit per-field truncation metadata. States-run/diagnostic response files are NOT sanitized (they keep signed screenshot URLs needed for the later download step).",
@@ -521,7 +535,7 @@ export interface SandboxStateOut {
   framing: Obj | null;
   measured: Obj;
   clip: { x: number; y: number; width: number; height: number };
-  png: { sha256: string; width: number; height: number; bytes: number };
+  image: { mime: "image/jpeg"; sha256: string; width: number; height: number; bytes: number };
 }
 export interface SandboxRecord {
   schema: "website-to-figma/sandbox-run";
@@ -576,6 +590,11 @@ export interface SandboxRecord {
   };
   // private raw execute provenance (size-capped, PNG base64 elided, secrets redacted)
   rawExecute: { saved: boolean; chars: number | null } | null;
+  // in-browser output budget as reported by the page code (null = not observed)
+  budget: Obj | null;
+  // validated images KEPT by a rejected over-budget run (state-order prefix); evidence only, never a
+  // success and never converted
+  partialImages: { seq: number; mime: "image/jpeg"; sha256: string; width: number; height: number; bytes: number }[] | null;
   states: SandboxStateOut[];
   // provenance of every error: the primary failure, cleanup (DELETE) errors and ledger write errors
   errors: { stage: string; kind: "primary" | "cleanup" | "ledger"; detail: string }[];
@@ -607,7 +626,21 @@ function recoverW2fResult(resp: Obj): { result: Obj | null; why: string | null }
 
 // Envelope failures (success false, truncated, killed, nonzero exit) still reject/ambiguous, but
 // any well-formed W2F_RESULT is returned as `result` so its diagnostics are kept.
-export function parseSandboxOutput(resp: unknown): { ok: true; result: Obj; pngs: Uint8Array[] } | { ok: false; status: "rejected" | "ambiguous"; reason: string; result?: Obj } {
+// One state image (base64 from the page code): bounded base64, <= maxImageBytes, JPEG magic (SOI) AND
+// end-of-image (EOI), JPEG header (SOFn) dimensions within the viewport / pixel caps.
+export function validateStateImage(b64: unknown, i: number): { ok: true; bytes: Uint8Array; width: number; height: number } | { ok: false; reason: string } {
+  const maxB64 = Math.ceil(SANDBOX.maxImageBytes / 3) * 4;
+  if (typeof b64 !== "string" || b64.length > maxB64 || b64.length % 4 !== 0 || !B64.test(b64)) return { ok: false, reason: `state ${i} image base64 invalid or over ${SANDBOX.maxImageBytes} bytes` };
+  const bytes = new Uint8Array(Buffer.from(b64, "base64"));
+  if (bytes.length > SANDBOX.maxImageBytes) return { ok: false, reason: `state ${i} image over ${SANDBOX.maxImageBytes} bytes` };
+  const info = inspectImage(bytes);
+  if (!info || info.mime !== "image/jpeg") return { ok: false, reason: `state ${i} is not a JPEG` };
+  if (!jpegHasSoiEoi(bytes)) return { ok: false, reason: `state ${i} JPEG is truncated (no SOI/EOI)` };
+  if (info.width < 1 || info.height < 1 || info.width > SANDBOX.viewport.width || info.height > SANDBOX.viewport.height || info.width * info.height > SANDBOX.maxImagePixels) return { ok: false, reason: `state ${i} JPEG ${info.width}x${info.height} outside the pixel caps` };
+  return { ok: true, bytes, width: info.width, height: info.height };
+}
+
+export function parseSandboxOutput(resp: unknown): { ok: true; result: Obj; images: Uint8Array[] } | { ok: false; status: "rejected" | "ambiguous"; reason: string; result?: Obj } {
   if (!isObj(resp)) return { ok: false, status: "ambiguous", reason: "execute response is not an object" };
   const rec = recoverW2fResult(resp);
   const kept = rec.result ? { result: rec.result } : {};
@@ -621,16 +654,12 @@ export function parseSandboxOutput(resp: unknown): { ok: true; result: Obj; pngs
   if (typeof result.error === "string" && result.error) return { ok: false, status: "rejected", reason: `in-browser step failed${typeof result.stage === "string" ? ` at stage ${result.stage.slice(0, 40)}` : ""}: ${result.error.slice(0, 200)}`, result };
   const states = Array.isArray(result.states) ? result.states : [];
   if (states.length !== SANDBOX.states.length) return { ok: false, status: "ambiguous", reason: `expected ${SANDBOX.states.length} states, got ${states.length}`, result };
-  const pngs: Uint8Array[] = [];
-  const maxB64 = Math.ceil(SANDBOX.maxPngBytes / 3) * 4;
+  const images: Uint8Array[] = [];
   for (const [i, s] of states.entries()) {
-    if (!isObj(s) || s.seq !== i || s.name !== SANDBOX.states[i] || typeof s.png !== "string") return { ok: false, status: "ambiguous", reason: `state ${i} malformed`, result };
-    if (s.png.length > maxB64 || s.png.length % 4 !== 0 || !B64.test(s.png)) return { ok: false, status: "rejected", reason: `state ${i} PNG base64 invalid or over ${SANDBOX.maxPngBytes} bytes`, result };
-    const bytes = new Uint8Array(Buffer.from(s.png, "base64"));
-    const info = inspectImage(bytes);
-    if (!info || info.mime !== "image/png") return { ok: false, status: "rejected", reason: `state ${i} is not a PNG`, result };
-    if (info.width < 1 || info.height < 1 || info.width > SANDBOX.viewport.width || info.height > SANDBOX.viewport.height || info.width * info.height > SANDBOX.maxPngPixels) return { ok: false, status: "rejected", reason: `state ${i} PNG ${info.width}x${info.height} outside the pixel caps`, result };
-    pngs.push(bytes);
+    if (!isObj(s) || s.seq !== i || s.name !== SANDBOX.states[i] || typeof s.img !== "string") return { ok: false, status: "ambiguous", reason: `state ${i} malformed`, result };
+    const v = validateStateImage(s.img, i);
+    if (!v.ok) return { ok: false, status: "rejected", reason: v.reason, result };
+    images.push(v.bytes);
   }
   // SAME target identity + geometry across states; clip inside the target
   const regionOf = (s: Obj) => (isObj(s.measured) && isObj(s.measured.region) ? s.measured.region : null);
@@ -655,7 +684,7 @@ export function parseSandboxOutput(resp: unknown): { ok: true; result: Obj; pngs
     const off = (["x", "y", "width", "height"] as const).some((k) => !(Math.abs(n(clip[k]) - want[k]) <= 1));
     if (off || want.width < 1 || want.height < 1 || n(clip.x) + n(clip.width) > SANDBOX.viewport.width + 1 || n(clip.y) + n(clip.height) > SANDBOX.viewport.height + 1) return { ok: false, status: "rejected", reason: `state ${i} clip is not the measured slider box`, result };
   }
-  return { ok: true, result, pngs };
+  return { ok: true, result, images };
 }
 
 export interface SandboxExecuteOptions {
@@ -667,7 +696,9 @@ export interface SandboxExecuteOptions {
   now?: () => Date;
   runId?: string;
   log?: (m: string) => void;
-  savePng?: (seq: number, bytes: Uint8Array) => void;
+  // state image writer (JPEG bytes, already validated); also used for the kept prefix of a rejected
+  // over-budget run (partial evidence; the run stays rejected)
+  saveImage?: (seq: number, bytes: Uint8Array) => void;
   // PRIVATE raw execute provenance (already capped/redacted) for the run directory
   saveRaw?: (text: string) => void;
   // ledger operations (default: the real ./ledger functions); injectable so ledger faults can be tested
@@ -692,6 +723,26 @@ export async function executeSandbox(o: SandboxExecuteOptions): Promise<SandboxR
 // Lifecycle implementation (offline-tested with fake clients/loopback; not
 // reachable from the CLI while executeSandbox hard-holds).
 const redact500 = (t: string, secrets: readonly string[]) => sanitizeString(t, secrets).slice(0, 500);
+// Over-budget runs keep the longest state-order prefix of whole images. Those are validated with the
+// same rules as a successful run and saved as evidence; the run stays rejected (never converted).
+function savePartialImages(rec: SandboxRecord, r: Obj, save?: (seq: number, bytes: Uint8Array) => void): void {
+  const budget = isObj(r.budget) ? r.budget : null;
+  if (!budget || typeof budget.imagesOmitted !== "number" || budget.imagesOmitted < 1 || !Array.isArray(r.states)) return;
+  const kept: NonNullable<SandboxRecord["partialImages"]> = [];
+  for (const [i, s] of (r.states as unknown[]).slice(0, SANDBOX.states.length).entries()) {
+    if (!isObj(s) || s.seq !== i || typeof s.img !== "string") break; // prefix only
+    const v = validateStateImage(s.img, i);
+    if (!v.ok) {
+      rec.warnings.push(`partial image ${i} not kept: ${v.reason}`);
+      break;
+    }
+    kept.push({ seq: i, mime: "image/jpeg", sha256: sha256Hex(v.bytes), width: v.width, height: v.height, bytes: v.bytes.length });
+    save?.(i, v.bytes);
+  }
+  rec.partialImages = kept;
+  rec.warnings.push(`over the in-browser output budget: kept ${kept.length} whole image(s) in state order as evidence, ${budget.imagesOmitted} omitted; the run is REJECTED (never a success with an omitted image)`);
+}
+
 const strs = (v: unknown, n: number, len: number) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string").slice(0, n).map((x) => x.slice(0, len)) : null);
 const objs = (v: unknown, n: number) => (Array.isArray(v) ? v.filter(isObj).slice(0, n) : null);
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
@@ -724,6 +775,7 @@ export function copyObserved(rec: SandboxRecord, r: Obj): void {
   rec.pageErrors = listeners ? strs(r.pageErrors, 10, 300) : null;
   rec.consoleErrors = listeners ? strs(r.consoleErrors, 10, 300) : null;
   rec.timing.localDeadline = isObj(r.deadline) ? r.deadline : null;
+  rec.budget = isObj(r.budget) ? r.budget : null;
   rec.timing.ownedContextClose = isObj(r.close) ? r.close : null;
 }
 
@@ -753,7 +805,7 @@ export function rawExecuteProvenance(resp: unknown, secrets: readonly string[]):
       const v = resp[k];
       if (typeof v !== "string") continue;
       let pngElided = 0;
-      const elided = v.replace(/"png":"([A-Za-z0-9+/=]{64,})"/g, (_m, b64: string) => (pngElided++, `"png":"<elided ${b64.length} base64 chars>"`));
+      const elided = v.replace(/"(png|img)":"([A-Za-z0-9+/=]{64,})"/g, (_m, k: string, b64: string) => (pngElided++, `"${k}":"<elided ${b64.length} base64 chars>"`));
       prepared[k] = { originalChars: v.length, pngElided, text: sanitizeString(elided, secrets) };
     }
     otherKeys = Object.keys(resp).filter((k) => !(k in RAW_FIELD_BUDGET) && !["success", "exitCode", "killed", "truncated"].includes(k)).slice(0, 20).map((k) => sanitizeString(k, secrets).slice(0, 40));
@@ -765,7 +817,7 @@ export function rawExecuteProvenance(resp: unknown, secrets: readonly string[]):
       const kept = safeSlice(f.text, budget);
       fields[k] = { originalChars: f.originalChars, pngElided: f.pngElided, sanitizedChars: f.text.length, keptChars: kept.length, truncated: kept.length < f.text.length, text: kept };
     }
-    const doc = { schema: "website-to-figma/execute-raw", schemaVersion: 1, note: "PRIVATE raw execute provenance: PNG base64 elided, sanitized (keys, Authorization values, URL userinfo, token/session query values, CDP/live-view/session URLs), bounded per field (keptChars of sanitizedChars); the whole file is within capBytes UTF-8 bytes", capBytes: RAW_EXECUTE_CAP_BYTES, budgetScale: scale, ...(type ? { type } : {}), envelope, fields, otherKeys };
+    const doc = { schema: "website-to-figma/execute-raw", schemaVersion: 1, note: "PRIVATE raw execute provenance: image base64 elided, sanitized (keys, Authorization values, URL userinfo, token/session query values, CDP/live-view/session URLs), bounded per field (keptChars of sanitizedChars); the whole file is within capBytes UTF-8 bytes", capBytes: RAW_EXECUTE_CAP_BYTES, budgetScale: scale, ...(type ? { type } : {}), envelope, fields, otherKeys };
     const text = JSON.stringify(doc, null, 2);
     if (utf8Bytes(text) <= RAW_EXECUTE_JSON_MAX_BYTES) return text;
     if (scale < 1 / 1024) return JSON.stringify({ schema: "website-to-figma/execute-raw", schemaVersion: 1, capBytes: RAW_EXECUTE_CAP_BYTES, error: "provenance did not fit the cap at the minimum budget; fields omitted", envelope, fieldSizes: Object.fromEntries(Object.entries(prepared).map(([k, f]) => [k, f.originalChars])) });
@@ -830,6 +882,8 @@ async function lifecycleInner(o: SandboxExecuteOptions, secrets: string[]): Prom
     serviceWorker: null,
     timing: { limits: { localDeadlineMs: SANDBOX.localDeadlineMs, closeBoundMs: SANDBOX.closeBoundMs, providerExecuteTimeoutS: SANDBOX.executeTimeoutS, transportExecuteWallMs: SANDBOX_WALL_MS.execute }, localDeadline: null, ownedContextClose: null, providerKilled: null, transportTimedOut: null },
     rawExecute: null,
+    budget: null,
+    partialImages: null,
     states: [],
     errors: [],
     warnings: [],
@@ -982,6 +1036,7 @@ async function lifecycleInner(o: SandboxExecuteOptions, secrets: string[]): Prom
     const parsed = parseSandboxOutput(resp);
     // in-browser diagnostics are kept on success AND on any failure where W2F_RESULT parsed
     if (parsed.result) copyObserved(rec, parsed.result);
+    if (!parsed.ok && parsed.result) savePartialImages(rec, parsed.result, o.saveImage);
     if (!parsed.ok) {
       rec.ops.push({ op: "execute", attempts: 1, status: parsed.status === "ambiguous" ? "ambiguous" : "ok", detail: parsed.reason });
       op("execute", parsed.status === "ambiguous" ? "ambiguous" : "ok", parsed.reason);
@@ -996,13 +1051,13 @@ async function lifecycleInner(o: SandboxExecuteOptions, secrets: string[]): Prom
     if (rec.ownedContextClosed !== true) rec.warnings.push("the owned browser context was not confirmed closed (the session delete still runs)");
     const states = r.states as Obj[];
     for (const [i, s] of states.entries()) {
-      const bytes = parsed.pngs[i]!;
+      const bytes = parsed.images[i]!;
       const info = inspectImage(bytes)!;
-      rec.states.push({ seq: i, name: SANDBOX.states[i]!, provenance: i === 0 ? "baseline" : "page-api", trigger: isObj(s.trigger) ? s.trigger : null, framing: isObj(s.framing) ? s.framing : null, measured: isObj(s.measured) ? s.measured : {}, clip: isObj(s.clip) ? (s.clip as SandboxStateOut["clip"]) : { x: 0, y: 0, width: 0, height: 0 }, png: { sha256: sha256Hex(bytes), width: info.width, height: info.height, bytes: bytes.length } });
-      o.savePng?.(i, bytes);
+      rec.states.push({ seq: i, name: SANDBOX.states[i]!, provenance: i === 0 ? "baseline" : "page-api", trigger: isObj(s.trigger) ? s.trigger : null, framing: isObj(s.framing) ? s.framing : null, measured: isObj(s.measured) ? s.measured : {}, clip: isObj(s.clip) ? (s.clip as SandboxStateOut["clip"]) : { x: 0, y: 0, width: 0, height: 0 }, image: { mime: "image/jpeg", sha256: sha256Hex(bytes), width: info.width, height: info.height, bytes: bytes.length } });
+      o.saveImage?.(i, bytes);
     }
     // honest distinctness: identical PNGs or unmoved Swiper are reported
-    const shas = rec.states.map((s) => s.png.sha256);
+    const shas = rec.states.map((s) => s.image.sha256);
     if (new Set(shas).size < shas.length) rec.warnings.push("some state screenshots are byte-identical (no visual distinctness)");
     for (const s of rec.states.slice(1)) if (s.trigger && s.trigger.moved !== true) rec.warnings.push(`state "${s.name}": Swiper did not move`);
     if (rec.blocked?.length) rec.warnings.push(`${rec.blocked.length} request(s) aborted by the in-browser guard`);
@@ -1143,6 +1198,6 @@ export function sandboxToCapture(rec: SandboxRecord, files: string[]): { capture
   });
   return {
     capture: { schema: "website-to-figma/capture", schemaVersion: 1, label: `sandbox run ${rec.runId} (one region: ${SANDBOX.scope})`, pages: [{ url: SANDBOX_URL, contentType: "text/html", measured: st[0]!.measured, states: st }] },
-    manifest: { schema: "website-to-figma/asset-manifest", schemaVersion: 1, assets: rec.states.map((s, i) => ({ id: `sandbox-s${i}`, kind: "reference", file: files[i], sha256: s.png.sha256, pageUrl: SANDBOX_URL, state: s.name })) },
+    manifest: { schema: "website-to-figma/asset-manifest", schemaVersion: 1, assets: rec.states.map((s, i) => ({ id: `sandbox-s${i}`, kind: "reference", file: files[i], sha256: s.image.sha256, pageUrl: SANDBOX_URL, state: s.name })) },
   };
 }

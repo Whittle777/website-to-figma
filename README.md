@@ -645,11 +645,14 @@ reach the Browser through `page.context().browser()`, and it is never navigated.
    - scrolls the section with `behavior: "instant"`
    - polls (bounded: 1 s) until the slider's position is stable and fully in the viewport, or
      fails closed
-   - screenshots only the slider box, which the parser checks against the measured geometry
+   - screenshots only the slider box as a **JPEG (quality 85, at most 250,000 bytes)**, which the
+     parser checks for magic bytes, end-of-image, dimensions and the measured geometry
 
    The page code measures its own result line against a 900,000-char budget; the provider was
-   observed to truncate stdout at 1,048,576. Over budget, the PNGs are omitted with their sizes
-   reported and the run fails closed. A truncated result line is never relied on.
+   observed to truncate stdout at 1,048,576. Over budget, whole images are dropped from the last
+   state backwards, so the images kept are the state-order prefix that fits. The omitted ones are
+   reported with their sizes, and the run is **rejected**. The kept images are saved as evidence
+   only. A truncated result line is never relied on.
 
 The owned context is closed in `finally`.
 
