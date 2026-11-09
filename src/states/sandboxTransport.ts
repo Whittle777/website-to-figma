@@ -22,6 +22,8 @@ export class TransportError extends Error {
   constructor(
     message: string,
     readonly status?: number,
+    // parsed JSON body of a non-2xx response (kept so a session id in it is never lost)
+    readonly body?: unknown,
   ) {
     super(message);
     this.name = "TransportError";
@@ -90,7 +92,7 @@ export function createInteractClient(apiKey: string, opts: { apiUrl?: string; fe
       }
       if (!res.ok) {
         const msg = json && typeof json === "object" && typeof (json as { error?: unknown }).error === "string" ? (json as { error: string }).error.slice(0, 200) : "";
-        throw new TransportError(`${method} ${path}: HTTP ${res.status}${msg ? ` ${msg}` : ""}`, res.status);
+        throw new TransportError(`${method} ${path}: HTTP ${res.status}${msg ? ` ${msg}` : ""}`, res.status, json);
       }
       return json;
     } finally {

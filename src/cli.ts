@@ -385,7 +385,7 @@ async function main(argv: string[]): Promise<number> {
     }
     console.log(`Reservation ${g.reservation} (worst case for the full ttl: ${SANDBOX_WORST_CASE_CREDITS}; local allowance, NOT a provider cap). Ledger committed ${g.committed}, remaining local allowance ${g.remaining}. Project remaining (origin-reported, NOT a verified account balance): ${gates.projectRemainingCredits}.`);
     console.log("Accounting: a successful run is settled PENDING RECONCILIATION; verify the actual charge from GET /v2/team/credit-usage (remainingCredits delta) or the dashboard, then `ledger resolve`. creditsBilled is undocumented and informational only. No automatic re-run.");
-    console.log("Subresources: denied except the exact hostname bootstrapmade.com and data:/blob:; blocked third-party assets mark the capture incomplete.");
+    console.log("Every request and hop: one structural policy (http/https, no credentials, no non-default port, no IP-literal/local host, exact hostname bootstrapmade.com; data:/blob: subresources only); http(s) fetched once by route.fetch({ maxRedirects: 0, maxRetries: 0 }) and any 3xx aborted unserved (redirects never followed); WebSockets refused. Any blocked subresource marks the capture incomplete.");
     console.log("Stops: preview mismatch; missing gate; unresolved (incl. pending reconciliation)/duplicate/over-ceiling ledger; create ambiguous (no re-create) or failed; execute error/killed/truncated/partial/oversize; in-browser redirect/viewport/swiper/service-worker/owned-context refusal; delete not confirmed (blocking).");
     console.log("Not proven: hosted availability of page.context().browser() / browser.newContext inside the Firecrawl sandbox (fails closed; the session is still deleted).");
     if (!flags.has("yes")) {

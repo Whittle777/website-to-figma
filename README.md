@@ -614,20 +614,38 @@ reach the Browser through `page.context().browser()`, and it is never navigated.
    any page exists
 2. installs a **context route guard** before `ctx.newPage()`, which also covers popups; new pages
    are closed
-3. fetches the exact main document with `route.fetch({ maxRedirects: 0, maxRetries: 0, timeout })`,
-   aborting any 3xx **before** `route.fulfill({ response })`, so no redirected request is made
-4. aborts every other navigation, non-http(s) schemes, credentials, and IP-literal or local-name
-   hosts
-5. **denies subresources by default**: only the exact hostname `bootstrapmade.com` (no subdomain,
-   no trailing dot) and `data:`/`blob:` are allowed. Every other host is aborted and listed in
-   `blocked`, and the run is marked `incomplete: true` (third-party assets are missing, not
-   substituted)
+3. checks **every request** (main document and subresources) against one structural policy:
+   - http/https only (`data:`/`blob:` for subresources only)
+   - no credentials and no non-default port
+   - no IP-literal or local-name host
+   - the exact raw URL for the main navigation; every other navigation, including popups and
+     frames, is aborted
+   - for subresources, the exact hostname `bootstrapmade.com` only (no subdomain, no trailing dot)
+4. makes each allowed http(s) request **exactly once** with
+   `route.fetch({ maxRedirects: 0, maxRetries: 0, timeout })`, and serves it with
+   `route.fulfill({ response })` only if it is not a 3xx:
+   - any redirect is aborted unserved, so **no redirect hop is ever requested**
+   - the `Location` is reviewed against the same policy and recorded
+   - `route.continue()` would let the browser follow hops the handler never sees, so it is used only
+     for `data:`/`blob:`
+5. refuses every WebSocket via `context.routeWebSocket` (missing → fail closed). Any blocked
+   subresource, including an allowed asset behind a redirect, is listed in `blocked` and marks the
+   capture `incomplete: true` (missing, never substituted)
 6. sets `setViewportSize(1920x1080)` on that owned page **before** `goto`
 7. stops the run if a service worker controls the page, and verifies the viewport
 8. stops autoplay on the one validated Swiper (a recorded modification)
 9. captures **all three states on that same owned page**
 
-The owned context is closed in `finally`, and the sandbox session is deleted in `finally`.
+The owned context is closed in `finally`.
+
+**Cleanup.** Once any valid session id is known, exactly **one** DELETE is sent in `finally`. The id
+counts even when create returned `success !== true`, or came in an HTTP error body. Ledger write
+faults after create never skip that DELETE:
+- execute is not sent without a durable record of the created session
+- the entry stays `attempting`/`ambiguous`, so it keeps blocking
+- the run record keeps every primary, cleanup and ledger error in `errors[]`
+- nothing is re-created or retried
+- `sandbox-cleanup` sends exactly one DELETE even if its ledger write fails
 
 **Not proven and stated.** Firecrawl's docs don't say whether `page.context().browser()` and
 `browser.newContext(...)` are available inside the sandbox; their CDP example only shows

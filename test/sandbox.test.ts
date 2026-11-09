@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildSandboxPreview, createSandboxClient, executeSandbox, runSandboxLifecycle, SandboxHardHold, SANDBOX_UNSUPPORTED, parseSandboxOutput, sandboxPreviewSha256, sandboxToCapture, validateSandboxPreview, cleanupSandbox, SANDBOX, SANDBOX_CODE, SANDBOX_URL, SANDBOX_WORST_CASE_CREDITS, type SandboxClient } from "../src/states/sandbox";
 import { StateRunPolicyError } from "../src/states/execute";
 import { createInteractClient } from "../src/states/sandboxTransport";
-import { initLedger, readLedger, resolveEntry, unresolved } from "../src/states/ledger";
+import { initLedger, readLedger, resolveEntry, unresolved, recordOp as realRecordOp, settleAttempt as realSettleAttempt, settlePendingReconciliation as realSettlePending } from "../src/states/ledger";
 import { hostedDnsExemptHostnames } from "../src/security/urlGuard";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -33,7 +33,16 @@ const fakeIp = (asked: string[] = []) => async (h: string) => (asked.push(h), ["
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 
 // ---------------- fake Playwright page over jsdom ----------------
-function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: boolean; main3xx?: boolean; serviceWorker?: boolean; popup?: boolean; noBrowser?: boolean; newContextThrows?: boolean } = {}) {
+// Fake UPSTREAM servers (url -> response). Routing follows Playwright's documented semantics:
+// route.continue() lets the browser follow redirects WITHOUT calling the route handler again for the
+// hops ("the handler will only be called for the first url if the response is a redirect"), while
+// route.fetch({ maxRedirects }) follows at most maxRedirects hops and returns the last response.
+// `network` records every request that actually reached an upstream server.
+const UPSTREAM: Record<string, { status: number; location?: string }> = {
+  "https://bootstrapmade.com/content/vendors/redirector.js": { status: 302, location: "https://evil.example/payload.js" },
+  "https://bootstrapmade.com/content/vendors/moved.js": { status: 301, location: "/content/vendors/moved-here.js" },
+};
+function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: boolean; main3xx?: boolean; serviceWorker?: boolean; popup?: boolean; noBrowser?: boolean; newContextThrows?: boolean; noRouteWebSocket?: boolean; subresources?: string[] } = {}) {
   const calls: string[] = [];
   const html = `<!doctype html><html><body><section id="hero">Hero</section><section id="testimonials"><div class="swiper init-swiper"><div class="swiper-wrapper"><div class="swiper-slide"><h3 id="slide">Slide 0</h3></div></div></div></section></body></html>`;
   const d = new JSDOM(html, { runScripts: "outside-only", virtualConsole: new VirtualConsole(), url: SANDBOX_URL });
@@ -70,23 +79,36 @@ function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: 
   const network: string[] = []; // every request actually made upstream by route.fetch
   const mainFrame = {};
   const req = (url: string, nav: boolean, main = true) => ({ url: () => url, isNavigationRequest: () => nav, frame: () => (nav && main ? mainFrame : {}) });
+  const upstream = (url: string) => (o.main3xx && url === SANDBOX_URL ? { status: 301, location: "https://elsewhere.example/" } : (UPSTREAM[url] ?? { status: 200 }));
+  // one upstream exchange per hop; follows at most `max` redirects (Infinity = browser behavior)
+  const follow = (url: string, max: number) => {
+    let u = url;
+    let r = (network.push(u), upstream(u));
+    for (let hops = 0; r.status >= 300 && r.status < 400 && r.location && hops < max; hops++) {
+      u = new URL(r.location, u).href;
+      r = (network.push(u), upstream(u));
+    }
+    return { u, r };
+  };
   const route = async (url: string, nav: boolean, main = true) => {
     let outcome = "none";
     await routeHandler!({
       request: () => req(url, nav, main),
       abort: () => (guard.push(`abort ${url}`), (outcome = "abort")),
-      continue: () => (guard.push(`continue ${url}`), (outcome = "continue")),
+      // the browser makes the request itself and follows redirects; hops are NOT re-routed
+      continue: () => (guard.push(`continue ${url}`), url.startsWith("data:") || url.startsWith("blob:") || follow(url, Infinity), (outcome = "continue")),
       fetch: async (opts: { maxRedirects: number; maxRetries: number }) => {
         calls.push(`route.fetch:${url}:maxRedirects=${opts.maxRedirects}:maxRetries=${opts.maxRetries}`);
-        network.push(url); // maxRedirects 0: the Location target is never requested
-        return { status: () => (o.main3xx ? 301 : 200), url: () => url, headers: () => (o.main3xx ? { location: "https://elsewhere.example/" } : {}) };
+        const { u, r } = follow(url, opts.maxRedirects);
+        return { status: () => r.status, url: () => u, headers: () => (r.location ? { location: r.location } : {}) };
       },
       fulfill: (f: { response: { status: () => number } }) => (guard.push(`fulfill ${url} ${f.response.status()}`), (outcome = "fulfill")),
     });
     return outcome;
   };
+  let wsHandler: ((ws: any) => void) | null = null;
   // the OWNED context (created by browser.newContext) and its single page
-  const ownedContext = {
+  const ownedContext: any = {
     route: async (_p: string, h: (r: any) => unknown) => {
       calls.push("context.route");
       routeHandler = h;
@@ -102,6 +124,11 @@ function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: 
       calls.push("context.close");
     },
   };
+  if (!o.noRouteWebSocket)
+    ownedContext.routeWebSocket = async (_p: RegExp, h: (ws: any) => void) => {
+      calls.push("context.routeWebSocket");
+      wsHandler = h;
+    };
   const browser = {
     newContext: async (opts: { serviceWorkers: string; viewport: { width: number; height: number } }) => {
       calls.push(`newContext:${JSON.stringify(opts)}`);
@@ -129,6 +156,10 @@ function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: 
     goto: async (url: string) => {
       calls.push(`goto:${url}`);
       if ((await route(url, true)) === "abort") throw new Error("net::ERR_FAILED (main document aborted by route)");
+      if (o.subresources) {
+        for (const sub of o.subresources) await route(sub, false);
+        return { status: () => 200, request: () => ({ url: () => url, redirectedFrom: () => null }) };
+      }
       if (o.popup) pageHandler?.({ close: async () => calls.push("popup.close") });
       await route("https://bootstrapmade.com/popup", true, false); // a popup/frame navigation
       // synthetic subresources and attempts the guard must refuse
@@ -143,6 +174,9 @@ function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: 
       await route("https://bootstrapmade.com/content/demo/Bootslander", true); // missing slash: raw string differs
       await route("https://BOOTSTRAPMADE.com/content/demo/Bootslander/", true); // case variant: raw string differs
       await route("file:///etc/passwd", false);
+      await route("https://bootstrapmade.com:8443/asset.js", false); // non-default port: denied
+      await route("https://bootstrapmade.com/content/vendors/redirector.js", false); // allowed first hop, 302 cross-host
+      wsHandler?.({ url: () => "wss://bootstrapmade.com/live", close: () => calls.push("ws.close") });
       const first = { url: () => "https://bootstrapmade.com/old", redirectedFrom: () => null };
       const final = { url: () => url, redirectedFrom: () => (o.redirect ? first : null) };
       return { status: () => 200, request: () => final };
@@ -215,16 +249,18 @@ describe("the fixed page code against a fake Playwright page", () => {
     const parsed = parseSandboxOutput(raw);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    expect(p.calls.slice(0, 6)).toEqual([`newContext:{"serviceWorkers":"block","viewport":{"width":1920,"height":1080}}`, "context.route", "newPage", "viewport:1920x1080", `goto:${SANDBOX_URL}`, `route.fetch:${SANDBOX_URL}:maxRedirects=0:maxRetries=0`]);
+    expect(p.calls.slice(0, 7)).toEqual([`newContext:{"serviceWorkers":"block","viewport":{"width":1920,"height":1080}}`, "context.route", "context.routeWebSocket", "newPage", "viewport:1920x1080", `goto:${SANDBOX_URL}`, `route.fetch:${SANDBOX_URL}:maxRedirects=0:maxRetries=0`]);
     expect(p.calls.at(-1)).toBe("context.close");
     expect(p.calls).not.toContain("DEFAULT-PAGE-NAVIGATED");
-    expect(p.network).toEqual([SANDBOX_URL]); // exactly one upstream main-document request, no pre-check duplicate
+    // every upstream request: exactly once each, all on the exact host, never a redirect target
+    expect(p.network).toEqual([SANDBOX_URL, "https://bootstrapmade.com/content/vendors/aos/aos.js", "https://bootstrapmade.com/content/vendors/redirector.js"]);
+    expect(p.calls).toContain("ws.close");
     expect(p.calls).toContain("autoplay.stop");
     expect(p.calls.filter((c) => c.startsWith("slideNext"))).toEqual(["slideNext:0", "slideNext:0"]);
     expect(p.guard).toEqual([
       `fulfill ${SANDBOX_URL} 200`,
       "abort https://bootstrapmade.com/popup",
-      "continue https://bootstrapmade.com/content/vendors/aos/aos.js",
+      "fulfill https://bootstrapmade.com/content/vendors/aos/aos.js 200",
       "abort https://fonts.googleapis.com/css?family=Synthetic",
       "abort https://www.bootstrapmade.com/x.js",
       "abort https://bootstrapmade.com./x.js",
@@ -235,10 +271,13 @@ describe("the fixed page code against a fake Playwright page", () => {
       "abort https://bootstrapmade.com/content/demo/Bootslander",
       "abort https://BOOTSTRAPMADE.com/content/demo/Bootslander/",
       "abort file:///etc/passwd",
+      "abort https://bootstrapmade.com:8443/asset.js",
+      "abort https://bootstrapmade.com/content/vendors/redirector.js",
     ]);
     const r = parsed.result as any;
     expect(r.env).toMatchObject({ innerWidth: 1920, innerHeight: 1080 });
-    expect(r.blocked.map((b: any) => b.why)).toEqual(["navigation-not-exact-target", "third-party-host", "third-party-host", "third-party-host", "ip-literal", "local-name", "navigation-not-exact-target", "navigation-not-exact-target", "navigation-not-exact-target", "scheme"]);
+    expect(r.blocked.map((b: any) => b.why)).toEqual(["navigation-not-exact-target", "third-party-host", "third-party-host", "third-party-host", "ip-literal", "non-default-port", "navigation-not-exact-target", "navigation-not-exact-target", "navigation-not-exact-target", "scheme", "non-default-port", "redirect-302", "websocket"]);
+    expect(r.blocked.find((b: any) => b.why === "redirect-302")).toEqual({ origin: "https://bootstrapmade.com", why: "redirect-302", location: "https://evil.example", locationPolicy: "third-party-host" });
     expect(r.incomplete).toBe(true);
     expect(r.mainFetch).toEqual({ status: 200, url: SANDBOX_URL });
     expect(r).toMatchObject({ ownedContext: { serviceWorkers: "block", viewport: { width: 1920, height: 1080 } }, ownedContextClosed: true });
@@ -258,11 +297,56 @@ describe("the fixed page code against a fake Playwright page", () => {
       [{ newContextThrows: true }, /newContext not permitted/],
       [{ ignoreViewport: true }, /viewport not applied: 1920x100000/],
       [{ noSwiper: true }, /swiper refused: no Swiper instance bound/],
+      [{ noRouteWebSocket: true }, /context.routeWebSocket unavailable/],
     ] as const) {
       const parsed = parseSandboxOutput(await runCode(fakePage(o)));
       expect(parsed.ok).toBe(false);
       if (!parsed.ok) expect(parsed.reason).toMatch(re);
     }
+  });
+  it("an allowed first hop that 302s to another host is aborted unserved: the Location target is NEVER requested", async () => {
+    const p = fakePage({ subresources: ["https://bootstrapmade.com/content/vendors/redirector.js", "https://bootstrapmade.com/content/vendors/moved.js"] });
+    const parsed = parseSandboxOutput(await runCode(p));
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(p.network).toEqual([SANDBOX_URL, "https://bootstrapmade.com/content/vendors/redirector.js", "https://bootstrapmade.com/content/vendors/moved.js"]);
+    expect(p.network.some((u) => u.includes("evil.example") || u.includes("moved-here"))).toBe(false);
+    expect(p.guard).toEqual([`fulfill ${SANDBOX_URL} 200`, "abort https://bootstrapmade.com/content/vendors/redirector.js", "abort https://bootstrapmade.com/content/vendors/moved.js"]);
+    const r = parsed.result as any;
+    // the Location is reviewed against the full policy and reported; even an allowed same-host Location is not followed
+    expect(r.blocked).toEqual([
+      { origin: "https://bootstrapmade.com", why: "redirect-302", location: "https://evil.example", locationPolicy: "third-party-host" },
+      { origin: "https://bootstrapmade.com", why: "redirect-301", location: "https://bootstrapmade.com", locationPolicy: "allowed-but-not-followed" },
+    ]);
+    expect(r.incomplete).toBe(true);
+    expect(p.calls.filter((c) => c.startsWith("route.fetch"))).toEqual([SANDBOX_URL, "https://bootstrapmade.com/content/vendors/redirector.js", "https://bootstrapmade.com/content/vendors/moved.js"].map((u) => `route.fetch:${u}:maxRedirects=0:maxRetries=0`));
+  });
+  it("mutation check: the same fake DOES leak the cross-host hop if allowed assets used route.continue() (the original defect)", async () => {
+    const at = SANDBOX_CODE.indexOf("    let resp = null;");
+    expect(at).toBeGreaterThan(0);
+    const mutant = SANDBOX_CODE.slice(0, at) + "    if (!main) return route.continue();\n" + SANDBOX_CODE.slice(at);
+    const p = fakePage({ subresources: ["https://bootstrapmade.com/content/vendors/redirector.js"] });
+    const lines: string[] = [];
+    await new AsyncFunction("page", "console", mutant)(p.page, { log: (x: string) => lines.push(x) });
+    expect(p.network).toContain("https://evil.example/payload.js");
+  });
+  it("non-default ports, credentials and IP literals are aborted for subresources (no request made); default ports are allowed", async () => {
+    const subs = ["https://bootstrapmade.com:8443/asset.js", "https://bootstrapmade.com:80/a.js", "http://bootstrapmade.com:443/a.js", "https://u:p@bootstrapmade.com/a.js", "https://[::1]/a.js", "https://127.0.0.1/a.js", "https://2130706433/a.js", "https://bootstrapmade.com:443/ok.js", "http://bootstrapmade.com:80/ok2.js"];
+    const p = fakePage({ subresources: subs });
+    const parsed = parseSandboxOutput(await runCode(p));
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect((parsed.result as any).blocked.map((b: any) => b.why)).toEqual(["non-default-port", "non-default-port", "non-default-port", "credentials", "ip-literal", "ip-literal", "ip-literal"]);
+    // only the two default-port URLs reached upstream (the raw URL as requested)
+    expect(p.network).toEqual([SANDBOX_URL, "https://bootstrapmade.com:443/ok.js", "http://bootstrapmade.com:80/ok2.js"]);
+    expect(p.network.some((u) => /8443|127\.0\.0\.1|::1|u:p@/.test(u))).toBe(false);
+  });
+  it("a redirect hop to a non-default port is reviewed and never requested", async () => {
+    UPSTREAM["https://bootstrapmade.com/content/porthop.js"] = { status: 307, location: "https://bootstrapmade.com:8443/x.js" };
+    const p = fakePage({ subresources: ["https://bootstrapmade.com/content/porthop.js"] });
+    const parsed = parseSandboxOutput(await runCode(p));
+    expect(parsed.ok && (parsed.result as any).blocked).toEqual([{ origin: "https://bootstrapmade.com", why: "redirect-307", location: "https://bootstrapmade.com:8443", locationPolicy: "non-default-port" }]);
+    expect(p.network).toEqual([SANDBOX_URL, "https://bootstrapmade.com/content/porthop.js"]);
   });
   it("a main-document 3xx is aborted BEFORE fulfil: the redirect target is never requested", async () => {
     const p = fakePage({ main3xx: true });
@@ -442,11 +526,85 @@ describe("lifecycle (fake client): ledger before each op, one attempt each, dele
 });
 
 // ---------------- narrow documented transport over loopback ----------------
+describe("cleanup is never skipped once a session id is known (ledger faults injected around the REAL ledger)", () => {
+  // wraps the real recordOp/settle functions and throws only at the chosen stage
+  const faulty = (stage: string) => {
+    const boom = () => {
+      throw new Error(`EIO synthetic ledger fault at ${stage}`);
+    };
+    return {
+      recordOp: ((path: string, id: string, x: { op: string; status: string; detail: string }, now?: () => Date) => (`${x.op}-${x.status}` === stage ? boom() : realRecordOp(path, id, x as any, now))) as typeof realRecordOp,
+      settleAttempt: ((...a: Parameters<typeof realSettleAttempt>) => (stage === "settle" ? boom() : realSettleAttempt(...a))) as typeof realSettleAttempt,
+      settlePendingReconciliation: ((...a: Parameters<typeof realSettlePending>) => (stage === "settle" ? boom() : realSettlePending(...a))) as typeof realSettlePending,
+    };
+  };
+  for (const [stage, executed, status] of [
+    ["create-ok", false, "ambiguous"],
+    ["execute-attempting", false, "ambiguous"],
+    ["execute-ok", true, "ambiguous"],
+    ["delete-attempting", true, "ambiguous"],
+    ["delete-ok", true, "ambiguous"],
+    ["settle", true, "ambiguous"],
+  ] as const) {
+    it(`ledger throws at ${stage}: exactly ONE DELETE, primary + ledger errors kept, entry stays blocking`, async () => {
+      const s = setup();
+      const events: string[] = [];
+      const rec = await runSandboxLifecycle({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async () => client(events, s.ledgerPath), ledger: faulty(stage) });
+      expect(events.filter((e) => e.startsWith("create"))).toHaveLength(1);
+      expect(events.filter((e) => e.startsWith("execute"))).toHaveLength(executed ? 1 : 0);
+      expect(events.filter((e) => e.startsWith("delete"))).toEqual([expect.stringMatching(/^delete sess_1 /)]);
+      expect(rec.status).toBe(status);
+      expect(rec.errors.some((e) => e.kind === "ledger" && e.detail.includes(`EIO synthetic ledger fault at ${stage}`))).toBe(true);
+      if (stage === "create-ok" || stage === "execute-attempting") expect(rec.errors.find((e) => e.kind === "primary")!.detail).toMatch(/unexpected error after create: EIO synthetic ledger fault/);
+      expect(rec.ops.filter((x) => x.op === "delete").map((x) => x.status)).toEqual(["ok"]);
+      // durable: the entry is never left looking settled; it blocks new paid runs
+      const e = readLedger(s.ledgerPath).entries.at(-1)!;
+      expect(["attempting", "ambiguous"]).toContain(e.status);
+      expect(e.chargeStatus).toBeUndefined();
+      expect(unresolved(readLedger(s.ledgerPath)).map((x) => x.id)).toEqual([e.id]);
+    });
+  }
+  it("ledger throws at create-attempting: NOTHING is sent (no create, no delete)", async () => {
+    const s = setup();
+    const events: string[] = [];
+    const rec = await runSandboxLifecycle({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async () => client(events, s.ledgerPath), ledger: faulty("create-attempting") });
+    expect(events).toEqual([]);
+    expect(rec).toMatchObject({ status: "not-attempted", sessionId: null });
+    expect(rec.reason).toMatch(/nothing was sent/);
+  });
+  it("execute and delete BOTH fail: primary and cleanup errors are both preserved; no re-create", async () => {
+    const s = setup();
+    const events: string[] = [];
+    const rec = await runSandboxLifecycle({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async () => client(events, s.ledgerPath, { execute: new Error("socket hang up"), del: new Error("ECONNRESET") }) });
+    expect(events.map((e) => e.split(" ")[0])).toEqual(["create", "execute", "delete"]);
+    expect(rec.errors.map((e) => `${e.kind}:${e.stage}`)).toEqual(["primary:execute", "cleanup:delete"]);
+    expect(rec.errors[0]!.detail).toMatch(/socket hang up/);
+    expect(rec.errors[1]!.detail).toMatch(/ECONNRESET/);
+    expect(rec.status).toBe("ambiguous");
+  });
+  it("manual sandbox-cleanup: a ledger fault before the DELETE never skips it (one DELETE)", async () => {
+    const s = setup();
+    const rec = await runSandboxLifecycle({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async () => client([], s.ledgerPath, { del: { success: false } }) });
+    const events: string[] = [];
+    const { chmodSync } = await import("node:fs");
+    const dir = join(s.ledgerPath, "..");
+    chmodSync(dir, 0o500); // REAL filesystem fault: ledger writes fail
+    try {
+      const r = await cleanupSandbox({ ledgerPath: s.ledgerPath, entryId: rec.ledgerEntryId!, getApiKey: () => KEY, createClient: async () => client(events, s.ledgerPath) });
+      expect(events.filter((e) => e.startsWith("delete"))).toHaveLength(1);
+      expect(r.ok).toBe(true);
+      expect(r.detail).toMatch(/ledger write failed \(delete attempting\)/);
+    } finally {
+      chmodSync(dir, 0o700);
+    }
+  });
+});
+
 describe("documented /v2/interact transport over loopback: one fetch per lifecycle operation", () => {
   let server: Server;
   let base = "";
   const seen: { line: string; auth?: string; body: string }[] = [];
-  let mode: Record<string, number | "hang" | "redirect" | "huge"> = {};
+  let mode: Record<string, number | "hang" | "redirect" | "huge" | "nonsuccess-id" | "5xx-id"> = {};
   beforeAll(async () => {
     server = createServer((req, res) => {
       let b = "";
@@ -459,6 +617,10 @@ describe("documented /v2/interact transport over loopback: one fetch per lifecyc
         if (m === "redirect") {
           res.writeHead(302, { location: "http://127.0.0.1:1/elsewhere" });
           return res.end();
+        }
+        if (m === "nonsuccess-id" || m === "5xx-id") {
+          res.writeHead(m === "5xx-id" ? 502 : 200, { "content-type": "application/json" });
+          return res.end(JSON.stringify({ success: false, id: "sess_lb", error: "partial" }));
         }
         if (m === "huge") {
           res.writeHead(200, { "content-type": "application/json" });
@@ -517,6 +679,36 @@ describe("documented /v2/interact transport over loopback: one fetch per lifecyc
       const rec = await run();
       expect(seen.map((x) => x.line)).toEqual(expected);
       expect(rec.status).toBe(status);
+    }
+  });
+
+  it("create without success but WITH a valid session id (HTTP 200 success:false, or 5xx body naming the id): no execute, exactly ONE DELETE, no re-create", async () => {
+    const C = "POST /v2/interact", D = "DELETE /v2/interact/sess_lb";
+    for (const m of ["nonsuccess-id", "5xx-id"] as const) {
+      seen.length = 0;
+      mode = { create: m };
+      const rec = await run();
+      expect(seen.map((x) => x.line)).toEqual([C, D]);
+      expect(rec).toMatchObject({ status: "ambiguous", sessionId: "sess_lb" });
+      expect(rec.ops.map((x) => `${x.op}:${x.status}`)).toEqual([`create:ambiguous`, "delete:ok"]);
+      expect(rec.errors.map((e) => `${e.kind}:${e.stage}`)).toEqual(["primary:create"]);
+      expect(rec.reason).toMatch(/session sess_lb/);
+    }
+  });
+
+  it("DELETE transport errors are recorded (cleanup provenance, blocking ledger) and nothing is re-created", async () => {
+    for (const m of [500, "redirect", 400] as const) {
+      seen.length = 0;
+      mode = { delete: m };
+      const s = setup();
+      const rec = await runSandboxLifecycle({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async (k) => createInteractClient(k, { apiUrl: base }) });
+      expect(seen.map((x) => x.line)).toEqual(["POST /v2/interact", "POST /v2/interact/sess_lb/execute", "DELETE /v2/interact/sess_lb"]);
+      expect(rec.status).toBe("ambiguous");
+      expect(rec.errors.filter((e) => e.kind === "cleanup").map((e) => e.detail).join()).toMatch(/delete (failed|ambiguous): DELETE \/v2\/interact\/sess_lb/);
+      const e = readLedger(s.ledgerPath).entries.at(-1)!;
+      expect(e.status).toBe("ambiguous");
+      expect(e.ops!.filter((x) => x.op === "delete").map((x) => x.status)).toEqual(["attempting", m === 400 ? "failed" : "ambiguous"]);
+      expect(unresolved(readLedger(s.ledgerPath)).map((x) => x.id)).toEqual([e.id]);
     }
   });
 

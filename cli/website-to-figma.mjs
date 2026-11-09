@@ -42369,7 +42369,7 @@ function createInteractClient(apiKey, opts = {}) {
       }
       if (!res.ok) {
         const msg = json && typeof json === "object" && typeof json.error === "string" ? json.error.slice(0, 200) : "";
-        throw new TransportError(`${method} ${path}: HTTP ${res.status}${msg ? ` ${msg}` : ""}`, res.status);
+        throw new TransportError(`${method} ${path}: HTTP ${res.status}${msg ? ` ${msg}` : ""}`, res.status, json);
       }
       return json;
     } finally {
@@ -42401,12 +42401,14 @@ var init_sandboxTransport = __esm({
       deleteMs: 6e4
     };
     TransportError = class extends Error {
-      constructor(message, status) {
+      constructor(message, status, body) {
         super(message);
         this.status = status;
+        this.body = body;
         this.name = "TransportError";
       }
       status;
+      body;
     };
     SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
   }
@@ -42447,7 +42449,8 @@ function buildSandboxPreview() {
     gaps: [
       "Hosted compatibility is NOT proven: whether page.context().browser() and browser.newContext({ serviceWorkers: 'block', viewport }) are available inside the Firecrawl sandbox is not documented by Firecrawl; the code fails closed if not (the session is still deleted).",
       "`page` in execute is used only to reach the Browser; the Firecrawl examples use it without defining it, but the docs do not state it; missing => fail closed.",
-      "Subresources are DENIED except the exact hostname bootstrapmade.com and data:/blob: (no DNS lookups; the hosted DNS exception is not expanded). Third-party assets (e.g. web fonts) are blocked and the capture is marked incomplete. Remote-browser egress is the provider's (docs/security); this tool's local DNS guard covers only its own fetches.",
+      "Every request (main document and subresources) passes ONE structural policy: http/https (data:/blob: only for subresources), no credentials, no non-default port, no IP-literal or local-name host, exact hostname bootstrapmade.com (exact raw URL for the main navigation). Allowed http(s) requests are made once by route.fetch({ maxRedirects: 0, maxRetries: 0 }); any 3xx is aborted before anything is served, so no redirect hop is requested (an allowed asset behind a redirect is missing, not followed). route.continue() is used only for data:/blob:. WebSockets are refused via context.routeWebSocket (missing => fail closed). Any aborted subresource marks the capture incomplete.",
+      "route.fetch requests are made by Playwright inside the hosted sandbox with the owned context's cookies, not by this tool; no DNS lookups are made by the policy and the hosted DNS exception is not expanded. Remote-browser egress is the provider's (docs/security, docs/features/threat-protection); this tool's local DNS guard covers only its own fetches.",
       "Swiper states rely on the known page's semantics; method names/selectors are not a safety guarantee; no side-effect-free promise. slideNext(0) states are not observed animation completions.",
       "creditsBilled is not in the current docs: informational only; the charge is reconciled from a documented account source."
     ]
@@ -42570,9 +42573,12 @@ async function runSandboxLifecycle(o) {
     autoplay: null,
     blocked: [],
     states: [],
+    errors: [],
     warnings: []
   };
   const log = (m) => o.log?.(`[sandbox] ${redact(m, secrets)}`);
+  const L = { reserveAttempt, recordOp, settleAttempt, settlePendingReconciliation, ...o.ledger ?? {} };
+  const msg = (err) => redact(err instanceof Error ? err.message : String(err), secrets);
   try {
     await assertHostedFirecrawlUrl(SANDBOX_URL, resolver);
   } catch (err) {
@@ -42595,58 +42601,96 @@ async function runSandboxLifecycle(o) {
   }
   let entryId;
   try {
-    entryId = reserveAttempt(ledgerPath, { url: SANDBOX_URL, requestSha256: o.validated.requestSha256, reserved: gate.reservation, command: "sandbox-run", continuationOf: o.gates.reviewedContinuation }, now).id;
+    entryId = L.reserveAttempt(ledgerPath, { url: SANDBOX_URL, requestSha256: o.validated.requestSha256, reserved: gate.reservation, command: "sandbox-run", continuationOf: o.gates.reviewedContinuation }, now).id;
   } catch (err) {
     rec.reason = err instanceof LedgerError ? err.message : String(err);
     return rec;
   }
   rec.ledgerEntryId = entryId;
-  const op = (name3, status, detail) => {
-    recordOp(ledgerPath, entryId, { op: name3, status, detail: redact(detail, secrets) }, now);
+  const opStrict = (name3, status, detail) => {
+    try {
+      L.recordOp(ledgerPath, entryId, { op: name3, status, detail: redact(detail, secrets) }, now);
+    } catch (err) {
+      rec.errors.push({ stage: `${name3}-${status}`, kind: "ledger", detail: `ledger write failed at ${name3}-${status}: ${msg(err)}` });
+      throw err;
+    }
     log(`${name3} ${status}${detail ? `: ${detail}` : ""}`);
   };
-  const outcome = (err) => classify(err);
+  const ledgerSafe = (stage, f) => {
+    try {
+      f();
+      return true;
+    } catch (err) {
+      const d = `ledger write failed at ${stage}: ${msg(err)}`;
+      rec.errors.push({ stage, kind: "ledger", detail: d });
+      rec.warnings.push(`${d}; the ledger entry stays as last durably written (blocking) and must be resolved manually`);
+      log(d);
+      return false;
+    }
+  };
+  const op = (name3, status, detail) => ledgerSafe(`${name3}-${status}`, () => {
+    L.recordOp(ledgerPath, entryId, { op: name3, status, detail: redact(detail, secrets) }, now);
+    log(`${name3} ${status}${detail ? `: ${detail}` : ""}`);
+  });
+  const primary = (stage, d) => {
+    rec.errors.push({ stage, kind: "primary", detail: d });
+    if (!rec.reason) rec.reason = d;
+  };
   let overall = "ambiguous";
-  op("create", "attempting", `ttl ${SANDBOX.ttl}s activityTtl ${SANDBOX.activityTtl}s (units assumed seconds; operator-confirmed)`);
+  try {
+    opStrict("create", "attempting", `ttl ${SANDBOX.ttl}s activityTtl ${SANDBOX.activityTtl}s (units assumed seconds; operator-confirmed)`);
+  } catch (err) {
+    rec.status = "not-attempted";
+    rec.reason = `ledger could not record the create attempt (nothing was sent): ${msg(err)}`;
+    return rec;
+  }
   let created;
+  let createErr = null;
   try {
     created = await withTimeout(client.browser({ ...o.validated.preview.create }), SANDBOX_WALL_MS.create);
   } catch (err) {
-    const k = outcome(err);
-    const d = redact(`create ${k}: ${err instanceof Error ? err.message : String(err)}`, secrets);
+    createErr = err;
+  }
+  const idSource = createErr ? isObj8(createErr) && "body" in createErr ? createErr.body : null : created;
+  const id = isObj8(idSource) && typeof idSource.id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(idSource.id) ? idSource.id : null;
+  if (!id) {
+    let k = "ambiguous";
+    let d;
+    if (createErr) {
+      k = classify(createErr) === "failed" ? "failed" : "ambiguous";
+      d = `create ${k}: ${msg(createErr)}`;
+    } else d = `create returned no usable session id (success ${isObj8(created) ? String(created.success) : "?"})`;
     rec.ops.push({ op: "create", attempts: 1, status: k, detail: d });
     op("create", k, d);
     rec.status = k;
-    rec.reason = k === "ambiguous" ? `${d}; a session may exist without a known id (bounded only by its ttl); no automatic re-create` : d;
-    settleAttempt(ledgerPath, entryId, k === "failed" ? "failed" : "ambiguous", null, rec.reason);
-    return rec;
-  }
-  const id = isObj8(created) && typeof created.id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(created.id) ? created.id : null;
-  if (!isObj8(created) || created.success !== true || !id) {
-    const d = `create returned no usable session id (success ${isObj8(created) ? String(created.success) : "?"})`;
-    rec.ops.push({ op: "create", attempts: 1, status: "ambiguous", detail: d });
-    op("create", "ambiguous", d);
-    rec.status = "ambiguous";
-    rec.reason = `${d}; no automatic re-create`;
-    settleAttempt(ledgerPath, entryId, "ambiguous", null, rec.reason);
+    primary("create", k === "ambiguous" ? `${d}; a session may exist without a known id (bounded only by its ttl); no automatic re-create` : d);
+    ledgerSafe("settle", () => L.settleAttempt(ledgerPath, entryId, k, null, rec.reason));
     return rec;
   }
   rec.sessionId = id;
-  rec.ops.push({ op: "create", attempts: 1, status: "ok", detail: `session ${id}${typeof created.expiresAt === "string" ? ` expires ${created.expiresAt.slice(0, 40)}` : ""}` });
-  op("create", "ok", `session ${id}`);
   let cleanupOk = false;
   try {
-    op("execute", "attempting", `node, timeout ${SANDBOX.executeTimeoutS}s`);
+    if (createErr || !isObj8(created) || created.success !== true) {
+      const k = createErr ? classify(createErr) : "ambiguous";
+      const d = createErr ? `create ${k}: ${msg(createErr)}; the error response names session ${id}: not executed; the session is deleted` : `create returned session ${id} without success === true (success ${isObj8(created) ? String(created.success) : "?"}); not executed; the session is deleted`;
+      rec.ops.push({ op: "create", attempts: 1, status: k, detail: d });
+      op("create", k, d);
+      primary("create", `${d}; no automatic re-create`);
+      return rec;
+    }
+    rec.ops.push({ op: "create", attempts: 1, status: "ok", detail: `session ${id}${typeof created.expiresAt === "string" ? ` expires ${created.expiresAt.slice(0, 40)}` : ""}` });
+    opStrict("create", "ok", `session ${id}`);
+    opStrict("execute", "attempting", `node, timeout ${SANDBOX.executeTimeoutS}s`);
     let resp;
     try {
       resp = await withTimeout(client.browserExecute(id, { ...o.validated.preview.execute }), SANDBOX_WALL_MS.execute);
     } catch (err) {
-      const k = outcome(err);
-      const d = redact(`execute ${k}: ${err instanceof Error ? err.message : String(err)}`, secrets);
+      const k = classify(err);
+      const d = `execute ${k}: ${msg(err)}`;
       rec.ops.push({ op: "execute", attempts: 1, status: k, detail: d });
       op("execute", k, d);
       overall = k === "failed" ? "failed" : "ambiguous";
-      rec.reason = d;
+      primary("execute", d);
       return rec;
     }
     const parsed = parseSandboxOutput(resp);
@@ -42654,7 +42698,7 @@ async function runSandboxLifecycle(o) {
       rec.ops.push({ op: "execute", attempts: 1, status: parsed.status === "ambiguous" ? "ambiguous" : "ok", detail: parsed.reason });
       op("execute", parsed.status === "ambiguous" ? "ambiguous" : "ok", parsed.reason);
       overall = parsed.status;
-      rec.reason = parsed.reason;
+      primary("execute", parsed.reason);
       return rec;
     }
     rec.ops.push({ op: "execute", attempts: 1, status: "ok", detail: "W2F_RESULT parsed; 3 states" });
@@ -42663,7 +42707,7 @@ async function runSandboxLifecycle(o) {
     rec.viewportSet = isObj8(r.viewportSet) ? r.viewportSet : null;
     rec.mainFetch = isObj8(r.mainFetch) ? r.mainFetch : null;
     rec.incomplete = r.incomplete === true;
-    if (rec.incomplete) rec.warnings.push("capture INCOMPLETE: third-party subresources were blocked (deny-by-default except exact bootstrapmade.com)");
+    if (rec.incomplete) rec.warnings.push("capture INCOMPLETE: subresources were blocked (deny-by-default except exact bootstrapmade.com; redirects never followed; WebSockets refused)");
     rec.ownedContext = isObj8(r.ownedContext) ? r.ownedContext : null;
     rec.ownedContextClosed = typeof r.ownedContextClosed === "boolean" ? r.ownedContextClosed : null;
     if (rec.ownedContextClosed !== true) rec.warnings.push("the owned browser context was not confirmed closed (the session delete still runs)");
@@ -42686,8 +42730,13 @@ async function runSandboxLifecycle(o) {
     if (rec.blocked.length) rec.warnings.push(`${rec.blocked.length} request(s) aborted by the in-browser guard`);
     rec.warnings.push("states after slideNext(0) are measured after 0 ms transitions, not observed animation completions");
     overall = "accepted";
+  } catch (err) {
+    overall = "ambiguous";
+    primary("lifecycle", `unexpected error after create: ${msg(err)}`);
   } finally {
     op("delete", "attempting", `session ${id}`);
+    let delDetail;
+    let delStatus;
     try {
       const del = await withTimeout(client.deleteBrowser(id), SANDBOX_WALL_MS.delete);
       const billed = isObj8(del) && typeof del.creditsBilled === "number" && Number.isFinite(del.creditsBilled) && del.creditsBilled >= 0 ? Math.ceil(del.creditsBilled) : null;
@@ -42695,31 +42744,37 @@ async function runSandboxLifecycle(o) {
       rec.sessionDurationMs = isObj8(del) && typeof del.sessionDurationMs === "number" ? del.sessionDurationMs : null;
       if (isObj8(del) && del.success === true) {
         cleanupOk = true;
-        rec.ops.push({ op: "delete", attempts: 1, status: "ok", detail: `creditsBilled ${billed ?? "not reported"}` });
-        op("delete", "ok", `creditsBilled ${billed ?? "not reported"}; durationMs ${rec.sessionDurationMs ?? "?"}`);
+        delStatus = "ok";
+        delDetail = `creditsBilled ${billed ?? "not reported"}; durationMs ${rec.sessionDurationMs ?? "?"}`;
       } else {
-        rec.ops.push({ op: "delete", attempts: 1, status: "ambiguous", detail: "delete did not report success" });
-        op("delete", "ambiguous", "delete did not report success");
+        delStatus = "ambiguous";
+        delDetail = "delete did not report success";
+        rec.errors.push({ stage: "delete", kind: "cleanup", detail: delDetail });
       }
     } catch (err) {
-      const k = outcome(err);
-      const d = redact(`delete ${k}: ${err instanceof Error ? err.message : String(err)}`, secrets);
-      rec.ops.push({ op: "delete", attempts: 1, status: k, detail: d });
-      op("delete", k, d);
+      delStatus = classify(err);
+      delDetail = `delete ${delStatus}: ${msg(err)}`;
+      rec.errors.push({ stage: "delete", kind: "cleanup", detail: delDetail });
     }
+    rec.ops.push({ op: "delete", attempts: 1, status: delStatus, detail: delStatus === "ok" ? `creditsBilled ${rec.creditsBilled ?? "not reported"}` : delDetail });
+    op("delete", delStatus, delDetail);
     if (!cleanupOk) {
-      rec.warnings.push(`cleanup NOT confirmed for session ${id}: it may keep billing until its ttl; the ledger entry stays blocking until resolved (sandbox-cleanup or ledger resolve)`);
+      rec.warnings.push(`cleanup NOT confirmed for session ${id}: it may keep billing until its ttl; the ledger entry stays blocking until resolved (sandbox-cleanup or ledger resolve); nothing is re-created`);
       if (overall === "accepted") overall = "ambiguous";
     }
+    if (rec.errors.some((e2) => e2.kind === "ledger") && overall === "accepted") overall = "ambiguous";
     rec.status = overall;
     const note2 = `${rec.status}${rec.reason ? `: ${rec.reason}` : ""}; response creditsBilled ${rec.creditsBilled ?? "absent"} (undocumented, informational); cleanup ${cleanupOk ? "confirmed" : "NOT confirmed"}`;
     if (cleanupOk && (overall === "accepted" || overall === "rejected")) {
-      settlePendingReconciliation(ledgerPath, entryId, `${note2}; charge PENDING RECONCILIATION against GET /v2/team/credit-usage (remainingCredits delta) or the dashboard`);
-      rec.chargeStatus = "pending_reconciliation";
-      rec.warnings.push(`charge pending reconciliation: verify the actual credits from a documented account source (GET /v2/team/credit-usage remainingCredits delta, or the dashboard), then: ledger resolve --id ${entryId} --credits N --note "<source>". New paid runs stay blocked until then; nothing is re-run automatically.`);
+      const settled = ledgerSafe("settle", () => L.settlePendingReconciliation(ledgerPath, entryId, `${note2}; charge PENDING RECONCILIATION against GET /v2/team/credit-usage (remainingCredits delta) or the dashboard`));
+      if (!settled) rec.status = "ambiguous";
+      else {
+        rec.chargeStatus = "pending_reconciliation";
+        rec.warnings.push(`charge pending reconciliation: verify the actual credits from a documented account source (GET /v2/team/credit-usage remainingCredits delta, or the dashboard), then: ledger resolve --id ${entryId} --credits N --note "<source>". New paid runs stay blocked until then; nothing is re-run automatically.`);
+      }
       if (rec.creditsBilled !== null && rec.creditsBilled > gate.reservation) rec.warnings.push(`response creditsBilled ${rec.creditsBilled} exceeds the reservation ${gate.reservation} (undocumented field; reconcile before trusting it)`);
     } else {
-      settleAttempt(ledgerPath, entryId, overall === "failed" && cleanupOk ? "failed" : "ambiguous", null, note2);
+      ledgerSafe("settle", () => L.settleAttempt(ledgerPath, entryId, overall === "failed" && cleanupOk ? "failed" : "ambiguous", null, note2));
     }
   }
   return rec;
@@ -42734,19 +42789,26 @@ async function cleanupSandbox(o) {
   const key = o.getApiKey()?.trim();
   if (!key) throw new StateRunPolicyError("FIRECRAWL_API_KEY is not set; nothing was sent");
   const client = await (o.createClient ?? createSandboxClient)(key);
-  recordOp(o.ledgerPath, o.entryId, { op: "delete", status: "attempting", detail: `manual cleanup of session ${created}` }, o.now);
+  const ledgerErrors = [];
+  const rec = (status, detail2) => {
+    try {
+      recordOp(o.ledgerPath, o.entryId, { op: "delete", status, detail: detail2 }, o.now);
+    } catch (err) {
+      ledgerErrors.push(`ledger write failed (delete ${status}): ${redact(err instanceof Error ? err.message : String(err), [key])}`);
+    }
+  };
+  rec("attempting", `manual cleanup of session ${created}`);
+  let ok = false;
+  let detail;
   try {
     const del = await withTimeout(client.deleteBrowser(created), SANDBOX_WALL_MS.delete);
-    const ok = isObj8(del) && del.success === true;
-    const detail = `manual cleanup ${ok ? "ok" : "not confirmed"}; creditsBilled ${isObj8(del) && typeof del.creditsBilled === "number" ? del.creditsBilled : "not reported"}`;
-    recordOp(o.ledgerPath, o.entryId, { op: "delete", status: ok ? "ok" : "ambiguous", detail }, o.now);
-    return { ok, detail };
+    ok = isObj8(del) && del.success === true;
+    detail = `manual cleanup ${ok ? "ok" : "not confirmed"}; creditsBilled ${isObj8(del) && typeof del.creditsBilled === "number" ? del.creditsBilled : "not reported"}`;
   } catch (err) {
-    const k = classify(err);
-    const detail = redact(`manual cleanup ${k}: ${err instanceof Error ? err.message : String(err)}`, [key]);
-    recordOp(o.ledgerPath, o.entryId, { op: "delete", status: k, detail }, o.now);
-    return { ok: false, detail };
+    detail = redact(`manual cleanup ${classify(err)}: ${err instanceof Error ? err.message : String(err)}`, [key]);
   }
+  rec(ok ? "ok" : detail.startsWith("manual cleanup failed") ? "failed" : "ambiguous", detail);
+  return { ok, detail: ledgerErrors.length ? `${detail}; ${ledgerErrors.join("; ")}` : detail };
 }
 function sandboxToCapture(rec, files) {
   if (rec.status !== "accepted" || rec.states.length !== SANDBOX.states.length) throw new StateRunPolicyError(`sandbox status ${rec.status}; only accepted runs with 3 states convert`);
@@ -42884,33 +42946,53 @@ try {
   ctx = await browser.newContext({ serviceWorkers: "block", viewport: { width: W.vw, height: W.vh } });
   out.ownedContext = { serviceWorkers: "block", viewport: { width: W.vw, height: W.vh } };
   let own = null;
+  // ONE structural URL policy for EVERY request and every hop (no DNS lookups here; the hosted DNS
+  // exception is not expanded). Returns the refusal reason, or null when allowed.
+  const policy = (raw, nav, main) => {
+    let u = null; try { u = new URL(raw); } catch (e) { return "invalid-url"; }
+    if (nav && !(main && raw === W.url)) return "navigation-not-exact-target"; // raw string, no normalization; popups/frames refused
+    if (u.protocol === "data:" || u.protocol === "blob:") return nav ? "scheme" : null;
+    if (u.protocol !== "http:" && u.protocol !== "https:") return "scheme";
+    if (u.username || u.password) return "credentials";
+    if (u.port !== "") return "non-default-port";
+    const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    if (/^[0-9.]+$/.test(host) || host.includes(":")) return "ip-literal";
+    if (host === "localhost" || /\.(local|internal|localhost|home\.arpa|test|lan)$/.test(host)) return "local-name";
+    if (host !== W.host) return "third-party-host"; // subresources: DENY by default except the exact hostname
+    return null;
+  };
+  const originOf = (raw) => { try { const u = new URL(raw); return u.protocol + "//" + u.host; } catch (e) { return "(invalid)"; } };
+  const deny = (route, raw, nav, why, extra) => {
+    if (!nav) out.incomplete = true; // a missing subresource: the capture is incomplete, never substituted
+    if (out.blocked.length < 50) out.blocked.push({ origin: originOf(raw), why, ...(extra || {}) });
+    return route.abort();
+  };
   await ctx.route("**/*", async (route) => {
-    const req = route.request(); let u = null; try { u = new URL(req.url()); } catch (e) {}
+    const req = route.request(); const raw = req.url();
     let nav = false, main = false;
     try { nav = req.isNavigationRequest(); main = nav && !!own && req.frame() === own.mainFrame(); } catch (e) {}
-    let why = null;
-    if (!u) why = "invalid-url";
-    else if (nav && !(main && req.url() === W.url)) why = "navigation-not-exact-target"; // raw string, no normalization; popups/frames refused
-    else if (!["http:", "https:", "data:", "blob:"].includes(u.protocol)) why = "scheme";
-    else if (u.username || u.password) why = "credentials";
-    else {
-      const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-      if (/^[0-9.]+$/.test(host) || host.includes(":")) why = "ip-literal";
-      else if (host === "localhost" || /\.(local|internal|localhost|home\.arpa|test|lan)$/.test(host)) why = "local-name";
+    const why = policy(raw, nav, main);
+    if (why) return deny(route, raw, nav, why);
+    // data:/blob: never reach the network and cannot redirect.
+    if (raw.startsWith("data:") || raw.startsWith("blob:")) return route.continue();
+    // Every allowed http(s) request (main document AND subresources) is made exactly once by the guard
+    // WITHOUT following redirects. A 3xx is aborted before anything is served, so no Location target is
+    // ever requested; route.continue() is never used for network requests (its redirect hops would
+    // bypass this handler).
+    let resp = null;
+    try { resp = await route.fetch({ maxRedirects: 0, maxRetries: 0, timeout: W.navTimeoutMs }); } catch (e) { return deny(route, raw, nav, "fetch-error"); }
+    const st = resp.status();
+    if (main) out.mainFetch = { status: st, url: resp.url() };
+    if (st >= 300 && st < 400) {
+      let loc = null; try { const h = resp.headers(); loc = h && h.location ? new URL(h.location, raw).href : null; } catch (e) {}
+      return deny(route, raw, nav, (main ? "main-document-redirect-" : "redirect-") + st, { location: loc ? originOf(loc) : null, locationPolicy: loc ? policy(loc, nav, main) || "allowed-but-not-followed" : "missing" });
     }
-    // Subresources: DENY by default except the exact hostname bootstrapmade.com and data:/blob:
-    // (no DNS lookups here; this does not expand any DNS exception).
-    if (!why && !nav && !(u.protocol === "data:" || u.protocol === "blob:" || u.hostname === W.host)) why = "third-party-host";
-    if (why) { if (why === "third-party-host") out.incomplete = true; if (out.blocked.length < 50) out.blocked.push({ origin: u ? u.protocol + "//" + u.hostname : "(invalid)", why }); return route.abort(); }
-    if (main) {
-      // The exact main document is fetched WITHOUT following redirects; a 3xx is aborted before fulfilling.
-      const resp = await route.fetch({ maxRedirects: 0, maxRetries: 0, timeout: W.navTimeoutMs });
-      out.mainFetch = { status: resp.status(), url: resp.url() };
-      if (resp.status() >= 300 && resp.status() < 400) { out.blocked.push({ origin: u.protocol + "//" + u.hostname, why: "main-document-redirect-" + resp.status() }); return route.abort(); }
-      return route.fulfill({ response: resp });
-    }
-    return route.continue();
+    if (resp.url() !== raw) return deny(route, raw, nav, "response-url-changed");
+    return route.fulfill({ response: resp });
   });
+  // WebSockets are not seen by context.route: every one is refused (never connected to a server).
+  if (typeof ctx.routeWebSocket !== "function") throw new Error("context.routeWebSocket unavailable: cannot refuse WebSocket connections");
+  await ctx.routeWebSocket(/.*/, (ws) => { if (out.blocked.length < 50) out.blocked.push({ origin: originOf(ws.url()), why: "websocket" }); out.incomplete = true; ws.close(); });
   own = await ctx.newPage();
   ctx.on("page", (p) => { if (p !== own) { out.popupsClosed++; p.close().catch(() => {}); } });
   // Viewport set on the SAME page used for all three states, BEFORE navigation.
@@ -43842,7 +43924,7 @@ async function main2(argv) {
     }
     console.log(`Reservation ${g.reservation} (worst case for the full ttl: ${SANDBOX_WORST_CASE_CREDITS}; local allowance, NOT a provider cap). Ledger committed ${g.committed}, remaining local allowance ${g.remaining}. Project remaining (origin-reported, NOT a verified account balance): ${gates.projectRemainingCredits}.`);
     console.log("Accounting: a successful run is settled PENDING RECONCILIATION; verify the actual charge from GET /v2/team/credit-usage (remainingCredits delta) or the dashboard, then `ledger resolve`. creditsBilled is undocumented and informational only. No automatic re-run.");
-    console.log("Subresources: denied except the exact hostname bootstrapmade.com and data:/blob:; blocked third-party assets mark the capture incomplete.");
+    console.log("Every request and hop: one structural policy (http/https, no credentials, no non-default port, no IP-literal/local host, exact hostname bootstrapmade.com; data:/blob: subresources only); http(s) fetched once by route.fetch({ maxRedirects: 0, maxRetries: 0 }) and any 3xx aborted unserved (redirects never followed); WebSockets refused. Any blocked subresource marks the capture incomplete.");
     console.log("Stops: preview mismatch; missing gate; unresolved (incl. pending reconciliation)/duplicate/over-ceiling ledger; create ambiguous (no re-create) or failed; execute error/killed/truncated/partial/oversize; in-browser redirect/viewport/swiper/service-worker/owned-context refusal; delete not confirmed (blocking).");
     console.log("Not proven: hosted availability of page.context().browser() / browser.newContext inside the Firecrawl sandbox (fails closed; the session is still deleted).");
     if (!flags.has("yes")) {
