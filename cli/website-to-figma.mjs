@@ -42550,6 +42550,7 @@ function buildSandboxPreview() {
       "`page` in execute is used only to reach the Browser; the Firecrawl examples use it without defining it, but the docs do not state it; missing => fail closed.",
       "Every request (main document and subresources) passes ONE structural policy: http/https (data:/blob: only for subresources), no credentials, no non-default port, no IP-literal or local-name host, exact hostname bootstrapmade.com (exact raw URL for the main navigation). Allowed http(s) requests are made once by route.fetch({ maxRedirects: 0, maxRetries: 0 }); any 3xx is aborted before anything is served, so no redirect hop is requested (an allowed asset behind a redirect is missing, not followed). route.continue() is used only for data:/blob:. WebSockets are refused via context.routeWebSocket (missing => fail closed). Any aborted subresource marks the capture incomplete.",
       "route.fetch requests are made by Playwright inside the hosted sandbox with the owned context's cookies, not by this tool; no DNS lookups are made by the policy and the hosted DNS exception is not expanded. Remote-browser egress is the provider's (docs/security, docs/features/threat-protection); this tool's local DNS guard covers only its own fetches.",
+      "JS worlds: on the hosted browser page.evaluate was observed NOT to see el.swiper / window.Swiper while page.waitForFunction did (run da1ae3f40f44; isolated-world evaluate is a hypothesis, not confirmed by docs). Every read of page-JS state (readiness, diag, stop-autoplay, slideNext) therefore runs through page.waitForFunction (main world) + JSHandle.jsonValue(); the page functions always return a non-null object, so each resolves on its first evaluation. DOM-only steps (probe, into-view, measure, screenshots) stay on page.evaluate. The diag runs in both worlds and records evaluateIsolated; the run fails closed if the main-world diag cannot see el.swiper after readiness. No undocumented evaluate flag is used.",
       "Swiper readiness: after goto + settle, page.waitForFunction (polling 100 ms, timeout 10 s) waits until the page's own Swiper instance is bound to the source-verified element (#testimonials .swiper.init-swiper); if it never binds the run fails closed with read-only diagnostics (stage, served/blocked requests, page errors, Swiper/script snapshot). Why an earlier run found it unbound is NOT determined.",
       "Failure diagnostics: a well-formed W2F_RESULT is recovered even when the execute envelope fails (success false, killed, truncated, nonzero exit); the run stays rejected/ambiguous. Observed browser fields are kept; unobserved fields are null (guard fields need routeInstalled, page/listener fields need listenersInstalled). Everything persisted or printed (sandbox.json, execute-raw.json, every ledger write via the ledger's single serializer, CLI logs and errors) is sanitized first: API keys, complete Authorization values (scheme + credential), URL userinfo, credential/session/token and long opaque query values, CDP/DevTools/live-view/session/WebSocket URLs, credential key=value pairs, JWTs. execute-raw.json is always valid JSON within 200,000 UTF-8 bytes (serialized size) with explicit per-field truncation metadata. States-run/diagnostic response files are NOT sanitized (they keep signed screenshot URLs needed for the later download step).",
       "Timing: ONE cooperative local deadline (72 s) covers setup, navigation, waits, evaluations and screenshots (each Playwright call is raced against the time left and its own timeout capped to it); the owned-context close is a separate single attempt bounded to 5 s; 13 s of the documented 90 s execute timeout remain for serialization and provider overhead. The record keeps localDeadline, ownedContextClose, providerKilled and transportTimedOut separately. Not a hard bound: synchronous work in the sandbox's Node process cannot be pre-empted, and the provider's own kill is outside this code.",
@@ -43048,7 +43049,7 @@ function sandboxToCapture(rec, files) {
     manifest: { schema: "website-to-figma/asset-manifest", schemaVersion: 1, assets: rec.states.map((s, i) => ({ id: `sandbox-s${i}`, kind: "reference", file: files[i], sha256: s.png.sha256, pageUrl: SANDBOX_URL, state: s.name })) }
   };
 }
-var isObj8, SANDBOX_URL, SANDBOX, SANDBOX_UNSUPPORTED, SANDBOX_WORST_CASE_CREDITS, SANDBOX_WALL_MS, PAGE_FUNCS, SANDBOX_CODE, sandboxPreviewSha256, B642, SandboxHardHold, redact500, strs, objs, num2, RAW_EXECUTE_CAP_BYTES, RAW_EXECUTE_JSON_MAX_BYTES, RAW_FIELD_BUDGET;
+var isObj8, SANDBOX_URL, SANDBOX, SANDBOX_UNSUPPORTED, SANDBOX_WORST_CASE_CREDITS, SANDBOX_NOMINAL_MS, SANDBOX_WALL_MS, PAGE_FUNCS, SANDBOX_CODE, sandboxPreviewSha256, B642, SandboxHardHold, redact500, strs, objs, num2, RAW_EXECUTE_CAP_BYTES, RAW_EXECUTE_JSON_MAX_BYTES, RAW_FIELD_BUDGET;
 var init_sandbox = __esm({
   "src/states/sandbox.ts"() {
     "use strict";
@@ -43079,6 +43080,9 @@ var init_sandbox = __esm({
       settleMs: 2e3,
       // bounded wait (page.waitForFunction) for the page's own Swiper to bind to the source-verified element
       swiperReadyMs: 8e3,
+      // cap for each MAIN-WORLD Swiper call (diag, stop-autoplay, each slideNext); they resolve on the
+      // first evaluation (the page functions always return a non-null object)
+      swiperOpMs: 1500,
       stateWaitMs: 800,
       scope: "#testimonials",
       swiper: "#testimonials .swiper.init-swiper",
@@ -43092,13 +43096,16 @@ var init_sandbox = __esm({
     };
     SANDBOX_UNSUPPORTED = [];
     SANDBOX_WORST_CASE_CREDITS = Math.ceil(SANDBOX.ttl / 60) * 2;
-    if (SANDBOX.navTimeoutMs + SANDBOX.settleMs + SANDBOX.swiperReadyMs + SANDBOX.states.length * (SANDBOX.stateWaitMs + SANDBOX.screenshotMs) >= SANDBOX.localDeadlineMs) throw new Error("sandbox step caps exceed the local deadline");
+    SANDBOX_NOMINAL_MS = SANDBOX.navTimeoutMs + SANDBOX.settleMs + SANDBOX.swiperReadyMs + SANDBOX.swiperOpMs * (2 + (SANDBOX.states.length - 1)) + SANDBOX.states.length * (SANDBOX.stateWaitMs + SANDBOX.screenshotMs);
+    if (SANDBOX_NOMINAL_MS >= SANDBOX.localDeadlineMs) throw new Error("sandbox step caps exceed the local deadline");
     if (SANDBOX.localDeadlineMs + SANDBOX.closeBoundMs >= SANDBOX.executeTimeoutS * 1e3 - 1e4) throw new Error("local deadline + close bound leave under 10 s of headroom");
     if (SANDBOX.ttl < 30 || SANDBOX.ttl > 3600 || SANDBOX.activityTtl < 10 || SANDBOX.activityTtl > 3600) throw new Error("sandbox ttl outside the documented ranges");
     SANDBOX_WALL_MS = { create: 6e4, execute: SANDBOX.executeTimeoutS * 1e3 + 3e4, delete: 6e4 };
     PAGE_FUNCS = String.raw`
 const W2F_PROBE = () => { const d = document.documentElement, b = document.body, vv = window.visualViewport; return { innerWidth: window.innerWidth, innerHeight: window.innerHeight, rootClientWidth: d.clientWidth, rootClientHeight: d.clientHeight, visualViewport: vv ? { width: vv.width, height: vv.height, scale: vv.scale, offsetTop: vv.offsetTop, pageTop: vv.pageTop } : null, scrollY: window.scrollY, documentHeight: Math.max(d.scrollHeight, b ? b.scrollHeight : 0), devicePixelRatio: window.devicePixelRatio, readyState: document.readyState }; };
-const W2F_SWIPER = (a) => {
+// Reads el.swiper (a page-JS expando): MUST run in the page's MAIN world (see mainWorld()). Always
+// returns a non-null object, so waitForFunction resolves on its first evaluation (applied once).
+const W2F_SWIPER = (a) => { try {
   const els = Array.from(document.querySelectorAll(a.sel));
   const el = els.length === 1 ? els[0] : null; const sw = el ? el.swiper : null;
   let reason = null;
@@ -43114,15 +43121,17 @@ const W2F_SWIPER = (a) => {
   else if (a.op === "next") sw.slideNext(0);
   const after = snap();
   return { valid: true, reason: null, op: a.op, before, after, moved: after.realIndex !== before.realIndex || after.activeIndex !== before.activeIndex };
-};
+} catch (e) { return { valid: false, reason: "page function threw: " + String((e && e.message) || e).slice(0, 200) }; } };
 // readiness: exactly one match AND the page's own Swiper instance bound to it (self-contained)
 const W2F_SWIPER_BOUND = (sel) => { const els = document.querySelectorAll(sel); if (els.length !== 1) return false; const sw = els[0].swiper; return !!sw && typeof sw === "object" && sw.el === els[0] && typeof sw.slideNext === "function"; };
 // read-only diagnostics (no page modification) recorded whether or not the Swiper bound
-const W2F_SWIPER_DIAG = (sel) => {
+// run in BOTH worlds (main via waitForFunction, evaluate world via page.evaluate) to record which sees
+// el.swiper / window.Swiper; always a non-null object
+const W2F_SWIPER_DIAG = (sel) => { try {
   const els = Array.from(document.querySelectorAll(sel)); const el = els[0] || null;
   const src = (s) => { if (!s.src) return "(inline)"; try { const u = new URL(s.src); return u.host === location.host ? u.pathname.slice(0, 200) : u.protocol + "//" + u.host + "/(other host)"; } catch (e) { return "(invalid)"; } };
   return { matches: els.length, initializedClass: el ? el.classList.contains("swiper-initialized") : null, hasSwiperProp: el ? !!el.swiper : null, windowSwiperType: typeof window.Swiper, configPresent: el ? !!el.querySelector(".swiper-config") : null, slides: el ? el.querySelectorAll(".swiper-slide").length : null, readyState: document.readyState, scripts: Array.from(document.scripts).slice(0, 30).map(src) };
-};
+} catch (e) { return { error: "page function threw: " + String((e && e.message) || e).slice(0, 200) }; } };
 const W2F_INTO_VIEW = (sel) => { const e = document.querySelector(sel); if (!e) return false; e.scrollIntoView({ block: "start", inline: "nearest" }); return true; };
 const W2F_MEASURE = (a) => {
   const t = document.querySelector(a.scope); if (!t) return { target: null };
@@ -43159,7 +43168,7 @@ const W2F_MEASURE = (a) => {
   return { target: { selector: a.scope, viewTop: tr.top, viewBottom: tr.bottom, left: tr.left, width: tr.width, height: tr.height, documentY: tr.top + sy, inViewport: tr.top >= -1 && tr.bottom <= window.innerHeight + 1 }, region, probe, elements, texts, images };
 };`;
     SANDBOX_CODE = String.raw`// website-to-figma fixed sandbox code (reviewed; takes no inputs)
-const W = ${JSON.stringify({ url: SANDBOX.url, host: "bootstrapmade.com", vw: SANDBOX.viewport.width, vh: SANDBOX.viewport.height, localDeadlineMs: SANDBOX.localDeadlineMs, closeBoundMs: SANDBOX.closeBoundMs, screenshotMs: SANDBOX.screenshotMs, navTimeoutMs: SANDBOX.navTimeoutMs, settleMs: SANDBOX.settleMs, swiperReadyMs: SANDBOX.swiperReadyMs, stateWaitMs: SANDBOX.stateWaitMs, scope: SANDBOX.scope, swiper: SANDBOX.swiper, states: SANDBOX.states, maxPngBytes: SANDBOX.maxPngBytes, max: { maxElements: SANDBOX.maxElements, maxTexts: SANDBOX.maxTexts, maxImages: SANDBOX.maxImages } })};
+const W = ${JSON.stringify({ url: SANDBOX.url, host: "bootstrapmade.com", vw: SANDBOX.viewport.width, vh: SANDBOX.viewport.height, localDeadlineMs: SANDBOX.localDeadlineMs, closeBoundMs: SANDBOX.closeBoundMs, screenshotMs: SANDBOX.screenshotMs, navTimeoutMs: SANDBOX.navTimeoutMs, settleMs: SANDBOX.settleMs, swiperReadyMs: SANDBOX.swiperReadyMs, swiperOpMs: SANDBOX.swiperOpMs, stateWaitMs: SANDBOX.stateWaitMs, scope: SANDBOX.scope, swiper: SANDBOX.swiper, states: SANDBOX.states, maxPngBytes: SANDBOX.maxPngBytes, max: { maxElements: SANDBOX.maxElements, maxTexts: SANDBOX.maxTexts, maxImages: SANDBOX.maxImages } })};
 ${PAGE_FUNCS}
 // stage = the step in progress when an error is thrown; routeInstalled says whether blocked/served/
 // incomplete were OBSERVED by the guard (false => they are unobserved defaults, not evidence)
@@ -43190,6 +43199,15 @@ try {
   ctx = await within("newContext", () => browser.newContext({ serviceWorkers: "block", viewport: { width: W.vw, height: W.vh } }));
   out.ownedContext = { serviceWorkers: "block", viewport: { width: W.vw, height: W.vh } };
   let own = null;
+  // MAIN-WORLD call for page-JS state (el.swiper, window.Swiper): page.waitForFunction runs its
+  // predicate in the page's main world (the path that saw el.swiper in the hosted run, where
+  // page.evaluate did not). The predicate returns a JSON object (truthy), so it resolves on the first
+  // evaluation; the value is read with JSHandle.jsonValue() and the handle disposed. Bounded by the
+  // local deadline.
+  const mainWorld = async (what, fn, arg, cap) => {
+    const h = await within(what, () => own.waitForFunction(fn, arg, { timeout: tmo(cap), polling: 100 }), cap);
+    try { return await within(what + "-value", () => h.jsonValue()); } finally { try { await h.dispose(); } catch (e) {} }
+  };
   // ONE structural URL policy for EVERY request and every hop (no DNS lookups here; the hosted DNS
   // exception is not expanded). Returns the refusal reason, or null when allowed.
   const policy = (raw, nav, main) => {
@@ -43277,17 +43295,25 @@ try {
     out.swiperReady = { ready: false, waitedMs: Date.now() - t0, timeoutMs: W.swiperReadyMs, error: String((e && e.message) || e).slice(0, 200) };
   }
   if (out.deadline.hit) throw new Error("local deadline " + W.localDeadlineMs + " ms reached during swiper-ready");
-  try { out.swiperReady.diag = await within("swiper-diag", () => own.evaluate(W2F_SWIPER_DIAG, W.swiper)); } catch (e) { out.swiperReady.diag = { error: String((e && e.message) || e).slice(0, 200) }; }
+  // dual-world diagnostics: which JS world sees el.swiper / window.Swiper (DOM is shared by both)
+  const diag = { mainWorld: null, evaluateWorld: null, evaluateIsolated: null };
+  try { diag.mainWorld = await mainWorld("swiper-diag-main", W2F_SWIPER_DIAG, W.swiper, W.swiperOpMs); } catch (e) { diag.mainWorld = { error: String((e && e.message) || e).slice(0, 200) }; }
+  try { diag.evaluateWorld = await within("swiper-diag-evaluate", () => own.evaluate(W2F_SWIPER_DIAG, W.swiper)); } catch (e) { diag.evaluateWorld = { error: String((e && e.message) || e).slice(0, 200) }; }
+  if (diag.mainWorld && diag.evaluateWorld && typeof diag.mainWorld.hasSwiperProp === "boolean" && typeof diag.evaluateWorld.hasSwiperProp === "boolean") diag.evaluateIsolated = diag.mainWorld.hasSwiperProp && !diag.evaluateWorld.hasSwiperProp;
+  out.swiperReady.diag = diag;
+  if (out.deadline.hit) throw new Error("local deadline " + W.localDeadlineMs + " ms reached during swiper-diag");
   if (!out.swiperReady.ready) throw new Error("swiper not bound within " + W.swiperReadyMs + " ms (see swiperReady.diag)");
+  // fail closed: readiness passed in the main world, so the main-world diag MUST see the instance
+  if (!diag.mainWorld || diag.mainWorld.hasSwiperProp !== true) throw new Error("readiness passed but the main-world diag cannot see el.swiper (see swiperReady.diag)");
   out.stage = "autoplay";
-  out.autoplay = await within("autoplay", () => own.evaluate(W2F_SWIPER, { sel: W.swiper, op: "stop-autoplay" }));
+  out.autoplay = await mainWorld("autoplay", W2F_SWIPER, { sel: W.swiper, op: "stop-autoplay" }, W.swiperOpMs);
   if (!out.autoplay.valid) throw new Error("swiper refused: " + out.autoplay.reason);
   if (out.autoplay.before && out.autoplay.before.autoplayRunning) out.modifications.push("stopped autoplay of " + W.swiper + " via its own Swiper API (not the page's original behavior)");
   // All three states on the SAME owned page.
   for (let seq = 0; seq < W.states.length; seq++) {
     out.stage = "state-" + seq;
     let trigger = null;
-    if (seq > 0) { trigger = await within("swiper-next", () => own.evaluate(W2F_SWIPER, { sel: W.swiper, op: "next" })); if (!trigger.valid) throw new Error("swiper refused: " + trigger.reason); }
+    if (seq > 0) { trigger = await mainWorld("swiper-next", W2F_SWIPER, { sel: W.swiper, op: "next" }, W.swiperOpMs); if (!trigger.valid) throw new Error("swiper refused: " + trigger.reason); }
     if (!(await within("into-view", () => own.evaluate(W2F_INTO_VIEW, W.scope)))) throw new Error("scope not found");
     await within("state-wait", () => own.waitForTimeout(tmo(W.stateWaitMs)));
     const m = await within("measure", () => own.evaluate(W2F_MEASURE, { scope: W.scope, ...W.max }));

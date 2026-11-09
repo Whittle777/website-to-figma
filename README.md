@@ -636,7 +636,11 @@ reach the Browser through `page.context().browser()`, and it is never navigated.
 8. waits (bounded: `page.waitForFunction`, 8 s, polling 100 ms) until the page's own Swiper is bound
    to the source-verified `#testimonials .swiper.init-swiper`. If it never binds, the run fails
    closed with read-only diagnostics, and the cause is not guessed. Then it stops autoplay on that
-   one Swiper (a recorded modification)
+   one Swiper (a recorded modification). Every read of page-JS state (readiness, Swiper diagnostics, stop-autoplay,
+   `slideNext`) runs in the page's **main world** through `page.waitForFunction` plus
+   `JSHandle.jsonValue()`. On the hosted browser, `page.evaluate` was observed not to see `el.swiper`
+   or `window.Swiper` (an isolated world is the hypothesis). DOM-only steps stay on `page.evaluate`.
+   The diagnostic runs in both worlds and records `evaluateIsolated`
 9. captures **all three states on that same owned page**
 
 The owned context is closed in `finally`.

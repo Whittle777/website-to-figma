@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { copyObserved, rawExecuteProvenance, RAW_EXECUTE_CAP_BYTES, sanitizeRecord, SANDBOX_WALL_MS, writeExecuteRawFile } from "../src/states/sandbox";
+import { copyObserved, rawExecuteProvenance, RAW_EXECUTE_CAP_BYTES, sanitizeRecord, SANDBOX_WALL_MS, writeExecuteRawFile, SANDBOX_NOMINAL_MS } from "../src/states/sandbox";
 import { statSync } from "node:fs";
 import { initLedger as lInit, recordManual, reserveAttempt, recordOp as lRecordOp, settleAttempt as lSettle, settlePendingReconciliation as lPending, serializeLedger } from "../src/states/ledger";
 import { readFileSync } from "node:fs";
@@ -48,7 +48,7 @@ const UPSTREAM: Record<string, { status: number; location?: string }> = {
   "https://bootstrapmade.com/content/vendors/redirector.js": { status: 302, location: "https://evil.example/payload.js" },
   "https://bootstrapmade.com/content/vendors/moved.js": { status: 301, location: "/content/vendors/moved-here.js" },
 };
-function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: boolean; main3xx?: boolean; serviceWorker?: boolean; popup?: boolean; noBrowser?: boolean; newContextThrows?: boolean; noRouteWebSocket?: boolean; subresources?: string[]; swiperBindAfterMs?: number; pageError?: string; hangAt?: "goto" | "screenshot"; closeHangs?: boolean } = {}) {
+function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: boolean; main3xx?: boolean; serviceWorker?: boolean; popup?: boolean; noBrowser?: boolean; newContextThrows?: boolean; noRouteWebSocket?: boolean; subresources?: string[]; swiperBindAfterMs?: number; pageError?: string; hangAt?: "goto" | "screenshot"; closeHangs?: boolean; sharedWorld?: boolean; unbindAfterReady?: boolean; slideNextThrows?: boolean } = {}) {
   const calls: string[] = [];
   const html = `<!doctype html><html><body><section id="hero">Hero</section><section id="testimonials"><div class="swiper init-swiper"><div class="swiper-wrapper"><div class="swiper-slide"><h3 id="slide">Slide 0</h3></div></div></div></section></body></html>`;
   const d = new JSDOM(html, { runScripts: "outside-only", virtualConsole: new VirtualConsole(), url: SANDBOX_URL });
@@ -77,10 +77,15 @@ function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: 
   };
   const el = w.document.querySelector(".swiper");
   let idx = 0;
-  const sw: any = o.noSwiper ? null : { el, activeIndex: 0, realIndex: 0, destroyed: false, enabled: true, autoplay: { running: true, stop() { this.running = false; calls.push("autoplay.stop"); } }, slideNext(speed: number) { calls.push(`slideNext:${speed}`); idx++; this.activeIndex = idx; this.realIndex = idx; w.document.getElementById("slide").textContent = `Slide ${idx}`; } };
+  const sw: any = o.noSwiper ? null : { el, activeIndex: 0, realIndex: 0, destroyed: false, enabled: true, autoplay: { running: true, stop() { this.running = false; calls.push("autoplay.stop"); } }, slideNext(speed: number) { if (o.slideNextThrows) throw new Error("synthetic slideNext failure"); calls.push(`slideNext:${speed}`); idx++; this.activeIndex = idx; this.realIndex = idx; w.document.getElementById("slide").textContent = `Slide ${idx}`; } };
   // the page's own init binds el.swiper immediately, after a delay (async init), or never (noSwiper)
   const bindAt = o.swiperBindAfterMs ?? 0;
-  if (sw && bindAt === 0) el.swiper = sw;
+  // MAIN world state: the page's own init binds el.swiper and the window.Swiper global
+  const bind = () => {
+    el.swiper = sw;
+    w.Swiper = function Swiper() {};
+  };
+  if (sw && bindAt === 0) bind();
   const pageEvents: Record<string, (x: any) => void> = {};
   if (o.serviceWorker) w.navigator.serviceWorker = { controller: {} };
   let routeHandler: ((r: any) => Promise<unknown> | unknown) | null = null;
@@ -201,17 +206,37 @@ function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: 
     },
     // like Playwright: the predicate SOURCE is evaluated in the page, polled until truthy or timeout
     // (virtual clock); timeout error text as Playwright reports it
+    // MAIN world (like Playwright's waitForFunction): sees page-JS expandos/globals; resolves with a
+    // JSHandle on the first truthy value
     waitForFunction: async (fn: (a: unknown) => unknown, arg: unknown, opts: { timeout: number; polling: number }) => {
       calls.push(`waitForFunction:timeout=${opts.timeout}:polling=${opts.polling}`);
+      calls.push(`main:${fn.name}`);
       for (let t = 0; t <= opts.timeout; t += opts.polling) {
-        if (sw && bindAt > 0 && t >= bindAt) el.swiper = sw;
-        if (w.eval(`(${fn.toString()})`)(JSON.parse(JSON.stringify(arg ?? null)))) return { t };
+        if (sw && bindAt > 0 && t >= bindAt && !el.swiper) bind();
+        const v = w.eval(`(${fn.toString()})`)(JSON.parse(JSON.stringify(arg ?? null)));
+        if (v && o.unbindAfterReady && fn.name === "W2F_SWIPER_BOUND") delete el.swiper;
+        if (v) return { jsonValue: async () => JSON.parse(JSON.stringify(v)), dispose: async () => calls.push(`dispose:${fn.name}`) };
       }
       throw new Error(`page.waitForFunction: Timeout ${opts.timeout}ms exceeded.`);
     },
     waitForTimeout: async () => {},
-    // like Playwright: only the function SOURCE crosses into the page (no closure/outer helpers)
-    evaluate: async (fn: (a: unknown) => unknown, arg: unknown) => w.eval(`(${fn.toString()})`)(JSON.parse(JSON.stringify(arg ?? null))),
+    // ISOLATED world by default (as observed on the hosted browser: Patchright-like evaluate): the DOM is
+    // shared, but page-JS expandos (el.swiper) and window globals (window.Swiper) are NOT visible.
+    // sharedWorld: true models stock Playwright (evaluate in the main world).
+    evaluate: async (fn: (a: unknown) => unknown, arg: unknown) => {
+      calls.push(`evaluate:${fn.name}`);
+      const run = () => w.eval(`(${fn.toString()})`)(JSON.parse(JSON.stringify(arg ?? null)));
+      if (o.sharedWorld) return run();
+      const had = { swiper: el.swiper, Swiper: w.Swiper };
+      delete el.swiper;
+      delete w.Swiper;
+      try {
+        return run();
+      } finally {
+        if (had.swiper !== undefined) el.swiper = had.swiper;
+        if (had.Swiper !== undefined) w.Swiper = had.Swiper;
+      }
+    },
     screenshot: async (s: { clip: { width: number; height: number } }) => {
       calls.push(`screenshot:${s.clip.width}x${Math.round(s.clip.height)}`);
       if (o.hangAt === "screenshot") await new Promise(() => {});
@@ -812,7 +837,7 @@ describe("Swiper readiness (bounded page.waitForFunction on the source-verified 
     expect(p.calls).toContain(`waitForFunction:timeout=${SANDBOX.swiperReadyMs}:polling=100`);
     expect(SANDBOX.swiperReadyMs).toBe(8_000);
     expect(SANDBOX.swiper).toBe("#testimonials .swiper.init-swiper"); // unchanged (source-verified)
-    expect(r.swiperReady).toMatchObject({ ready: true, timeoutMs: 8_000, diag: { matches: 1, hasSwiperProp: true } });
+    expect(r.swiperReady).toMatchObject({ ready: true, timeoutMs: 8_000, diag: { mainWorld: { matches: 1, hasSwiperProp: true, windowSwiperType: "function" }, evaluateWorld: { matches: 1, hasSwiperProp: false, windowSwiperType: "undefined" }, evaluateIsolated: true } });
     expect(r.stage).toBe("done");
     // readiness wait happens after settle and before the autoplay stop / first state
     const iw = p.calls.findIndex((c) => c.startsWith("waitForFunction"));
@@ -828,7 +853,7 @@ describe("Swiper readiness (bounded page.waitForFunction on the source-verified 
     expect(parsed.reason).toBe("in-browser step failed at stage swiper-ready: swiper not bound within 8000 ms (see swiperReady.diag)");
     const r = parsed.result as any;
     expect(r.swiperReady).toMatchObject({ ready: false, timeoutMs: 8_000, error: "page.waitForFunction: Timeout 8000ms exceeded." });
-    expect(r.swiperReady.diag).toMatchObject({ matches: 1, hasSwiperProp: false, initializedClass: false, windowSwiperType: "undefined", slides: 1 });
+    expect(r.swiperReady.diag).toMatchObject({ mainWorld: { matches: 1, hasSwiperProp: false, initializedClass: false, windowSwiperType: "undefined", slides: 1 }, evaluateWorld: { hasSwiperProp: false }, evaluateIsolated: false });
     expect(r.pageErrors).toEqual(["Swiper is not defined"]);
     expect(r.routeInstalled).toBe(true);
     expect(r.served.map((x: any) => x.path)).toContain("/content/vendors/aos/aos.js");
@@ -877,7 +902,7 @@ describe("failure diagnostics are preserved (never discarded, never defaulted)",
   });
   it("the REAL page code's failure output (never-bound Swiper) is preserved end to end", async () => {
     const { rec } = await lifecycle(await runCode(fakePage({ noSwiper: true, pageError: "Swiper is not defined" })));
-    expect(rec).toMatchObject({ status: "rejected", stage: "swiper-ready", routeInstalled: true, incomplete: true, swiperReady: { ready: false, diag: { hasSwiperProp: false } }, pageErrors: ["Swiper is not defined"] });
+    expect(rec).toMatchObject({ status: "rejected", stage: "swiper-ready", routeInstalled: true, incomplete: true, swiperReady: { ready: false, diag: { mainWorld: { hasSwiperProp: false } } }, pageErrors: ["Swiper is not defined"] });
     expect(rec.blocked!.length).toBeGreaterThan(0);
     expect(rec.env).toMatchObject({ innerWidth: 1920, innerHeight: 1080 });
   });
@@ -951,7 +976,7 @@ describe("FINDING1: centralized sanitization before persistence (raw AND structu
     expect(rec.pageErrors![0]).toMatch(/^Failed https:\/\/\[REDACTED\]@bootstrapmade\.com\/x\.js\?token=\[REDACTED\]&ver=2 cdp \[REDACTED-SESSION-URL\] view \[REDACTED-SESSION-URL\] api_key=\[REDACTED\]/);
     expect((rec.nav as any).finalUrl).toBe("https://[REDACTED]@bootstrapmade.com/?token=[REDACTED]");
     // useful non-secret diagnostics survive unchanged
-    expect(rec).toMatchObject({ stage: "swiper-ready", routeInstalled: true, env: { innerWidth: 1920, innerHeight: 1080 }, swiperReady: { ready: false, diag: { matches: 1, hasSwiperProp: false } } });
+    expect(rec).toMatchObject({ stage: "swiper-ready", routeInstalled: true, env: { innerWidth: 1920, innerHeight: 1080 }, swiperReady: { ready: false, diag: { mainWorld: { matches: 1, hasSwiperProp: false } } } });
     expect(rec.blocked!.map((b: any) => b.origin)).toContain("https://fonts.googleapis.com");
     expect(rec.served!.map((x: any) => x.path)).toContain("/content/vendors/aos/aos.js");
     expect(JSON.parse(raws[0]!).fields.stderr.text).toContain("[REDACTED-SESSION-URL]");
@@ -1016,8 +1041,10 @@ describe("FINDING4: one local in-browser deadline; bounded single close; deadlin
     return { success: true, stdout: lines.join("\n"), exitCode: 0, killed: false };
   };
   it("budget: nominal step caps fit inside the local deadline; deadline + close bound leave >= 10 s of the documented 90 s", () => {
-    const nominal = SANDBOX.navTimeoutMs + SANDBOX.settleMs + SANDBOX.swiperReadyMs + SANDBOX.states.length * (SANDBOX.stateWaitMs + SANDBOX.screenshotMs);
-    expect(nominal).toBe(61_400);
+    // readiness + 4 main-world Swiper calls (diag, stop-autoplay, 2 x next) are inside the budget
+    const nominal = SANDBOX.navTimeoutMs + SANDBOX.settleMs + SANDBOX.swiperReadyMs + SANDBOX.swiperOpMs * 4 + SANDBOX.states.length * (SANDBOX.stateWaitMs + SANDBOX.screenshotMs);
+    expect(nominal).toBe(67_400);
+    expect(nominal).toBe(SANDBOX_NOMINAL_MS);
     expect(nominal).toBeLessThan(SANDBOX.localDeadlineMs);
     expect(SANDBOX.localDeadlineMs + SANDBOX.closeBoundMs).toBe(77_000);
     expect(SANDBOX.executeTimeoutS).toBe(90); // not raised
@@ -1229,5 +1256,75 @@ describe("execute-raw.json ON DISK never exceeds the promised 200000 UTF-8 bytes
     const atCap = JSON.stringify({ t: "x".repeat(RAW_EXECUTE_CAP_BYTES - 8) });
     expect(Buffer.byteLength(atCap, "utf8")).toBe(RAW_EXECUTE_CAP_BYTES);
     expect(Buffer.byteLength(atCap + "\n", "utf8")).toBe(RAW_EXECUTE_CAP_BYTES + 1);
+  });
+});
+
+describe("MAIN-WORLD Swiper access (hosted evaluate observed isolated; run da1ae3f40f44)", () => {
+  const worldCalls = (p: ReturnType<typeof fakePage>) => p.calls.filter((c) => /^(main|evaluate):W2F_SWIPER/.test(c));
+  it("production path: readiness, diag, stop-autoplay and every slideNext go through the main world; evaluate is used only for the dual-world diag", async () => {
+    const p = fakePage(); // evaluate ISOLATED (default), like the hosted run
+    const parsed = parseSandboxOutput(await runCode(p));
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(worldCalls(p)).toEqual(["main:W2F_SWIPER_BOUND", "main:W2F_SWIPER_DIAG", "evaluate:W2F_SWIPER_DIAG", "main:W2F_SWIPER", "main:W2F_SWIPER", "main:W2F_SWIPER"]);
+    expect(p.calls.filter((c) => c.startsWith("dispose:"))).toEqual(["dispose:W2F_SWIPER_DIAG", "dispose:W2F_SWIPER", "dispose:W2F_SWIPER", "dispose:W2F_SWIPER"]);
+    expect(p.calls.filter((c) => c.startsWith("waitForFunction:"))).toEqual([`waitForFunction:timeout=${SANDBOX.swiperReadyMs}:polling=100`, ...Array(4).fill(`waitForFunction:timeout=${SANDBOX.swiperOpMs}:polling=100`)]);
+    const r = parsed.result as any;
+    expect(r.autoplay).toMatchObject({ valid: true, op: "stop-autoplay", before: { autoplayRunning: true }, after: { autoplayRunning: false } });
+    expect(r.states.map((x: any) => x.trigger?.moved ?? null)).toEqual([null, true, true]);
+    expect(p.calls.filter((c) => c.startsWith("slideNext"))).toEqual(["slideNext:0", "slideNext:0"]); // applied exactly once each
+    expect(r.swiperReady.diag).toMatchObject({ mainWorld: { hasSwiperProp: true, windowSwiperType: "function" }, evaluateWorld: { hasSwiperProp: false, windowSwiperType: "undefined" }, evaluateIsolated: true });
+  });
+  it("MUTATION: stop-autoplay via page.evaluate (the previous code) reproduces the live failure in the isolated world", async () => {
+    const needle = `mainWorld("autoplay", W2F_SWIPER, { sel: W.swiper, op: "stop-autoplay" }, W.swiperOpMs)`;
+    expect(SANDBOX_CODE).toContain(needle);
+    const mutant = SANDBOX_CODE.replace(needle, `within("autoplay", () => own.evaluate(W2F_SWIPER, { sel: W.swiper, op: "stop-autoplay" }))`);
+    const p = fakePage();
+    const lines: string[] = [];
+    await new AsyncFunction("page", "console", mutant)(p.page, { log: (x: string) => lines.push(x) });
+    const res = parseSandboxOutput({ success: true, exitCode: 0, stdout: lines.join("\n") });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.reason).toBe("in-browser step failed at stage autoplay: swiper refused: no Swiper instance bound to this element");
+    // and the diagnostics now say WHY: main sees it, the evaluate world does not
+    expect((res.result as any).swiperReady).toMatchObject({ ready: true, diag: { mainWorld: { hasSwiperProp: true }, evaluateWorld: { hasSwiperProp: false }, evaluateIsolated: true } });
+  });
+  it("stock (shared-world) Playwright also works and the diag reports evaluateIsolated false", async () => {
+    const p = fakePage({ sharedWorld: true });
+    const parsed = parseSandboxOutput(await runCode(p));
+    expect(parsed.ok).toBe(true);
+    expect(parsed.ok && (parsed.result as any).swiperReady.diag).toMatchObject({ mainWorld: { hasSwiperProp: true }, evaluateWorld: { hasSwiperProp: true, windowSwiperType: "function" }, evaluateIsolated: false });
+  });
+  it("fail closed: readiness passed but the main-world diag cannot see el.swiper -> no Swiper call, context closed", async () => {
+    const p = fakePage({ unbindAfterReady: true });
+    const res = parseSandboxOutput(await runCode(p));
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.reason).toBe("in-browser step failed at stage swiper-ready: readiness passed but the main-world diag cannot see el.swiper (see swiperReady.diag)");
+    expect(p.calls).not.toContain("main:W2F_SWIPER");
+    expect(p.calls.some((c) => c.startsWith("slideNext") || c === "autoplay.stop")).toBe(false);
+    expect(p.calls.at(-1)).toBe("context.close");
+  });
+  it("a throwing page API is reported (never an unresolved/hanging main-world call), fail closed", async () => {
+    const p = fakePage({ slideNextThrows: true });
+    const res = parseSandboxOutput(await runCode(p));
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.reason).toBe("in-browser step failed at stage state-1: swiper refused: page function threw: synthetic slideNext failure");
+    expect((res.result as any).states).toHaveLength(1);
+  });
+  it("no page-JS-state read is left on page.evaluate (only DOM-only functions and the evaluate half of the diag)", () => {
+    const evals = [...SANDBOX_CODE.matchAll(/own\.evaluate\((\w+|\(\) =>)/g)].map((m) => m[1]);
+    expect(new Set(evals)).toEqual(new Set(["W2F_PROBE", "() =>", "W2F_SWIPER_DIAG", "W2F_INTO_VIEW", "W2F_MEASURE"]));
+    expect(SANDBOX_CODE.match(/own\.evaluate\(W2F_SWIPER_DIAG/g)).toHaveLength(1);
+  });
+  it("the dual-world diag is kept (sanitized) in the run record and execute-raw stays within the on-disk byte cap", async () => {
+    const { rec, raws } = await runWith(await runCode(fakePage()));
+    expect(rec.status).toBe("accepted");
+    expect(rec.swiperReady).toMatchObject({ ready: true, diag: { mainWorld: { hasSwiperProp: true }, evaluateWorld: { hasSwiperProp: false }, evaluateIsolated: true } });
+    const path = join(tmp(), "execute-raw.json");
+    writeExecuteRawFile(path, raws[0]!);
+    expect(statSync(path).size).toBeLessThanOrEqual(RAW_EXECUTE_CAP_BYTES);
+    expect(JSON.parse(readFileSync(path, "utf8")).schema).toBe("website-to-figma/execute-raw");
   });
 });
