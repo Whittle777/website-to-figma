@@ -42705,7 +42705,7 @@ function rawExecuteProvenance(resp, secrets) {
     }
     const doc = { schema: "website-to-figma/execute-raw", schemaVersion: 1, note: "PRIVATE raw execute provenance: PNG base64 elided, sanitized (keys, Authorization values, URL userinfo, token/session query values, CDP/live-view/session URLs), bounded per field (keptChars of sanitizedChars); the whole file is within capBytes UTF-8 bytes", capBytes: RAW_EXECUTE_CAP_BYTES, budgetScale: scale, ...type2 ? { type: type2 } : {}, envelope, fields, otherKeys };
     const text = JSON.stringify(doc, null, 2);
-    if (utf8Bytes(text) <= RAW_EXECUTE_CAP_BYTES) return text;
+    if (utf8Bytes(text) <= RAW_EXECUTE_JSON_MAX_BYTES) return text;
     if (scale < 1 / 1024) return JSON.stringify({ schema: "website-to-figma/execute-raw", schemaVersion: 1, capBytes: RAW_EXECUTE_CAP_BYTES, error: "provenance did not fit the cap at the minimum budget; fields omitted", envelope, fieldSizes: Object.fromEntries(Object.entries(prepared).map(([k, f]) => [k, f.originalChars])) });
   }
 }
@@ -42978,6 +42978,12 @@ async function lifecycleInner(o, secrets) {
   }
   return rec;
 }
+function writeExecuteRawFile(path, json) {
+  const data = Buffer.from(`${json}
+`, "utf8");
+  if (data.length > RAW_EXECUTE_CAP_BYTES) throw new StateRunPolicyError(`execute-raw.json would be ${data.length} bytes (cap ${RAW_EXECUTE_CAP_BYTES}); not written`);
+  writeExclusive(path, data);
+}
 async function cleanupSandbox(o) {
   const l = readLedger(o.ledgerPath);
   const e2 = l.entries.find((x) => x.id === o.entryId);
@@ -43042,7 +43048,7 @@ function sandboxToCapture(rec, files) {
     manifest: { schema: "website-to-figma/asset-manifest", schemaVersion: 1, assets: rec.states.map((s, i) => ({ id: `sandbox-s${i}`, kind: "reference", file: files[i], sha256: s.png.sha256, pageUrl: SANDBOX_URL, state: s.name })) }
   };
 }
-var isObj8, SANDBOX_URL, SANDBOX, SANDBOX_UNSUPPORTED, SANDBOX_WORST_CASE_CREDITS, SANDBOX_WALL_MS, PAGE_FUNCS, SANDBOX_CODE, sandboxPreviewSha256, B642, SandboxHardHold, redact500, strs, objs, num2, RAW_EXECUTE_CAP_BYTES, RAW_FIELD_BUDGET;
+var isObj8, SANDBOX_URL, SANDBOX, SANDBOX_UNSUPPORTED, SANDBOX_WORST_CASE_CREDITS, SANDBOX_WALL_MS, PAGE_FUNCS, SANDBOX_CODE, sandboxPreviewSha256, B642, SandboxHardHold, redact500, strs, objs, num2, RAW_EXECUTE_CAP_BYTES, RAW_EXECUTE_JSON_MAX_BYTES, RAW_FIELD_BUDGET;
 var init_sandbox = __esm({
   "src/states/sandbox.ts"() {
     "use strict";
@@ -43050,6 +43056,7 @@ var init_sandbox = __esm({
     init_imageInfo();
     init_execute();
     init_sanitize();
+    init_runFiles();
     init_sandboxTransport();
     init_ledger();
     isObj8 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -43317,6 +43324,7 @@ console.log("W2F_RESULT " + JSON.stringify(out));`;
     objs = (v, n) => Array.isArray(v) ? v.filter(isObj8).slice(0, n) : null;
     num2 = (v) => typeof v === "number" && Number.isFinite(v) ? v : null;
     RAW_EXECUTE_CAP_BYTES = 2e5;
+    RAW_EXECUTE_JSON_MAX_BYTES = RAW_EXECUTE_CAP_BYTES - 1;
     RAW_FIELD_BUDGET = { stdout: 5e4, result: 5e4, output: 5e4, error: 16e3, stderr: 16e3 };
   }
 });
@@ -44222,7 +44230,7 @@ async function main2(argv) {
         return process.env.FIRECRAWL_API_KEY;
       },
       savePng: (seq, bytes) => writeExclusive(join2(runDir, `state-${seq}.png`), bytes),
-      saveRaw: (text) => writeExclusive(join2(runDir, "execute-raw.json"), text + "\n"),
+      saveRaw: (text) => writeExecuteRawFile(join2(runDir, "execute-raw.json"), text),
       log: (m) => console.error(sanitizeString(m))
     });
     const safe = sanitizeRecord(rec);

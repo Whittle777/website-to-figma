@@ -8,7 +8,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { copyObserved, rawExecuteProvenance, RAW_EXECUTE_CAP_BYTES, sanitizeRecord, SANDBOX_WALL_MS } from "../src/states/sandbox";
+import { copyObserved, rawExecuteProvenance, RAW_EXECUTE_CAP_BYTES, sanitizeRecord, SANDBOX_WALL_MS, writeExecuteRawFile } from "../src/states/sandbox";
+import { statSync } from "node:fs";
 import { initLedger as lInit, recordManual, reserveAttempt, recordOp as lRecordOp, settleAttempt as lSettle, settlePendingReconciliation as lPending, serializeLedger } from "../src/states/ledger";
 import { readFileSync } from "node:fs";
 import { sanitizeString } from "../src/states/sanitize";
@@ -1192,5 +1193,41 @@ describe("persistence audit guard (complements the behavioral tests above)", () 
     const src = readFileSync("src/cli.ts", "utf8");
     expect(src).toContain('const safe = sanitizeRecord(rec); // same sanitized record for disk AND terminal');
     expect(src).toContain('writeExclusive(join(runDir, "sandbox.json"), JSON.stringify(safe, null, 2)');
+  });
+});
+
+describe("execute-raw.json ON DISK never exceeds the promised 200000 UTF-8 bytes (review 3f853cac)", () => {
+  for (const [name, unit] of [["ascii", "x"], ["4-byte emoji", "😀"], ["3-byte CJK", "漢"], ["2-byte latin", "é"], ["mixed + escapes", '😀"\\\u0001漢é']] as const) {
+    it(`${name}: file size (fs.stat) <= cap, ends with the newline, JSON.parse of the written file succeeds`, () => {
+      const big = unit.repeat(150_000);
+      const json = rawExecuteProvenance({ success: false, stdout: big, result: big, output: big, stderr: big, error: big }, [KEY]);
+      const path = join(tmp(), "execute-raw.json");
+      writeExecuteRawFile(path, json);
+      const size = statSync(path).size;
+      const bytes = readFileSync(path);
+      expect(size).toBe(bytes.length);
+      expect(size).toBeLessThanOrEqual(RAW_EXECUTE_CAP_BYTES);
+      expect(bytes[bytes.length - 1]).toBe(0x0a);
+      expect(JSON.parse(bytes.toString("utf8")).capBytes).toBe(RAW_EXECUTE_CAP_BYTES);
+    });
+  }
+  it("the serializer leaves exactly the 1 byte the newline needs (worst case lands at <= 199999 bytes)", () => {
+    for (const unit of ["x", "😀", "漢"]) {
+      const json = rawExecuteProvenance({ stdout: unit.repeat(150_000), stderr: unit.repeat(150_000) }, []);
+      expect(Buffer.byteLength(json, "utf8")).toBeLessThanOrEqual(RAW_EXECUTE_CAP_BYTES - 1);
+    }
+  });
+  it("the final writer refuses (does not chop) anything that would exceed the cap on disk", () => {
+    const path = join(tmp(), "execute-raw.json");
+    const exact = "x".repeat(RAW_EXECUTE_CAP_BYTES); // + newline = cap + 1
+    expect(() => writeExecuteRawFile(path, exact)).toThrow(/would be 200001 bytes \(cap 200000\); not written/);
+    expect(existsSync(path)).toBe(false);
+    writeExecuteRawFile(path, "x".repeat(RAW_EXECUTE_CAP_BYTES - 1));
+    expect(statSync(path).size).toBe(RAW_EXECUTE_CAP_BYTES);
+  });
+  it("MUTATION: the previous writer (cap-sized JSON + newline) put cap + 1 bytes on disk", () => {
+    const atCap = JSON.stringify({ t: "x".repeat(RAW_EXECUTE_CAP_BYTES - 8) });
+    expect(Buffer.byteLength(atCap, "utf8")).toBe(RAW_EXECUTE_CAP_BYTES);
+    expect(Buffer.byteLength(atCap + "\n", "utf8")).toBe(RAW_EXECUTE_CAP_BYTES + 1);
   });
 });

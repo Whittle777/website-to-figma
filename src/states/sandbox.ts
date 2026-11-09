@@ -42,6 +42,7 @@ import { assertHostedFirecrawlUrl, systemResolver, type Resolver } from "../secu
 import { inspectImage, sha256Hex } from "../shared/imageInfo";
 import { canonicalJson, classify, sha256, StateRunPolicyError, withTimeout } from "./execute";
 import { safeSlice, sanitizeString, sanitizeValue, utf8Bytes } from "./sanitize";
+import { writeExclusive } from "./runFiles";
 import { createInteractClient, INTERACT_API_URL, type InteractClient } from "./sandboxTransport";
 import { readLedger, reserveAttempt, settleAttempt, settlePendingReconciliation, recordOp, committedCredits, unresolved, LedgerError } from "./ledger";
 
@@ -627,6 +628,8 @@ export function copyObserved(rec: SandboxRecord, r: Obj): void {
 
 // cap on the SERIALIZED UTF-8 BYTES of execute-raw.json (not JS string length)
 export const RAW_EXECUTE_CAP_BYTES = 200_000;
+// the serialized JSON is kept to cap - 1 bytes so the final writer's trailing newline still fits
+const RAW_EXECUTE_JSON_MAX_BYTES = RAW_EXECUTE_CAP_BYTES - 1;
 const RAW_FIELD_BUDGET: Record<string, number> = { stdout: 50_000, result: 50_000, output: 50_000, error: 16_000, stderr: 16_000 };
 // PRIVATE raw execute provenance. Order: PNG base64 elided -> sanitized (secrets, URL userinfo,
 // token/session query values, CDP/live-view/session URLs) -> bounded per field with explicit
@@ -663,7 +666,7 @@ export function rawExecuteProvenance(resp: unknown, secrets: readonly string[]):
     }
     const doc = { schema: "website-to-figma/execute-raw", schemaVersion: 1, note: "PRIVATE raw execute provenance: PNG base64 elided, sanitized (keys, Authorization values, URL userinfo, token/session query values, CDP/live-view/session URLs), bounded per field (keptChars of sanitizedChars); the whole file is within capBytes UTF-8 bytes", capBytes: RAW_EXECUTE_CAP_BYTES, budgetScale: scale, ...(type ? { type } : {}), envelope, fields, otherKeys };
     const text = JSON.stringify(doc, null, 2);
-    if (utf8Bytes(text) <= RAW_EXECUTE_CAP_BYTES) return text;
+    if (utf8Bytes(text) <= RAW_EXECUTE_JSON_MAX_BYTES) return text;
     if (scale < 1 / 1024) return JSON.stringify({ schema: "website-to-figma/execute-raw", schemaVersion: 1, capBytes: RAW_EXECUTE_CAP_BYTES, error: "provenance did not fit the cap at the minimum budget; fields omitted", envelope, fieldSizes: Object.fromEntries(Object.entries(prepared).map(([k, f]) => [k, f.originalChars])) });
   }
 }
@@ -955,6 +958,14 @@ async function lifecycleInner(o: SandboxExecuteOptions, secrets: string[]): Prom
     }
   }
   return rec;
+}
+
+// The ONLY writer of execute-raw.json: JSON + "\n", and the bytes ON DISK never exceed
+// RAW_EXECUTE_CAP_BYTES (refused otherwise; nothing is chopped).
+export function writeExecuteRawFile(path: string, json: string): void {
+  const data = Buffer.from(`${json}\n`, "utf8");
+  if (data.length > RAW_EXECUTE_CAP_BYTES) throw new StateRunPolicyError(`execute-raw.json would be ${data.length} bytes (cap ${RAW_EXECUTE_CAP_BYTES}); not written`);
+  writeExclusive(path, data);
 }
 
 // One explicit DELETE for a recorded session whose cleanup was not confirmed.

@@ -26,7 +26,7 @@ import { createHash } from "node:crypto";
 import { buildDiagnosticPreview, diagnosticPreviewSha256, executeDiagnostic, interpretDiagnostic, validateDiagnosticPreview, DIAG_URL, type DiagnosticRecord } from "./states/diagnostic";
 import { inspectImage } from "./shared/imageInfo";
 import { sanitizeString } from "./states/sanitize";
-import { SANDBOX_UNSUPPORTED, assertSandboxGates, buildSandboxPreview, cleanupSandbox, executeSandbox, sanitizeRecord, sandboxPreviewSha256, sandboxToCapture, validateSandboxPreview, SANDBOX, SANDBOX_WORST_CASE_CREDITS, type SandboxRecord } from "./states/sandbox";
+import { SANDBOX_UNSUPPORTED, assertSandboxGates, buildSandboxPreview, cleanupSandbox, executeSandbox, sanitizeRecord, writeExecuteRawFile, sandboxPreviewSha256, sandboxToCapture, validateSandboxPreview, SANDBOX, SANDBOX_WORST_CASE_CREDITS, type SandboxRecord } from "./states/sandbox";
 import { planConnectorJobs, parseImageHashMap, DEFAULT_MAX_JOB_CHARS, JobPlanError } from "./connector/jobs";
 import { adaptTaggedReturns } from "./states/adapt";
 import { assertLimit } from "./normalize/build";
@@ -402,7 +402,7 @@ async function main(argv: string[]): Promise<number> {
         return process.env.FIRECRAWL_API_KEY;
       },
       savePng: (seq, bytes) => writeExclusive(join(runDir, `state-${seq}.png`), bytes),
-      saveRaw: (text) => writeExclusive(join(runDir, "execute-raw.json"), text + "\n"),
+      saveRaw: (text) => writeExecuteRawFile(join(runDir, "execute-raw.json"), text),
       log: (m) => console.error(sanitizeString(m)),
     });
     // final persistence boundary (the lifecycle already sanitized with the key; this re-check is key-less)
