@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { buildSandboxPreview, createSandboxClient, executeSandbox, parseSandboxOutput, sandboxPreviewSha256, sandboxToCapture, validateSandboxPreview, cleanupSandbox, SANDBOX, SANDBOX_CODE, SANDBOX_URL, SANDBOX_WORST_CASE_CREDITS, type SandboxClient } from "../src/states/sandbox";
+import { buildSandboxPreview, createSandboxClient, executeSandbox, runSandboxLifecycle, SandboxHardHold, SANDBOX_UNSUPPORTED, parseSandboxOutput, sandboxPreviewSha256, sandboxToCapture, validateSandboxPreview, cleanupSandbox, SANDBOX, SANDBOX_CODE, SANDBOX_URL, SANDBOX_WORST_CASE_CREDITS, type SandboxClient } from "../src/states/sandbox";
 import { StateRunPolicyError } from "../src/states/execute";
 import { createInteractClient } from "../src/states/sandboxTransport";
 import { initLedger, readLedger } from "../src/states/ledger";
@@ -30,7 +30,7 @@ const fakeIp = (asked: string[] = []) => async (h: string) => (asked.push(h), ["
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 
 // ---------------- fake Playwright page over jsdom ----------------
-function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: boolean; precheck3xx?: boolean } = {}) {
+function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: boolean; main3xx?: boolean; serviceWorker?: boolean; popup?: boolean } = {}) {
   const calls: string[] = [];
   const html = `<!doctype html><html><body><section id="hero">Hero</section><section id="testimonials"><div class="swiper init-swiper"><div class="swiper-wrapper"><div class="swiper-slide"><h3 id="slide">Slide 0</h3></div></div></div></section></body></html>`;
   const d = new JSDOM(html, { runScripts: "outside-only", virtualConsole: new VirtualConsole(), url: SANDBOX_URL });
@@ -60,16 +60,39 @@ function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: 
   const el = w.document.querySelector(".swiper");
   let idx = 0;
   if (!o.noSwiper) el.swiper = { el, activeIndex: 0, realIndex: 0, destroyed: false, enabled: true, autoplay: { running: true, stop() { this.running = false; calls.push("autoplay.stop"); } }, slideNext(speed: number) { calls.push(`slideNext:${speed}`); idx++; this.activeIndex = idx; this.realIndex = idx; w.document.getElementById("slide").textContent = `Slide ${idx}`; } };
-  let routeHandler: ((r: any) => unknown) | null = null;
+  if (o.serviceWorker) w.navigator.serviceWorker = { controller: {} };
+  let routeHandler: ((r: any) => Promise<unknown> | unknown) | null = null;
+  let pageHandler: ((p: any) => void) | null = null;
   const guard: string[] = [];
+  const network: string[] = []; // every request actually made upstream by route.fetch
   const mainFrame = {};
-  const req = (url: string, nav: boolean) => ({ url: () => url, isNavigationRequest: () => nav, frame: () => (nav ? mainFrame : {}) });
-  const route = (url: string, nav: boolean) => routeHandler!({ request: () => req(url, nav), abort: () => guard.push(`abort ${url}`), continue: () => guard.push(`continue ${url}`) });
-  const page = {
+  const req = (url: string, nav: boolean, main = true) => ({ url: () => url, isNavigationRequest: () => nav, frame: () => (nav && main ? mainFrame : {}) });
+  const route = async (url: string, nav: boolean, main = true) => {
+    let outcome = "none";
+    await routeHandler!({
+      request: () => req(url, nav, main),
+      abort: () => (guard.push(`abort ${url}`), (outcome = "abort")),
+      continue: () => (guard.push(`continue ${url}`), (outcome = "continue")),
+      fetch: async (opts: { maxRedirects: number; maxRetries: number }) => {
+        calls.push(`route.fetch:${url}:maxRedirects=${opts.maxRedirects}:maxRetries=${opts.maxRetries}`);
+        network.push(url); // maxRedirects 0: the Location target is never requested
+        return { status: () => (o.main3xx ? 301 : 200), url: () => url, headers: () => (o.main3xx ? { location: "https://elsewhere.example/" } : {}) };
+      },
+      fulfill: (f: { response: { status: () => number } }) => (guard.push(`fulfill ${url} ${f.response.status()}`), (outcome = "fulfill")),
+    });
+    return outcome;
+  };
+  const context = {
     route: async (_p: string, h: (r: any) => unknown) => {
-      calls.push("route");
+      calls.push("context.route");
       routeHandler = h;
     },
+    on: (ev: string, h: (p: any) => void) => {
+      if (ev === "page") pageHandler = h;
+    },
+  };
+  const page = {
+    context: () => context,
     setViewportSize: async (s: { width: number; height: number }) => {
       calls.push(`viewport:${s.width}x${s.height}`);
       if (!o.ignoreViewport) {
@@ -79,26 +102,22 @@ function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: 
     },
     goto: async (url: string) => {
       calls.push(`goto:${url}`);
-      route(url, true);
+      if ((await route(url, true)) === "abort") throw new Error("net::ERR_FAILED (main document aborted by route)");
+      if (o.popup) pageHandler?.({ close: async () => calls.push("popup.close") });
+      await route("https://bootstrapmade.com/popup", true, false); // a popup/frame navigation
       // synthetic subresources and attempts the guard must refuse
-      route("https://bootstrapmade.com/content/vendors/aos/aos.js", false);
-      route("http://169.254.169.254/latest/meta-data", false);
-      route("http://localhost:8080/x", false);
-      route("https://evil.example/", true);
-      route("https://bootstrapmade.com/content/demo/Bootslander", true); // missing slash: raw string differs
-      route("https://BOOTSTRAPMADE.com/content/demo/Bootslander/", true); // case variant: raw string differs
-      route("file:///etc/passwd", false);
+      await route("https://bootstrapmade.com/content/vendors/aos/aos.js", false);
+      await route("http://169.254.169.254/latest/meta-data", false);
+      await route("http://localhost:8080/x", false);
+      await route("https://evil.example/", true);
+      await route("https://bootstrapmade.com/content/demo/Bootslander", true); // missing slash: raw string differs
+      await route("https://BOOTSTRAPMADE.com/content/demo/Bootslander/", true); // case variant: raw string differs
+      await route("file:///etc/passwd", false);
       const first = { url: () => "https://bootstrapmade.com/old", redirectedFrom: () => null };
       const final = { url: () => url, redirectedFrom: () => (o.redirect ? first : null) };
       return { status: () => 200, request: () => final };
     },
     url: () => SANDBOX_URL,
-    request: {
-      get: async (url: string, opts: { maxRedirects: number }) => {
-        calls.push(`precheck:${url}:maxRedirects=${opts.maxRedirects}`);
-        return { status: () => (o.precheck3xx ? 301 : 200), url: () => url };
-      },
-    },
     mainFrame: () => mainFrame,
     waitForTimeout: async () => {},
     // like Playwright: only the function SOURCE crosses into the page (no closure/outer helpers)
@@ -108,7 +127,7 @@ function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: 
       return Buffer.from(syntheticPng(s.clip.width, Math.max(1, Math.round(s.clip.height)), [idx * 40, 30, 60], [200, 200, 200]));
     },
   };
-  return { page, calls, guard };
+  return { page, calls, guard, network };
 }
 async function runCode(p: ReturnType<typeof fakePage>) {
   const lines: string[] = [];
@@ -126,11 +145,16 @@ describe("fixed sandbox preview", () => {
     expect(SANDBOX_WORST_CASE_CREDITS).toBe(4);
     const code = p.execute.code;
     expect(code.indexOf("page.setViewportSize")).toBeLessThan(code.indexOf("page.goto"));
-    expect(code.indexOf("page.route")).toBeLessThan(code.indexOf("page.goto"));
-    expect(code.indexOf("maxRedirects: 0")).toBeGreaterThan(code.indexOf("page.setViewportSize"));
-    expect(code.indexOf("maxRedirects: 0")).toBeLessThan(code.indexOf("page.goto"));
+    expect(code.indexOf("ctx.route")).toBeLessThan(code.indexOf("page.goto"));
+    expect(code).toContain("route.fetch({ maxRedirects: 0, maxRetries: 0, timeout: W.navTimeoutMs })");
+    expect(code.indexOf("route.fetch(")).toBeLessThan(code.indexOf("route.fulfill("));
+    for (const gone of ["page.request", "accept-redirect-gap", "serviceWorkers:", "newContext", "launch("]) expect(code).not.toContain(gone);
+    expect(p.hardHold).toEqual(SANDBOX_UNSUPPORTED);
+    expect(SANDBOX_UNSUPPORTED[0]).toMatch(/^service-workers: /);
     expect(code).toContain(JSON.stringify(SANDBOX_URL));
-    for (const banned of ["realViewport", "profile", ".click(", ".fill(", "keyboard", ".type(", "prompt", "newPage", "addInitScript", "exposeFunction", "require(", "process.", "fetch(", "connectOverCDP"]) expect(code).not.toContain(banned);
+    for (const banned of ["realViewport", "profile", ".click(", ".fill(", "keyboard", ".type(", "prompt", "newPage", "addInitScript", "exposeFunction", "require(", "process.", "connectOverCDP"]) expect(code).not.toContain(banned);
+    // the only fetch capability is route.fetch of the exact main document
+    expect(code.match(/fetch\(/g)).toHaveLength(1);
     expect(sandboxPreviewSha256()).toMatch(/^[0-9a-f]{64}$/);
   });
   it("accepts only the exact preview", () => {
@@ -153,11 +177,13 @@ describe("the fixed page code against a fake Playwright page", () => {
     const parsed = parseSandboxOutput(raw);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    expect(p.calls.slice(0, 4)).toEqual(["route", "viewport:1920x1080", `precheck:${SANDBOX_URL}:maxRedirects=0`, `goto:${SANDBOX_URL}`]);
+    expect(p.calls.slice(0, 4)).toEqual(["context.route", "viewport:1920x1080", `goto:${SANDBOX_URL}`, `route.fetch:${SANDBOX_URL}:maxRedirects=0:maxRetries=0`]);
+    expect(p.network).toEqual([SANDBOX_URL]); // exactly one upstream main-document request, no pre-check duplicate
     expect(p.calls).toContain("autoplay.stop");
     expect(p.calls.filter((c) => c.startsWith("slideNext"))).toEqual(["slideNext:0", "slideNext:0"]);
     expect(p.guard).toEqual([
-      `continue ${SANDBOX_URL}`,
+      `fulfill ${SANDBOX_URL} 200`,
+      "abort https://bootstrapmade.com/popup",
       "continue https://bootstrapmade.com/content/vendors/aos/aos.js",
       "abort http://169.254.169.254/latest/meta-data",
       "abort http://localhost:8080/x",
@@ -168,7 +194,8 @@ describe("the fixed page code against a fake Playwright page", () => {
     ]);
     const r = parsed.result as any;
     expect(r.env).toMatchObject({ innerWidth: 1920, innerHeight: 1080 });
-    expect(r.blocked.map((b: any) => b.why)).toEqual(["ip-literal", "local-name", "main-frame-navigation-off-target", "main-frame-navigation-off-target", "main-frame-navigation-off-target", "scheme"]);
+    expect(r.blocked.map((b: any) => b.why)).toEqual(["navigation-not-exact-target", "ip-literal", "local-name", "navigation-not-exact-target", "navigation-not-exact-target", "navigation-not-exact-target", "scheme"]);
+    expect(r.mainFetch).toEqual({ status: 200, url: SANDBOX_URL });
     expect(r.modifications[0]).toMatch(/stopped autoplay of #testimonials \.swiper\.init-swiper via its own Swiper API/);
     expect(r.states.map((s: any) => [s.seq, s.name, s.measured.target.selector, s.measured.region.y])).toEqual([[0, "Default", "#testimonials", 4000], [1, "Testimonial next", "#testimonials", 4000], [2, "Testimonial next 2", "#testimonials", 4000]]);
     expect(r.states.map((s: any) => s.measured.texts.find((t: any) => t.text.startsWith("Slide")).text)).toEqual(["Slide 0", "Slide 1", "Slide 2"]);
@@ -179,7 +206,8 @@ describe("the fixed page code against a fake Playwright page", () => {
   it("refuses a redirect chain, an unapplied viewport, and a missing Swiper (fail closed, still emits a result)", async () => {
     for (const [o, re] of [
       [{ redirect: true }, /navigation left the exact target URL/],
-      [{ precheck3xx: true }, /target answered a redirect \(301\) in the pre-check; not navigating/],
+      [{ main3xx: true }, /main document aborted by route/],
+      [{ serviceWorker: true }, /a service worker controls the page/],
       [{ ignoreViewport: true }, /viewport not applied: 1920x100000/],
       [{ noSwiper: true }, /swiper refused: no Swiper instance bound/],
     ] as const) {
@@ -188,6 +216,22 @@ describe("the fixed page code against a fake Playwright page", () => {
       if (!parsed.ok) expect(parsed.reason).toMatch(re);
     }
   });
+  it("a main-document 3xx is aborted BEFORE fulfil: the redirect target is never requested", async () => {
+    const p = fakePage({ main3xx: true });
+    const res = parseSandboxOutput(await runCode(p));
+    expect(res.ok).toBe(false);
+    expect(p.network).toEqual([SANDBOX_URL]);
+    expect(p.guard).toEqual([`abort ${SANDBOX_URL}`]);
+    expect(p.calls.some((c) => c.includes("elsewhere"))).toBe(false);
+  });
+  it("popups are closed", async () => {
+    const p = fakePage({ popup: true });
+    const raw = await runCode(p);
+    expect(p.calls).toContain("popup.close");
+    const parsed = parseSandboxOutput(raw);
+    expect(parsed.ok && (parsed.result as any).popupsClosed).toBe(1);
+  });
+
   it("bounds output and PNGs before decoding", async () => {
     const good = await runCode(fakePage());
     expect(parseSandboxOutput({ ...good, truncated: true })).toMatchObject({ ok: false, status: "ambiguous" });
@@ -218,7 +262,7 @@ function setup() {
   const d = tmp();
   const ledgerPath = join(d, "ledger.json");
   initLedger(ledgerPath, 17, "origin-attributed prior project spend");
-  return { d, ledgerPath, validated: validateSandboxPreview(clone(buildSandboxPreview())), gates: { operatorCreditsPerRequest: 4, operatorReportedBalance: 983, confirmExistingCredits: true, confirmNoTopup: true, acceptRedirectGap: true, ledgerPath } };
+  return { d, ledgerPath, validated: validateSandboxPreview(clone(buildSandboxPreview())), gates: { operatorCreditsPerRequest: 4, operatorReportedBalance: 983, confirmExistingCredits: true, confirmNoTopup: true, ledgerPath } };
 }
 const goodExecute = async () => runCode(fakePage());
 function client(events: string[], ledgerPath: string, o: { create?: unknown; execute?: unknown; del?: unknown } = {}): SandboxClient {
@@ -247,13 +291,23 @@ function client(events: string[], ledgerPath: string, o: { create?: unknown; exe
   };
 }
 
+describe("hard HOLD: the only execution entry point refuses (no override)", () => {
+  it("executeSandbox refuses before key, client, DNS or ledger", async () => {
+    const s = setup();
+    const events: string[] = [];
+    await expect(executeSandbox({ ...s, resolver: fakeIp(events), getApiKey: () => (events.push("key"), KEY), createClient: async () => (events.push("client"), client(events, s.ledgerPath)) })).rejects.toThrow(SandboxHardHold);
+    expect(events).toEqual([]);
+    expect(readLedger(s.ledgerPath).entries).toHaveLength(1);
+  });
+});
+
 describe("lifecycle (fake client): ledger before each op, one attempt each, delete always", () => {
   it("guard -> key -> client -> ledger -> create -> execute -> delete; accepted, creditsBilled recorded", async () => {
     const s = setup();
     const events: string[] = [];
     const asked: string[] = [];
     const pngs: number[] = [];
-    const rec = await executeSandbox({ ...s, resolver: fakeIp(asked), getApiKey: () => (events.push("key"), KEY), createClient: async () => (events.push("client"), client(events, s.ledgerPath)), savePng: (i) => pngs.push(i) });
+    const rec = await runSandboxLifecycle({ ...s, resolver: fakeIp(asked), getApiKey: () => (events.push("key"), KEY), createClient: async () => (events.push("client"), client(events, s.ledgerPath)), savePng: (i) => pngs.push(i) });
     expect(events).toEqual(["key", "client", `create {"ttl":120,"activityTtl":60} [attempting/create:attempting]`, "execute sess_1 node [attempting/execute:attempting]", "delete sess_1 [attempting/delete:attempting]"]);
     expect(asked).toEqual([]); // exact bootstrapmade.com hosted exception: no local DNS
     expect(rec).toMatchObject({ status: "accepted", sessionId: "sess_1", creditsBilled: 1 });
@@ -268,19 +322,19 @@ describe("lifecycle (fake client): ledger before each op, one attempt each, dele
   it("ambiguous create: no execute, no delete, no re-create; entry blocks", async () => {
     const s = setup();
     const events: string[] = [];
-    const rec = await executeSandbox({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async () => client(events, s.ledgerPath, { create: Object.assign(new Error(`upstream 502 ${KEY}`), { status: 502 }) }) });
+    const rec = await runSandboxLifecycle({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async () => client(events, s.ledgerPath, { create: Object.assign(new Error(`upstream 502 ${KEY}`), { status: 502 }) }) });
     expect(events.map((x) => x.split(" ")[0])).toEqual(["create"]);
     expect(rec).toMatchObject({ status: "ambiguous", sessionId: null });
     expect(rec.reason).toMatch(/no automatic re-create/);
     expect(JSON.stringify(rec)).not.toContain(KEY);
-    await expect(executeSandbox({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async () => client([], s.ledgerPath) })).rejects.toThrow(/unresolved/);
+    await expect(runSandboxLifecycle({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async () => client([], s.ledgerPath) })).rejects.toThrow(/unresolved/);
   });
 
   it("execute error/killed/truncated: delete still runs once; outcome never retried", async () => {
     for (const ex of [Object.assign(new Error("gateway"), { status: 502 }), Object.assign(new Error("timeout"), { status: 408 }), { success: true, stdout: "", killed: true }, { success: true, stdout: "W2F_RESULT {", truncated: true }]) {
       const s = setup();
       const events: string[] = [];
-      const rec = await executeSandbox({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async () => client(events, s.ledgerPath, { execute: ex }) });
+      const rec = await runSandboxLifecycle({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async () => client(events, s.ledgerPath, { execute: ex }) });
       expect(events.map((x) => x.split(" ")[0])).toEqual(["create", "execute", "delete"]);
       expect(rec.status).toBe("ambiguous");
       expect(readLedger(s.ledgerPath).entries.at(-1)!.status).toBe("ambiguous");
@@ -290,7 +344,7 @@ describe("lifecycle (fake client): ledger before each op, one attempt each, dele
   it("failed cleanup: ambiguous and blocking; sandbox-cleanup sends exactly one DELETE for the recorded session", async () => {
     const s = setup();
     const events: string[] = [];
-    const rec = await executeSandbox({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async () => client(events, s.ledgerPath, { del: Object.assign(new Error("boom"), { status: 500 }) }) });
+    const rec = await runSandboxLifecycle({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async () => client(events, s.ledgerPath, { del: Object.assign(new Error("boom"), { status: 500 }) }) });
     expect(rec.status).toBe("ambiguous");
     expect(rec.warnings.join()).toMatch(/cleanup NOT confirmed for session sess_1/);
     const entry = readLedger(s.ledgerPath).entries.at(-1)!;
@@ -304,13 +358,13 @@ describe("lifecycle (fake client): ledger before each op, one attempt each, dele
 
   it("missing creditsBilled => ambiguous; gates fail closed before key/client; reservation must cover the ttl worst case", async () => {
     const s = setup();
-    const rec = await executeSandbox({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async () => client([], s.ledgerPath, { del: { success: true } }) });
+    const rec = await runSandboxLifecycle({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async () => client([], s.ledgerPath, { del: { success: true } }) });
     expect(rec.warnings.join()).toMatch(/credits are UNKNOWN/);
     expect(readLedger(s.ledgerPath).entries.at(-1)!.status).toBe("ambiguous");
     const t = setup();
     const ev: string[] = [];
-    for (const g of [{ acceptRedirectGap: false }, { operatorCreditsPerRequest: 3 }, { confirmNoTopup: false }]) {
-      await expect(executeSandbox({ ...t, gates: { ...t.gates, ...g }, getApiKey: () => (ev.push("key"), KEY) })).rejects.toThrow(StateRunPolicyError);
+    for (const g of [{ confirmExistingCredits: false }, { operatorCreditsPerRequest: 3 }, { confirmNoTopup: false }]) {
+      await expect(runSandboxLifecycle({ ...t, gates: { ...t.gates, ...g }, getApiKey: () => (ev.push("key"), KEY) })).rejects.toThrow(StateRunPolicyError);
     }
     expect(ev).toEqual([]);
   });
@@ -358,7 +412,7 @@ describe("documented /v2/interact transport over loopback: one fetch per lifecyc
   });
   const run = async (limits?: Record<string, number>) => {
     const s = setup();
-    return executeSandbox({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async (k) => createInteractClient(k, { apiUrl: base, limits }) });
+    return runSandboxLifecycle({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async (k) => createInteractClient(k, { apiUrl: base, limits }) });
   };
 
   it("happy path: exactly the documented POST create, POST execute, DELETE with documented bodies only", async () => {
@@ -414,7 +468,7 @@ describe("offline conversion: one region, valid 3-state group", () => {
   it("sandbox record -> capture -> hifi: 3 page-api/baseline variants of #testimonials with screenshots", async () => {
     const s = setup();
     const files: Record<number, Uint8Array> = {};
-    const rec = await executeSandbox({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async () => client([], s.ledgerPath), savePng: (i, b) => (files[i] = b) });
+    const rec = await runSandboxLifecycle({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async () => client([], s.ledgerPath), savePng: (i, b) => (files[i] = b) });
     const { capture, manifest } = sandboxToCapture(rec, ["state-0.png", "state-1.png", "state-2.png"]);
     const assets = (manifest.assets as any[]).map((a, i) => ({ operatorId: a.id, kind: "reference" as const, mime: "image/png" as const, width: rec.states[i]!.png.width, height: rec.states[i]!.png.height, sha256: a.sha256, sourceUrl: null, pageUrl: SANDBOX_URL, state: a.state, bytes: files[i]! }));
     const cap = captureFromScrapeResponses([{ name: "x", json: { data: { metadata: { url: SANDBOX_URL }, actions: { javascriptReturns: [{ value: { viewport: { width: 1920, height: 1080 }, elements: [], texts: [] } }] } } } }], "x");

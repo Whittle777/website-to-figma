@@ -600,36 +600,38 @@ recorded on it.
   current docs. A missing value makes the run ambiguous.
 
 **Page code.** It is fixed and takes no inputs. In order, it:
-1. installs a request guard
-2. calls `setViewportSize(1920×1080)` before any request to the target
-3. runs a redirect **pre-check** with `page.request.get(url, { maxRedirects: 0 })`, refusing any 3xx
-4. calls `goto` on the exact URL, allowing main-frame navigations only for that exact raw URL
-   string (no normalization)
-5. refuses any redirect chain and verifies the viewport
-6. stops autoplay on the one validated Swiper (a recorded **modification**)
-7. captures three states of the same region (`#testimonials`): baseline, `slideNext(0)` and
-   `slideNext(0)`
+1. installs a **context-level** route guard, which also covers popups; new pages are closed
+2. calls `setViewportSize(1920×1080)` before navigation
+3. fetches the main document for the exact raw URL with the documented
+   `route.fetch({ maxRedirects: 0, maxRetries: 0, timeout })`, aborting any 3xx **before**
+   `route.fulfill({ response })`, so no redirected request is made and there is no separate
+   pre-check
+4. aborts every other navigation (frames and popups included), non-http(s) schemes, credentials,
+   and IP-literal or local-name hosts
+5. stops the run if a service worker controls the page
+6. stops autoplay on the one validated Swiper (a recorded modification)
+7. captures three states of the same region (`#testimonials`)
 
-Region identity and geometry are checked across all three states, and each clip must match its
-measured target. Output is capped (6.5M chars, 1.5 MB per PNG, at most 1920×1080) before it is
-decoded.
+**HARD HOLD (no override flag).** Service Worker requests are not intercepted by page or context
+routing. Blocking service workers needs a browser-context *option* (`serviceWorkers: "block"`),
+and the preconnected sandbox page exposes no documented way to set one. So the required request
+guards can't be fully preserved, and `sandbox-run` refuses even with `--yes`. It sends nothing,
+reads no key and writes no ledger entry. The lifecycle code is complete and tested offline only.
 
-**Precise gaps.** These are held by `--accept-redirect-gap` and are not claimed away:
-- **Redirect TOCTOU.** `page.route` does not intercept server redirect hops. The pre-check refuses a
-  3xx before navigation, but a redirect introduced between the pre-check and `goto` would be
-  followed. The chain check then refuses the run, but **it does not prevent the redirected request
-  itself**.
-- **Private-resolving hosts.** Hostnames that resolve to private addresses can't be checked from
-  page code. The local DNS guard covers only this tool's own fetches.
-- **Swiper semantics.** Method names and selectors are not a safety guarantee. The states rely on
-  this known page's semantics, with no promise that they are side-effect free.
-- **0 ms transitions.** `slideNext(0)` states are not observed completions of real animated motion.
+**Also stated, not claimed away**
+- **Subresources.** These aren't DNS-pinned or private-host checked in the remote browser. IP-literal
+  and local-name hosts are aborted on a best-effort basis. The local DNS guard covers only this
+  tool's own fetches.
+- **Swiper semantics.** These rely on the known page, with no promise that the states are
+  side-effect free.
+- **0 ms transitions.** `slideNext(0)` states aren't observed animation completions.
+- **creditsBilled.** It isn't documented (a missing value makes the run ambiguous).
 
 ```sh
 website-to-figma sandbox-plan --out sandbox.preview.json                 # offline
 website-to-figma sandbox-run --preview sandbox.preview.json --out private-runs --ledger ledger.json \
   --operator-credits-per-request 4 --operator-reported-balance N --confirm-existing-credits \
-  --confirm-no-topup --accept-redirect-gap                                 # HOLDS without --yes
+  --confirm-no-topup                                                       # HARD HOLD (refused even with --yes)
 website-to-figma sandbox-convert --run private-runs/sandbox-run-<id> --out private-capture
 ```
 

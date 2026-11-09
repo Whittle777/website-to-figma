@@ -12,29 +12,24 @@
 // nothing is re-created automatically. Billing per the docs: code-only 2
 // credits per browser-minute, 1-minute minimum; there is no provider hard cap.
 //
-// Page code (fixed, no inputs): request guard; setViewportSize BEFORE any
-// request to the target; a redirect PRE-CHECK of the exact target with
-// Playwright's APIRequestContext (maxRedirects 0, refuse any 3xx); goto the
-// exact URL; main-frame navigations allowed ONLY for the exact raw URL string
-// (no normalization); redirect chain refused; viewport verified; Swiper
-// autoplay stopped (recorded MODIFICATION); three states of ONE region
-// (#testimonials): baseline, slideNext(0), slideNext(0).
+// Page code (fixed, no inputs): a CONTEXT-level route guard (covers popups;
+// new pages are closed); setViewportSize BEFORE navigation; the main
+// navigation to the EXACT raw URL is performed by the documented
+// route.fetch({ maxRedirects: 0, maxRetries: 0, timeout }) and any 3xx is
+// aborted BEFORE route.fulfill({ response }) - no redirected request is made;
+// every other navigation is aborted; autoplay of the ONE validated Swiper is
+// stopped (recorded MODIFICATION); three states of ONE region (#testimonials).
 //
-// Precise gaps (an acceptance gate holds on them; they are not claimed away):
-//  * page.route does not intercept server redirect hops; the pre-check
-//    narrows but cannot eliminate a redirect between the pre-check and goto
-//    (time-of-check/time-of-use). The post-navigation chain check DETECTS a
-//    redirect; it does not prevent the redirected request (no SSRF prevention
-//    is claimed after a redirect).
-//  * Hostnames that RESOLVE to private addresses cannot be checked from page
-//    code (the local DNS guard applies only to this tool's own fetches).
-//  * Swiper: method names and selectors are not a safety guarantee; the
-//    states rely on the known page's supplied HTML/JS semantics (autoplay,
-//    loop, no `on` handlers) and are not promised side-effect free.
-//  * slideNext(0) states are measured after 0 ms transitions: they are not
-//    observed completions of real animated motion.
-//  * creditsBilled on delete is not in the current docs: recorded only if
-//    present; missing => ambiguous.
+// HARD HOLD (no acceptance flag): Service Worker requests are not intercepted
+// by page/context routing (Playwright docs), and blocking service workers is a
+// browser-context OPTION (serviceWorkers: "block") that the preconnected
+// sandbox page does not expose through any documented API. Until that is
+// resolved, executeSandbox refuses before any key read, ledger write or
+// request. Also stated, not claimed away: subresource requests are not
+// DNS-pinned or private-host checked in the remote browser (only IP-literal
+// and local-name hosts are aborted, best effort); Swiper states rely on the
+// known page's semantics (no side-effect-free promise); slideNext(0) states
+// are not observed animation completions; creditsBilled is undocumented.
 import { assertHostedFirecrawlUrl, systemResolver, type Resolver } from "../security/urlGuard";
 import { inspectImage, sha256Hex } from "../shared/imageInfo";
 import { canonicalJson, classify, redact, sha256, StateRunPolicyError, withTimeout } from "./execute";
@@ -67,6 +62,10 @@ export const SANDBOX = {
 } as const;
 // Worst case if the session lives its whole ttl (2 credits per session-minute,
 // code-only, per the operator-read pricing): NOT a provider cap.
+// Conditions under which execution is REFUSED outright (no flag can bypass).
+export const SANDBOX_UNSUPPORTED: string[] = [
+  "service-workers: Service Worker requests bypass page/context routing (Playwright docs), and serviceWorkers: \"block\" is a browser-context option the preconnected sandbox page does not expose through any documented API; required request guards cannot be preserved",
+];
 export const SANDBOX_WORST_CASE_CREDITS = Math.ceil(SANDBOX.ttl / 60) * 2;
 if (SANDBOX.ttl < 30 || SANDBOX.ttl > 3600 || SANDBOX.activityTtl < 10 || SANDBOX.activityTtl > 3600) throw new Error("sandbox ttl outside the documented ranges");
 export const SANDBOX_WALL_MS = { create: 60_000, execute: SANDBOX.executeTimeoutS * 1000 + 30_000, delete: 60_000 };
@@ -130,40 +129,47 @@ const W2F_MEASURE = (a) => {
 export const SANDBOX_CODE = String.raw`// website-to-figma fixed sandbox code (reviewed; takes no inputs)
 const W = ${JSON.stringify({ url: SANDBOX.url, vw: SANDBOX.viewport.width, vh: SANDBOX.viewport.height, navTimeoutMs: SANDBOX.navTimeoutMs, settleMs: SANDBOX.settleMs, stateWaitMs: SANDBOX.stateWaitMs, scope: SANDBOX.scope, swiper: SANDBOX.swiper, states: SANDBOX.states, maxPngBytes: SANDBOX.maxPngBytes, max: { maxElements: SANDBOX.maxElements, maxTexts: SANDBOX.maxTexts, maxImages: SANDBOX.maxImages } })};
 ${PAGE_FUNCS}
-const out = { w2f: "sandbox", v: 1, error: null, viewportSet: null, precheck: null, nav: null, env: null, autoplay: null, modifications: [], blocked: [], states: [] };
+const out = { w2f: "sandbox", v: 1, error: null, viewportSet: null, mainFetch: null, nav: null, env: null, autoplay: null, modifications: [], blocked: [], popupsClosed: 0, serviceWorker: null, states: [] };
 try {
   if (typeof page === "undefined" || !page) throw new Error("no Playwright page in this session");
-  await page.route("**/*", (route) => {
+  const ctx = page.context();
+  ctx.on("page", (p) => { out.popupsClosed++; p.close().catch(() => {}); });
+  await ctx.route("**/*", async (route) => {
     const req = route.request(); let u = null; try { u = new URL(req.url()); } catch (e) {}
+    let nav = false, main = false;
+    try { nav = req.isNavigationRequest(); main = nav && req.frame() === page.mainFrame(); } catch (e) {}
     let why = null;
     if (!u) why = "invalid-url";
+    else if (nav && !(main && req.url() === W.url)) why = "navigation-not-exact-target"; // raw string, no normalization; popups/frames refused
+    else if (!["http:", "https:", "data:", "blob:"].includes(u.protocol)) why = "scheme";
+    else if (u.username || u.password) why = "credentials";
     else {
       const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-      let nav = false; try { nav = req.isNavigationRequest() && req.frame() === page.mainFrame(); } catch (e) {}
-      if (!["http:", "https:", "data:", "blob:"].includes(u.protocol)) why = "scheme";
-      else if (u.username || u.password) why = "credentials";
-      else if (/^[0-9.]+$/.test(host) || host.includes(":")) why = "ip-literal";
+      if (/^[0-9.]+$/.test(host) || host.includes(":")) why = "ip-literal";
       else if (host === "localhost" || /\.(local|internal|localhost|home\.arpa|test|lan)$/.test(host)) why = "local-name";
-      else if (nav && req.url() !== W.url) why = "main-frame-navigation-off-target"; // raw string, no normalization
     }
     if (why) { if (out.blocked.length < 50) out.blocked.push({ origin: u ? u.protocol + "//" + u.hostname : "(invalid)", why }); return route.abort(); }
+    if (main) {
+      // The exact main document is fetched WITHOUT following redirects; a 3xx is aborted before fulfilling.
+      const resp = await route.fetch({ maxRedirects: 0, maxRetries: 0, timeout: W.navTimeoutMs });
+      out.mainFetch = { status: resp.status(), url: resp.url() };
+      if (resp.status() >= 300 && resp.status() < 400) { out.blocked.push({ origin: u.protocol + "//" + u.hostname, why: "main-document-redirect-" + resp.status() }); return route.abort(); }
+      return route.fulfill({ response: resp });
+    }
     return route.continue();
   });
   await page.setViewportSize({ width: W.vw, height: W.vh });
   out.viewportSet = { width: W.vw, height: W.vh };
-  // Redirect PRE-CHECK (no redirect followed): refuse the run on any 3xx.
-  if (!page.request || typeof page.request.get !== "function") throw new Error("APIRequestContext unavailable: redirect pre-check not possible");
-  const pre = await page.request.get(W.url, { maxRedirects: 0, timeout: W.navTimeoutMs });
-  out.precheck = { status: pre.status(), url: pre.url() };
-  if (pre.status() >= 300 && pre.status() < 400) throw new Error("target answered a redirect (" + pre.status() + ") in the pre-check; not navigating");
-  if (pre.url() !== W.url) throw new Error("pre-check URL differs from the exact target");
   const resp = await page.goto(W.url, { waitUntil: "load", timeout: W.navTimeoutMs });
   const chain = []; let r = resp ? resp.request() : null;
   while (r && chain.length < 10) { chain.unshift(r.url()); r = r.redirectedFrom(); }
   out.nav = { status: resp ? resp.status() : null, finalUrl: page.url(), chain };
+  if (!out.mainFetch || out.mainFetch.status < 200 || out.mainFetch.status > 299) throw new Error("main document was not fetched with a 2xx by the route guard");
   if (page.url() !== W.url || chain.length !== 1 || chain[0] !== W.url) throw new Error("navigation left the exact target URL (redirect or rewrite)");
   await page.waitForTimeout(W.settleMs);
   out.env = await page.evaluate(W2F_PROBE);
+  out.serviceWorker = await page.evaluate(() => !!(navigator.serviceWorker && navigator.serviceWorker.controller));
+  if (out.serviceWorker) throw new Error("a service worker controls the page (its requests bypass routing)");
   if (out.env.innerWidth !== W.vw || out.env.innerHeight !== W.vh) throw new Error("viewport not applied: " + out.env.innerWidth + "x" + out.env.innerHeight);
   out.autoplay = await page.evaluate(W2F_SWIPER, { sel: W.swiper, op: "stop-autoplay" });
   if (!out.autoplay.valid) throw new Error("swiper refused: " + out.autoplay.reason);
@@ -199,6 +205,7 @@ export interface SandboxPreview {
   reservation: { worstCaseCredits: number; basis: string };
   timing: { createWallMs: number; executeWallMs: number; deleteWallMs: number };
   sources: string[];
+  hardHold: string[];
   gaps: string[];
 }
 
@@ -222,12 +229,13 @@ export function buildSandboxPreview(): SandboxPreview {
     sources: [
       "https://docs.firecrawl.dev/features/browser (create/execute/delete, ttl 30-3600 s default 600, activityTtl 10-3600 s default 300, preconnected page, code-only 2 credits/browser-minute, 1-minute minimum)",
       "https://playwright.dev/docs/api/class-page#page-route (route does not intercept redirect hops)",
-      "https://playwright.dev/docs/api/class-apirequestcontext#api-request-context-get (maxRedirects: 0)",
+      "https://playwright.dev/docs/api/class-route#route-fetch (maxRedirects: 0, maxRetries: 0; then route.fulfill({ response }))",
+      "https://playwright.dev/docs/api/class-browsercontext#browser-context-route (context routing covers popups; service worker requests are not intercepted)",
       "https://playwright.dev/docs/api/class-page#page-set-viewport-size (set before navigation)",
     ],
+    hardHold: SANDBOX_UNSUPPORTED,
     gaps: [
-      "REDIRECT GAP (accepted only via --accept-redirect-gap): page.route does not see server redirect hops; the maxRedirects:0 pre-check refuses a 3xx before navigating, but a redirect introduced between the pre-check and goto would be followed by the browser. The chain check then detects it and the run is refused; the redirected request itself is NOT prevented.",
-      "Hostnames that resolve to private addresses cannot be checked from page code.",
+      "Subresource requests are not DNS-pinned or private-host checked in the remote browser (IP-literal and local-name hosts are aborted, best effort); this tool's local DNS guard covers only its own fetches.",
       "Swiper states rely on the known page's semantics; method names/selectors are not a safety guarantee; no side-effect-free promise. slideNext(0) states are not observed animation completions.",
       "creditsBilled is not in the current docs: recorded only if present; missing => ambiguous.",
     ],
@@ -247,7 +255,6 @@ export interface SandboxGates {
   operatorReportedBalance?: number;
   confirmExistingCredits?: boolean;
   confirmNoTopup?: boolean;
-  acceptRedirectGap?: boolean;
   ledgerPath?: string;
   reviewedContinuation?: string;
 }
@@ -258,7 +265,6 @@ export function assertSandboxGates(g: SandboxGates): { reservation: number; comm
   if (!Number.isInteger(g.operatorReportedBalance) || (g.operatorReportedBalance as number) < 0) missing.push("--operator-reported-balance N");
   if (!g.confirmExistingCredits) missing.push("--confirm-existing-credits");
   if (!g.confirmNoTopup) missing.push("--confirm-no-topup");
-  if (!g.acceptRedirectGap) missing.push("--accept-redirect-gap (you reviewed the documented redirect gap: pre-check + chain refusal, no prevention of a redirect introduced after the pre-check)");
   if (!g.ledgerPath) missing.push("--ledger FILE (local reservation allowance, not a provider cap)");
   if (missing.length) throw new StateRunPolicyError(`Refusing before any request: missing operator inputs:\n  ${missing.join("\n  ")}`);
   const reservation = g.operatorCreditsPerRequest as number;
@@ -307,7 +313,8 @@ export interface SandboxRecord {
   sessionDurationMs: number | null;
   reservation: number;
   viewportSet: Obj | null;
-  precheck: Obj | null;
+  mainFetch: Obj | null;
+  popupsClosed: number;
   modifications: string[];
   nav: Obj | null;
   env: Obj | null;
@@ -383,7 +390,17 @@ export interface SandboxExecuteOptions {
   savePng?: (seq: number, bytes: Uint8Array) => void;
 }
 
+export class SandboxHardHold extends StateRunPolicyError {}
+
+// The ONLY execution entry point: refused while any unsupported condition holds.
 export async function executeSandbox(o: SandboxExecuteOptions): Promise<SandboxRecord> {
+  if (SANDBOX_UNSUPPORTED.length) throw new SandboxHardHold(`HARD HOLD (no override): ${SANDBOX_UNSUPPORTED.join("; ")}. Nothing was sent, no key was read, no ledger entry was written.`);
+  return runSandboxLifecycle(o);
+}
+
+// Lifecycle implementation (offline-tested with fake clients/loopback; not
+// reachable from the CLI while executeSandbox hard-holds).
+export async function runSandboxLifecycle(o: SandboxExecuteOptions): Promise<SandboxRecord> {
   const now = o.now ?? (() => new Date());
   const resolver = o.resolver ?? systemResolver;
   const gate = assertSandboxGates(o.gates);
@@ -405,7 +422,8 @@ export async function executeSandbox(o: SandboxExecuteOptions): Promise<SandboxR
     sessionDurationMs: null,
     reservation: gate.reservation,
     viewportSet: null,
-    precheck: null,
+    mainFetch: null,
+    popupsClosed: 0,
     modifications: [],
     nav: null,
     env: null,
@@ -505,7 +523,8 @@ export async function executeSandbox(o: SandboxExecuteOptions): Promise<SandboxR
     op("execute", "ok", "W2F_RESULT parsed; 3 states");
     const r = parsed.result;
     rec.viewportSet = isObj(r.viewportSet) ? r.viewportSet : null;
-    rec.precheck = isObj(r.precheck) ? r.precheck : null;
+    rec.mainFetch = isObj(r.mainFetch) ? r.mainFetch : null;
+    rec.popupsClosed = typeof r.popupsClosed === "number" ? r.popupsClosed : 0;
     rec.modifications = Array.isArray(r.modifications) ? r.modifications.filter((x): x is string => typeof x === "string").slice(0, 10).map((x) => x.slice(0, 200)) : [];
     rec.nav = isObj(r.nav) ? r.nav : null;
     rec.env = isObj(r.env) ? r.env : null;
