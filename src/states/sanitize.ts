@@ -61,7 +61,11 @@ export function sanitizeString(text: string, secrets: readonly string[] = []): s
   out = out.replace(URL_RE, (u) => sanitizeUrl(u));
   out = out.replace(/\bfc-[A-Za-z0-9_-]{8,}\b/g, REDACTED);
   out = out.replace(/\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/g, "[REDACTED-JWT]");
-  out = out.replace(/\b(authorization|bearer)\b(\s*[:=]?\s*)(?!\[REDACTED)[^\s"',;]+/gi, `$1$2${REDACTED}`);
+  // Authorization header values: the WHOLE value (scheme + credential) is masked, incl. JSON/quoted forms
+  out = out.replace(/\b(proxy-authorization|authorization)(["']?\s*[:=]\s*["']?)(?:(?:bearer|basic|digest|token|negotiate|ntlm)\s+)?(?!\[REDACTED)[^\s"',;}]+/gi, `$1$2${REDACTED}`);
+  // a bare scheme + credential anywhere (escaped JSON, error text, headers dumps)
+  out = out.replace(/\b(bearer)\s+(?!\[REDACTED)[A-Za-z0-9._~+/=-]{6,}/gi, `$1 ${REDACTED}`);
+  out = out.replace(/\b(basic)\s+(?!\[REDACTED)[A-Za-z0-9+/]{12,}={0,2}/gi, `$1 ${REDACTED}`);
   out = out.replace(/(["']?)\b((?:access|refresh|id)?[_-]?token|api[_-]?key|apikey|secret|client[_-]?secret|password|passwd|pwd|session[_-]?id|sessionid|cookie|credentials?)\1(\s*[:=]\s*)(["']?)(?!\[REDACTED)[^\s"'&,;}]+/gi, `$1$2$1$3$4${REDACTED}`);
   return out;
 }
@@ -83,7 +87,7 @@ export function sanitizeValue(v: unknown, secrets: readonly string[] = [], lim: 
     const s = sanitizeString(v, secrets);
     if (s.length <= lim.maxString) return s;
     truncations.push(`${path}: string ${s.length} chars kept ${lim.maxString}`);
-    return s.slice(0, lim.maxString);
+    return safeSlice(s, lim.maxString);
   }
   if (typeof v !== "object") return null; // undefined, function, symbol, bigint: not persisted
   if (depth >= lim.maxDepth) {
@@ -104,4 +108,12 @@ export function sanitizeValue(v: unknown, secrets: readonly string[] = [], lim: 
     out[sk] = SENSITIVE_OBJ_KEY.test(k) && typeof val === "string" && val !== "" ? REDACTED : sanitizeValue(val, secrets, lim, truncations, `${path}.${sk}`, depth + 1);
   }
   return out;
+}
+
+export const utf8Bytes = (t: string) => Buffer.byteLength(t, "utf8");
+// slice that never leaves a dangling high surrogate (keeps text well-formed)
+export function safeSlice(t: string, n: number): string {
+  if (n >= t.length) return t;
+  const end = n > 0 && t.charCodeAt(n - 1) >= 0xd800 && t.charCodeAt(n - 1) <= 0xdbff ? n - 1 : n;
+  return t.slice(0, Math.max(0, end));
 }

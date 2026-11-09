@@ -11542,9 +11542,106 @@ var init_assets = __esm({
   }
 });
 
+// src/states/sanitize.ts
+function sanitizeUrl(raw) {
+  const m = /^(.*?)([).,;:!\]]*)$/.exec(raw);
+  const urlText = m[1];
+  const tail = m[2] ?? "";
+  if (SESSION_URL.test(urlText)) return `[REDACTED-SESSION-URL]${tail}`;
+  let u;
+  try {
+    u = new URL(urlText);
+  } catch {
+    return urlText.replace(/\/\/[^/@\s]*@/, `//${REDACTED}@`) + tail;
+  }
+  let changed = false;
+  if (u.username || u.password) {
+    u.username = REDACTED;
+    u.password = "";
+    changed = true;
+  }
+  if (u.search) {
+    const p = new URLSearchParams(u.search);
+    const out = new URLSearchParams();
+    for (const [k, v] of p) {
+      const mask = SENSITIVE_KEY.test(k) || OPAQUE.test(v);
+      changed ||= mask;
+      out.append(k, mask ? REDACTED : v);
+    }
+    if (changed) u.search = out.toString();
+  }
+  if (u.hash && (u.hash.includes("=") || OPAQUE.test(u.hash.slice(1)))) {
+    u.hash = `#${REDACTED}`;
+    changed = true;
+  }
+  return changed ? u.href.replace(/%5BREDACTED%5D/g, REDACTED) + tail : raw;
+}
+function sanitizeString(text, secrets = []) {
+  let out = text;
+  for (const s of secrets) if (s && s.length >= 4) out = out.split(s).join(REDACTED);
+  out = out.replace(URL_RE, (u) => sanitizeUrl(u));
+  out = out.replace(/\bfc-[A-Za-z0-9_-]{8,}\b/g, REDACTED);
+  out = out.replace(/\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/g, "[REDACTED-JWT]");
+  out = out.replace(/\b(proxy-authorization|authorization)(["']?\s*[:=]\s*["']?)(?:(?:bearer|basic|digest|token|negotiate|ntlm)\s+)?(?!\[REDACTED)[^\s"',;}]+/gi, `$1$2${REDACTED}`);
+  out = out.replace(/\b(bearer)\s+(?!\[REDACTED)[A-Za-z0-9._~+/=-]{6,}/gi, `$1 ${REDACTED}`);
+  out = out.replace(/\b(basic)\s+(?!\[REDACTED)[A-Za-z0-9+/]{12,}={0,2}/gi, `$1 ${REDACTED}`);
+  out = out.replace(/(["']?)\b((?:access|refresh|id)?[_-]?token|api[_-]?key|apikey|secret|client[_-]?secret|password|passwd|pwd|session[_-]?id|sessionid|cookie|credentials?)\1(\s*[:=]\s*)(["']?)(?!\[REDACTED)[^\s"'&,;}]+/gi, `$1$2$1$3$4${REDACTED}`);
+  return out;
+}
+function sanitizeValue(v, secrets = [], lim = RECORD_LIMITS, truncations = [], path = "$", depth = 0) {
+  if (v === null || typeof v === "boolean") return v;
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "string") {
+    const s = sanitizeString(v, secrets);
+    if (s.length <= lim.maxString) return s;
+    truncations.push(`${path}: string ${s.length} chars kept ${lim.maxString}`);
+    return safeSlice(s, lim.maxString);
+  }
+  if (typeof v !== "object") return null;
+  if (depth >= lim.maxDepth) {
+    truncations.push(`${path}: depth limit ${lim.maxDepth}`);
+    return null;
+  }
+  if (Array.isArray(v)) {
+    if (v.length > lim.maxArray) truncations.push(`${path}: array ${v.length} items kept ${lim.maxArray}`);
+    return v.slice(0, lim.maxArray).map((x, i) => sanitizeValue(x, secrets, lim, truncations, `${path}[${i}]`, depth + 1));
+  }
+  const out = {};
+  const keys2 = Object.keys(v);
+  if (keys2.length > lim.maxKeys) truncations.push(`${path}: ${keys2.length} keys kept ${lim.maxKeys}`);
+  for (const k of keys2.slice(0, lim.maxKeys)) {
+    const sk = sanitizeString(k, secrets).slice(0, 200);
+    const val = v[k];
+    out[sk] = SENSITIVE_OBJ_KEY.test(k) && typeof val === "string" && val !== "" ? REDACTED : sanitizeValue(val, secrets, lim, truncations, `${path}.${sk}`, depth + 1);
+  }
+  return out;
+}
+function safeSlice(t, n) {
+  if (n >= t.length) return t;
+  const end = n > 0 && t.charCodeAt(n - 1) >= 55296 && t.charCodeAt(n - 1) <= 56319 ? n - 1 : n;
+  return t.slice(0, Math.max(0, end));
+}
+var SENSITIVE_KEY, SENSITIVE_OBJ_KEY, SESSION_URL, OPAQUE, URL_RE, REDACTED, RECORD_LIMITS, utf8Bytes;
+var init_sanitize = __esm({
+  "src/states/sanitize.ts"() {
+    "use strict";
+    SENSITIVE_KEY = /(^|[_-])(token|access[_-]?token|refresh[_-]?token|id[_-]?token|auth|authorization|bearer|api[_-]?key|apikey|key|secret|client[_-]?secret|password|passwd|pwd|pass|credential|credentials|session|sessionid|session[_-]?id|sid|sig|signature|jwt|code|ticket|cookie)$/i;
+    SENSITIVE_OBJ_KEY = /^(token|access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|apikey|secret|client[_-]?secret|password|passwd|pwd|authorization|cookie|set-cookie|credentials?)$/i;
+    SESSION_URL = /(^wss?:|^devtools:|^chrome-devtools:|\/devtools\/|\/json\/version|\/cdp\b|[?&/]cdp[=/]|live[-_]?view|liveview|\/session[s]?\/|[?&]session[_-]?id=|\/v[0-9]+\/(interact|browser)\/)/i;
+    OPAQUE = /^[A-Za-z0-9_\-.~+/=%]{24,}$/;
+    URL_RE = /\b[a-z][a-z0-9+.-]{1,15}:\/\/[^\s"'<>`\\]+/gi;
+    REDACTED = "[REDACTED]";
+    RECORD_LIMITS = { maxString: 2e4, maxArray: 5e3, maxKeys: 500, maxDepth: 12 };
+    utf8Bytes = (t) => Buffer.byteLength(t, "utf8");
+  }
+});
+
 // src/states/ledger.ts
 import { closeSync as closeSync2, constants as constants2, fchmodSync, fstatSync as fstatSync2, fsyncSync, lstatSync, openSync as openSync2, readSync as readSync2, renameSync, unlinkSync, writeSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+function serializeLedger(l) {
+  return JSON.stringify(sanitizeValue(l, [], LEDGER_SANITIZE_LIMITS), null, 2) + "\n";
+}
 function parseLedger(text) {
   let j;
   try {
@@ -11606,7 +11703,7 @@ function writeAtomic(path, l) {
   const tmp = `${path}.tmp-${process.pid}-${randomUUID().slice(0, 8)}`;
   const fd = openSync2(tmp, constants2.O_WRONLY | constants2.O_CREAT | constants2.O_EXCL | NOFOLLOW, 384);
   try {
-    writeSync(fd, JSON.stringify(l, null, 2) + "\n");
+    writeSync(fd, serializeLedger(l));
     fchmodSync(fd, 384);
     fsyncSync(fd);
   } finally {
@@ -11645,7 +11742,7 @@ function initLedger(path, priorCredits, note2, now = () => /* @__PURE__ */ new D
   }
   const fd = openSync2(path, constants2.O_WRONLY | constants2.O_CREAT | constants2.O_EXCL | NOFOLLOW, 384);
   try {
-    writeSync(fd, JSON.stringify(l, null, 2) + "\n");
+    writeSync(fd, serializeLedger(l));
     fchmodSync(fd, 384);
     fsyncSync(fd);
   } finally {
@@ -11740,10 +11837,11 @@ function ledgerSummary(l) {
   const open = unresolved(l);
   return [`Local project budget ceiling ${l.capCredits} (operator-asserted allowance; NOT a provider cap); committed ${committed}; remaining allowance ${l.capCredits - committed}; entries ${l.entries.length}; unresolved ${open.length}`, ...l.entries.slice(-20).map((e2) => `  ${e2.id} ${e2.status}${e2.overrun ? " OVERRUN" : ""}${e2.chargeStatus ? ` ${e2.chargeStatus.toUpperCase()}` : ""}${e2.resolvedAt ? " (resolved)" : ""} reserved ${e2.reserved} reported ${e2.reportedCredits ?? "-"} counted ${entryCredits(e2)} ${e2.url ?? ""} ${e2.note}`)].join("\n");
 }
-var LEDGER_CAP, MAX_LEDGER_BYTES, MAX_ENTRIES, LedgerError, STATUSES, nonNegInt, clean, NOFOLLOW;
+var LEDGER_CAP, MAX_LEDGER_BYTES, MAX_ENTRIES, LedgerError, STATUSES, nonNegInt, clean, LEDGER_SANITIZE_LIMITS, NOFOLLOW;
 var init_ledger = __esm({
   "src/states/ledger.ts"() {
     "use strict";
+    init_sanitize();
     LEDGER_CAP = 1e3;
     MAX_LEDGER_BYTES = 2e6;
     MAX_ENTRIES = 5e3;
@@ -11751,7 +11849,8 @@ var init_ledger = __esm({
     };
     STATUSES = ["attempting", "succeeded", "failed", "ambiguous", "manual", "prior"];
     nonNegInt = (v) => typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 1e6;
-    clean = (s, n = 200) => s.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, n);
+    clean = (s, n = 200) => sanitizeString(s).replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, n);
+    LEDGER_SANITIZE_LIMITS = { maxString: 1e5, maxArray: 1e6, maxKeys: 1e3, maxDepth: 12 };
     NOFOLLOW = constants2.O_NOFOLLOW ?? 0;
   }
 });
@@ -12495,9 +12594,9 @@ function trimSPorHTAB(str2) {
   }
   return start === 0 && end === str2.length ? str2 : str2.slice(start, end);
 }
-function sanitizeValue(value, invalidChars) {
+function sanitizeValue2(value, invalidChars) {
   if (utils_default.isArray(value)) {
-    return value.map((item) => sanitizeValue(item, invalidChars));
+    return value.map((item) => sanitizeValue2(item, invalidChars));
   }
   return trimSPorHTAB(String(value).replace(invalidChars, ""));
 }
@@ -12515,8 +12614,8 @@ var init_sanitizeHeaderValue = __esm({
     init_utils();
     INVALID_UNICODE_HEADER_VALUE_CHARS = new RegExp("[\\u0000-\\u0008\\u000a-\\u001f\\u007f]+", "g");
     INVALID_BYTE_STRING_HEADER_VALUE_CHARS = new RegExp("[^\\u0009\\u0020-\\u007e\\u0080-\\u00ff]+", "g");
-    sanitizeHeaderValue = (value) => sanitizeValue(value, INVALID_UNICODE_HEADER_VALUE_CHARS);
-    sanitizeByteStringHeaderValue = (value) => sanitizeValue(value, INVALID_BYTE_STRING_HEADER_VALUE_CHARS);
+    sanitizeHeaderValue = (value) => sanitizeValue2(value, INVALID_UNICODE_HEADER_VALUE_CHARS);
+    sanitizeByteStringHeaderValue = (value) => sanitizeValue2(value, INVALID_BYTE_STRING_HEADER_VALUE_CHARS);
   }
 });
 
@@ -12903,7 +13002,7 @@ function redactConfig(config, redactKeys) {
       }
       result = /* @__PURE__ */ Object.create(null);
       for (const [key, value] of Object.entries(source)) {
-        const reducedValue = lowerKeys.has(key.toLowerCase()) ? REDACTED : visit(value);
+        const reducedValue = lowerKeys.has(key.toLowerCase()) ? REDACTED2 : visit(value);
         if (!utils_default.isUndefined(reducedValue)) {
           result[key] = reducedValue;
         }
@@ -12931,13 +13030,13 @@ function aggregateErrorMessage(error) {
   }).filter(Boolean).join("; ");
   return message || error.name || "AggregateError";
 }
-var REDACTED, AxiosError, AxiosError_default;
+var REDACTED2, AxiosError, AxiosError_default;
 var init_AxiosError = __esm({
   "node_modules/axios/lib/core/AxiosError.js"() {
     "use strict";
     init_utils();
     init_AxiosHeaders();
-    REDACTED = "[REDACTED ****]";
+    REDACTED2 = "[REDACTED ****]";
     AxiosError = class _AxiosError extends Error {
       static from(error, code, config, request, response, customProps) {
         let message = error.message;
@@ -24191,16 +24290,16 @@ function redactFragment(fragment) {
     return fragment;
   }
   return fragment.replace(/(^|&)([^=&]*=)?[^&]+/g, (match, separator, parameterName = "") => {
-    return `${separator}${parameterName}${REDACTED}`;
+    return `${separator}${parameterName}${REDACTED2}`;
   });
 }
 function redactSensitiveURLParts(url2) {
-  const redactedURL = url2.replace(/^(https?:\/{0,2})[^/?#]*@/i, `$1${REDACTED}@`);
+  const redactedURL = url2.replace(/^(https?:\/{0,2})[^/?#]*@/i, `$1${REDACTED2}@`);
   const fragmentIndex = redactedURL.indexOf("#");
   const urlWithoutFragment = fragmentIndex === -1 ? redactedURL : redactedURL.slice(0, fragmentIndex);
   const redactedURLWithoutFragment = urlWithoutFragment.replace(
     /([?&][^=&#]*=)[^&#]*/g,
-    `$1${REDACTED}`
+    `$1${REDACTED2}`
   );
   if (fragmentIndex === -1) {
     return redactedURLWithoutFragment;
@@ -42314,92 +42413,6 @@ var init_diagnostic = __esm({
   }
 });
 
-// src/states/sanitize.ts
-function sanitizeUrl(raw) {
-  const m = /^(.*?)([).,;:!\]]*)$/.exec(raw);
-  const urlText = m[1];
-  const tail = m[2] ?? "";
-  if (SESSION_URL.test(urlText)) return `[REDACTED-SESSION-URL]${tail}`;
-  let u;
-  try {
-    u = new URL(urlText);
-  } catch {
-    return urlText.replace(/\/\/[^/@\s]*@/, `//${REDACTED2}@`) + tail;
-  }
-  let changed = false;
-  if (u.username || u.password) {
-    u.username = REDACTED2;
-    u.password = "";
-    changed = true;
-  }
-  if (u.search) {
-    const p = new URLSearchParams(u.search);
-    const out = new URLSearchParams();
-    for (const [k, v] of p) {
-      const mask = SENSITIVE_KEY.test(k) || OPAQUE.test(v);
-      changed ||= mask;
-      out.append(k, mask ? REDACTED2 : v);
-    }
-    if (changed) u.search = out.toString();
-  }
-  if (u.hash && (u.hash.includes("=") || OPAQUE.test(u.hash.slice(1)))) {
-    u.hash = `#${REDACTED2}`;
-    changed = true;
-  }
-  return changed ? u.href.replace(/%5BREDACTED%5D/g, REDACTED2) + tail : raw;
-}
-function sanitizeString(text, secrets = []) {
-  let out = text;
-  for (const s of secrets) if (s && s.length >= 4) out = out.split(s).join(REDACTED2);
-  out = out.replace(URL_RE, (u) => sanitizeUrl(u));
-  out = out.replace(/\bfc-[A-Za-z0-9_-]{8,}\b/g, REDACTED2);
-  out = out.replace(/\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/g, "[REDACTED-JWT]");
-  out = out.replace(/\b(authorization|bearer)\b(\s*[:=]?\s*)(?!\[REDACTED)[^\s"',;]+/gi, `$1$2${REDACTED2}`);
-  out = out.replace(/(["']?)\b((?:access|refresh|id)?[_-]?token|api[_-]?key|apikey|secret|client[_-]?secret|password|passwd|pwd|session[_-]?id|sessionid|cookie|credentials?)\1(\s*[:=]\s*)(["']?)(?!\[REDACTED)[^\s"'&,;}]+/gi, `$1$2$1$3$4${REDACTED2}`);
-  return out;
-}
-function sanitizeValue2(v, secrets = [], lim = RECORD_LIMITS, truncations = [], path = "$", depth = 0) {
-  if (v === null || typeof v === "boolean") return v;
-  if (typeof v === "number") return Number.isFinite(v) ? v : null;
-  if (typeof v === "string") {
-    const s = sanitizeString(v, secrets);
-    if (s.length <= lim.maxString) return s;
-    truncations.push(`${path}: string ${s.length} chars kept ${lim.maxString}`);
-    return s.slice(0, lim.maxString);
-  }
-  if (typeof v !== "object") return null;
-  if (depth >= lim.maxDepth) {
-    truncations.push(`${path}: depth limit ${lim.maxDepth}`);
-    return null;
-  }
-  if (Array.isArray(v)) {
-    if (v.length > lim.maxArray) truncations.push(`${path}: array ${v.length} items kept ${lim.maxArray}`);
-    return v.slice(0, lim.maxArray).map((x, i) => sanitizeValue2(x, secrets, lim, truncations, `${path}[${i}]`, depth + 1));
-  }
-  const out = {};
-  const keys2 = Object.keys(v);
-  if (keys2.length > lim.maxKeys) truncations.push(`${path}: ${keys2.length} keys kept ${lim.maxKeys}`);
-  for (const k of keys2.slice(0, lim.maxKeys)) {
-    const sk = sanitizeString(k, secrets).slice(0, 200);
-    const val = v[k];
-    out[sk] = SENSITIVE_OBJ_KEY.test(k) && typeof val === "string" && val !== "" ? REDACTED2 : sanitizeValue2(val, secrets, lim, truncations, `${path}.${sk}`, depth + 1);
-  }
-  return out;
-}
-var SENSITIVE_KEY, SENSITIVE_OBJ_KEY, SESSION_URL, OPAQUE, URL_RE, REDACTED2, RECORD_LIMITS;
-var init_sanitize = __esm({
-  "src/states/sanitize.ts"() {
-    "use strict";
-    SENSITIVE_KEY = /(^|[_-])(token|access[_-]?token|refresh[_-]?token|id[_-]?token|auth|authorization|bearer|api[_-]?key|apikey|key|secret|client[_-]?secret|password|passwd|pwd|pass|credential|credentials|session|sessionid|session[_-]?id|sid|sig|signature|jwt|code|ticket|cookie)$/i;
-    SENSITIVE_OBJ_KEY = /^(token|access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|apikey|secret|client[_-]?secret|password|passwd|pwd|authorization|cookie|set-cookie|credentials?)$/i;
-    SESSION_URL = /(^wss?:|^devtools:|^chrome-devtools:|\/devtools\/|\/json\/version|\/cdp\b|[?&/]cdp[=/]|live[-_]?view|liveview|\/session[s]?\/|[?&]session[_-]?id=|\/v[0-9]+\/(interact|browser)\/)/i;
-    OPAQUE = /^[A-Za-z0-9_\-.~+/=%]{24,}$/;
-    URL_RE = /\b[a-z][a-z0-9+.-]{1,15}:\/\/[^\s"'<>`\\]+/gi;
-    REDACTED2 = "[REDACTED]";
-    RECORD_LIMITS = { maxString: 2e4, maxArray: 5e3, maxKeys: 500, maxDepth: 12 };
-  }
-});
-
 // src/states/sandboxTransport.ts
 function createInteractClient(apiKey, opts = {}) {
   const apiUrl = (opts.apiUrl ?? INTERACT_API_URL).replace(/\/$/, "");
@@ -42538,7 +42551,7 @@ function buildSandboxPreview() {
       "Every request (main document and subresources) passes ONE structural policy: http/https (data:/blob: only for subresources), no credentials, no non-default port, no IP-literal or local-name host, exact hostname bootstrapmade.com (exact raw URL for the main navigation). Allowed http(s) requests are made once by route.fetch({ maxRedirects: 0, maxRetries: 0 }); any 3xx is aborted before anything is served, so no redirect hop is requested (an allowed asset behind a redirect is missing, not followed). route.continue() is used only for data:/blob:. WebSockets are refused via context.routeWebSocket (missing => fail closed). Any aborted subresource marks the capture incomplete.",
       "route.fetch requests are made by Playwright inside the hosted sandbox with the owned context's cookies, not by this tool; no DNS lookups are made by the policy and the hosted DNS exception is not expanded. Remote-browser egress is the provider's (docs/security, docs/features/threat-protection); this tool's local DNS guard covers only its own fetches.",
       "Swiper readiness: after goto + settle, page.waitForFunction (polling 100 ms, timeout 10 s) waits until the page's own Swiper instance is bound to the source-verified element (#testimonials .swiper.init-swiper); if it never binds the run fails closed with read-only diagnostics (stage, served/blocked requests, page errors, Swiper/script snapshot). Why an earlier run found it unbound is NOT determined.",
-      "Failure diagnostics: a well-formed W2F_RESULT is recovered even when the execute envelope fails (success false, killed, truncated, nonzero exit); the run stays rejected/ambiguous. Observed browser fields are kept; unobserved fields are null (guard fields need routeInstalled, page/listener fields need listenersInstalled). Everything persisted (sandbox.json, execute-raw.json, ledger notes, logs) is sanitized first: API keys, URL userinfo, credential/session/token and long opaque query values, CDP/DevTools/live-view/session/WebSocket URLs, credential key=value pairs, JWTs. execute-raw.json is always valid JSON within 200 KB with explicit per-field truncation metadata.",
+      "Failure diagnostics: a well-formed W2F_RESULT is recovered even when the execute envelope fails (success false, killed, truncated, nonzero exit); the run stays rejected/ambiguous. Observed browser fields are kept; unobserved fields are null (guard fields need routeInstalled, page/listener fields need listenersInstalled). Everything persisted or printed (sandbox.json, execute-raw.json, every ledger write via the ledger's single serializer, CLI logs and errors) is sanitized first: API keys, complete Authorization values (scheme + credential), URL userinfo, credential/session/token and long opaque query values, CDP/DevTools/live-view/session/WebSocket URLs, credential key=value pairs, JWTs. execute-raw.json is always valid JSON within 200,000 UTF-8 bytes (serialized size) with explicit per-field truncation metadata. States-run/diagnostic response files are NOT sanitized (they keep signed screenshot URLs needed for the later download step).",
       "Timing: ONE cooperative local deadline (72 s) covers setup, navigation, waits, evaluations and screenshots (each Playwright call is raced against the time left and its own timeout capped to it); the owned-context close is a separate single attempt bounded to 5 s; 13 s of the documented 90 s execute timeout remain for serialization and provider overhead. The record keeps localDeadline, ownedContextClose, providerKilled and transportTimedOut separately. Not a hard bound: synchronous work in the sandbox's Node process cannot be pre-empted, and the provider's own kill is outside this code.",
       "Swiper states rely on the known page's semantics; method names/selectors are not a safety guarantee; no side-effect-free promise. slideNext(0) states are not observed animation completions.",
       "creditsBilled is not in the current docs: informational only; the charge is reconciled from a documented account source."
@@ -42687,18 +42700,18 @@ function rawExecuteProvenance(resp, secrets) {
     const fields = {};
     for (const [k, f] of Object.entries(prepared)) {
       const budget = Math.floor(RAW_FIELD_BUDGET[k] * scale);
-      const kept = f.text.slice(0, budget);
+      const kept = safeSlice(f.text, budget);
       fields[k] = { originalChars: f.originalChars, pngElided: f.pngElided, sanitizedChars: f.text.length, keptChars: kept.length, truncated: kept.length < f.text.length, text: kept };
     }
-    const doc = { schema: "website-to-figma/execute-raw", schemaVersion: 1, note: "PRIVATE raw execute provenance: PNG base64 elided, sanitized (keys, URL userinfo, token/session query values, CDP/live-view/session URLs), bounded per field; truncation is explicit", capChars: RAW_EXECUTE_CAP, budgetScale: scale, ...type2 ? { type: type2 } : {}, envelope, fields, otherKeys };
+    const doc = { schema: "website-to-figma/execute-raw", schemaVersion: 1, note: "PRIVATE raw execute provenance: PNG base64 elided, sanitized (keys, Authorization values, URL userinfo, token/session query values, CDP/live-view/session URLs), bounded per field (keptChars of sanitizedChars); the whole file is within capBytes UTF-8 bytes", capBytes: RAW_EXECUTE_CAP_BYTES, budgetScale: scale, ...type2 ? { type: type2 } : {}, envelope, fields, otherKeys };
     const text = JSON.stringify(doc, null, 2);
-    if (text.length <= RAW_EXECUTE_CAP) return text;
-    if (scale < 1 / 1024) return JSON.stringify({ schema: "website-to-figma/execute-raw", schemaVersion: 1, capChars: RAW_EXECUTE_CAP, error: "provenance did not fit the cap at the minimum budget; fields omitted", envelope, fieldSizes: Object.fromEntries(Object.entries(prepared).map(([k, f]) => [k, f.originalChars])) });
+    if (utf8Bytes(text) <= RAW_EXECUTE_CAP_BYTES) return text;
+    if (scale < 1 / 1024) return JSON.stringify({ schema: "website-to-figma/execute-raw", schemaVersion: 1, capBytes: RAW_EXECUTE_CAP_BYTES, error: "provenance did not fit the cap at the minimum budget; fields omitted", envelope, fieldSizes: Object.fromEntries(Object.entries(prepared).map(([k, f]) => [k, f.originalChars])) });
   }
 }
 function sanitizeRecord(rec, secrets = []) {
   const truncations = [];
-  const out = sanitizeValue2(rec, secrets, void 0, truncations);
+  const out = sanitizeValue(rec, secrets, void 0, truncations);
   if (truncations.length) out.warnings = [...out.warnings ?? [], `record sanitization truncated: ${truncations.slice(0, 10).join("; ")}`];
   return out;
 }
@@ -42755,7 +42768,14 @@ async function lifecycleInner(o, secrets) {
     warnings: []
   };
   const log = (m) => o.log?.(`[sandbox] ${redact500(m, secrets)}`);
-  const L = { reserveAttempt, recordOp, settleAttempt, settlePendingReconciliation, ...o.ledger ?? {} };
+  const base = { reserveAttempt, recordOp, settleAttempt, settlePendingReconciliation, ...o.ledger ?? {} };
+  const sz = (t) => sanitizeString(t, secrets);
+  const L = {
+    reserveAttempt: base.reserveAttempt,
+    recordOp: (path, id2, x, n) => base.recordOp(path, id2, { ...x, op: sz(x.op), detail: sz(x.detail) }, n),
+    settleAttempt: (path, id2, st3, credits, note2) => base.settleAttempt(path, id2, st3, credits, sz(note2)),
+    settlePendingReconciliation: (path, id2, note2) => base.settlePendingReconciliation(path, id2, sz(note2))
+  };
   const msg = (err) => redact500(err instanceof Error ? err.message : String(err), secrets);
   try {
     await assertHostedFirecrawlUrl(SANDBOX_URL, resolver);
@@ -42971,7 +42991,7 @@ async function cleanupSandbox(o) {
   const ledgerErrors = [];
   const rec = (status, detail2) => {
     try {
-      recordOp(o.ledgerPath, o.entryId, { op: "delete", status, detail: detail2 }, o.now);
+      recordOp(o.ledgerPath, o.entryId, { op: "delete", status, detail: sanitizeString(detail2, [key]) }, o.now);
     } catch (err) {
       ledgerErrors.push(`ledger write failed (delete ${status}): ${redact500(err instanceof Error ? err.message : String(err), [key])}`);
     }
@@ -43022,7 +43042,7 @@ function sandboxToCapture(rec, files) {
     manifest: { schema: "website-to-figma/asset-manifest", schemaVersion: 1, assets: rec.states.map((s, i) => ({ id: `sandbox-s${i}`, kind: "reference", file: files[i], sha256: s.png.sha256, pageUrl: SANDBOX_URL, state: s.name })) }
   };
 }
-var isObj8, SANDBOX_URL, SANDBOX, SANDBOX_UNSUPPORTED, SANDBOX_WORST_CASE_CREDITS, SANDBOX_WALL_MS, PAGE_FUNCS, SANDBOX_CODE, sandboxPreviewSha256, B642, SandboxHardHold, redact500, strs, objs, num2, RAW_EXECUTE_CAP, RAW_FIELD_BUDGET;
+var isObj8, SANDBOX_URL, SANDBOX, SANDBOX_UNSUPPORTED, SANDBOX_WORST_CASE_CREDITS, SANDBOX_WALL_MS, PAGE_FUNCS, SANDBOX_CODE, sandboxPreviewSha256, B642, SandboxHardHold, redact500, strs, objs, num2, RAW_EXECUTE_CAP_BYTES, RAW_FIELD_BUDGET;
 var init_sandbox = __esm({
   "src/states/sandbox.ts"() {
     "use strict";
@@ -43296,7 +43316,7 @@ console.log("W2F_RESULT " + JSON.stringify(out));`;
     strs = (v, n, len) => Array.isArray(v) ? v.filter((x) => typeof x === "string").slice(0, n).map((x) => x.slice(0, len)) : null;
     objs = (v, n) => Array.isArray(v) ? v.filter(isObj8).slice(0, n) : null;
     num2 = (v) => typeof v === "number" && Number.isFinite(v) ? v : null;
-    RAW_EXECUTE_CAP = 2e5;
+    RAW_EXECUTE_CAP_BYTES = 2e5;
     RAW_FIELD_BUDGET = { stdout: 5e4, result: 5e4, output: 5e4, error: 16e3, stderr: 16e3 };
   }
 });
@@ -44021,7 +44041,7 @@ async function main2(argv) {
     writeFileSync(path, text);
     console.log(`Wrote ${path} (${capture.pages.length} page(s); nothing fetched)`);
     for (const h of screenshotHints) console.log(`  screenshot URL present for ${h.pageUrl}${h.state ? ` state "${h.state}" (scrollY ${h.scrollY ?? "unknown"})` : ""} (NOT downloaded; add local bytes to the asset manifest with kind "reference", pageUrl${h.state ? " and state" : ""})`);
-    for (const w of warnings) console.log(`  warning: ${w}`);
+    for (const w of warnings) console.log(`  warning: ${sanitizeString(w)}`);
     return 0;
   }
   if (cmd === "states-plan") {
@@ -44102,11 +44122,11 @@ async function main2(argv) {
         return process.env.FIRECRAWL_API_KEY;
       },
       save: (i, wrapper) => writeExclusive(join2(runDir, `page-${i}.response.json`), JSON.stringify(wrapper) + "\n"),
-      log: (m) => console.error(m)
+      log: (m) => console.error(sanitizeString(m))
     });
     writeExclusive(join2(runDir, "run.json"), JSON.stringify({ runId: result.runId, previewSha256: result.previewSha256, stoppedEarly: result.stoppedEarly, pages: result.pages }, null, 2) + "\n");
     console.log(`Wrote ${runDir} (PRIVATE: contains raw page content; never commit it)`);
-    for (const p of result.pages) console.log(`  ${p.pageUrl}: ${p.status}${p.reason ? ` (${p.reason})` : ""}; credits reported ${p.reportedCreditsUsed ?? "NOT reported"}${p.warnings.length ? `; ${p.warnings.join("; ")}` : ""}`);
+    for (const p of result.pages) console.log(sanitizeString(`  ${p.pageUrl}: ${p.status}${p.reason ? ` (${p.reason})` : ""}; credits reported ${p.reportedCreditsUsed ?? "NOT reported"}${p.warnings.length ? `; ${p.warnings.join("; ")}` : ""}`));
     return result.pages.every((p) => p.status === "accepted") && !result.stoppedEarly ? 0 : 4;
   }
   if (cmd === "states-screenshots") {
@@ -44203,11 +44223,12 @@ async function main2(argv) {
       },
       savePng: (seq, bytes) => writeExclusive(join2(runDir, `state-${seq}.png`), bytes),
       saveRaw: (text) => writeExclusive(join2(runDir, "execute-raw.json"), text + "\n"),
-      log: (m) => console.error(m)
+      log: (m) => console.error(sanitizeString(m))
     });
-    writeExclusive(join2(runDir, "sandbox.json"), JSON.stringify(sanitizeRecord(rec), null, 2) + "\n");
-    console.log(`Wrote ${runDir} (PRIVATE). status ${rec.status}${rec.reason ? ` (${rec.reason})` : ""}; charge ${rec.chargeStatus}; response creditsBilled ${rec.creditsBilled ?? "absent"} (undocumented, informational)${rec.incomplete ? "; capture INCOMPLETE" : rec.incomplete === null ? "; completeness NOT OBSERVED" : ""}${rec.stage ? `; in-browser stage ${rec.stage}` : ""}${rec.rawExecute?.saved ? "; raw execute provenance: execute-raw.json" : ""}`);
-    for (const w of rec.warnings) console.log(`  warning: ${w}`);
+    const safe = sanitizeRecord(rec);
+    writeExclusive(join2(runDir, "sandbox.json"), JSON.stringify(safe, null, 2) + "\n");
+    console.log(`Wrote ${runDir} (PRIVATE). status ${safe.status}${safe.reason ? ` (${safe.reason})` : ""}; charge ${safe.chargeStatus}; response creditsBilled ${safe.creditsBilled ?? "absent"} (undocumented, informational)${safe.incomplete ? "; capture INCOMPLETE" : safe.incomplete === null ? "; completeness NOT OBSERVED" : ""}${safe.stage ? `; in-browser stage ${safe.stage}` : ""}${safe.rawExecute?.saved ? "; raw execute provenance: execute-raw.json" : ""}`);
+    for (const w of safe.warnings) console.log(`  warning: ${w}`);
     return rec.status === "accepted" ? 0 : 4;
   }
   if (cmd === "sandbox-cleanup") {
@@ -44222,7 +44243,7 @@ async function main2(argv) {
       if (existsSync(".env")) process.loadEnvFile(".env");
       return process.env.FIRECRAWL_API_KEY;
     } });
-    console.log(r.detail);
+    console.log(sanitizeString(r.detail));
     return r.ok ? 0 : 4;
   }
   if (cmd === "sandbox-convert") {
@@ -44283,10 +44304,10 @@ async function main2(argv) {
         return process.env.FIRECRAWL_API_KEY;
       },
       save: (w) => writeExclusive(join2(runDir, "diagnostic.response.json"), JSON.stringify(w) + "\n"),
-      log: (m) => console.error(m)
+      log: (m) => console.error(sanitizeString(m))
     });
     writeExclusive(join2(runDir, "diagnostic.json"), JSON.stringify(rec, null, 2) + "\n");
-    console.log(`Wrote ${runDir} (PRIVATE). status ${rec.status}${rec.reason ? ` (${rec.reason})` : ""}; credits reported ${rec.reportedCreditsUsed ?? "NOT reported"}`);
+    console.log(sanitizeString(`Wrote ${runDir} (PRIVATE). status ${rec.status}${rec.reason ? ` (${rec.reason})` : ""}; credits reported ${rec.reportedCreditsUsed ?? "NOT reported"}`));
     return rec.status === "accepted" ? 0 : 4;
   }
   if (cmd === "diag-screenshots" || cmd === "diag-interpret") {
@@ -44490,7 +44511,7 @@ Exclusions (sent as excludePaths before fetching): ${excludes.length > 0 ? exclu
         confirmExistingCredits,
         confirmNoTopup,
         signal: abort.signal,
-        log: (m) => console.error(m)
+        log: (m) => console.error(sanitizeString(m))
       });
     } finally {
       process.off("SIGINT", onSigint);
@@ -44525,6 +44546,7 @@ var init_cli = __esm({
     init_acquire();
     init_diagnostic();
     init_imageInfo();
+    init_sanitize();
     init_sandbox();
     init_jobs();
     init_adapt();
@@ -44610,16 +44632,16 @@ var init_cli = __esm({
       (code) => process.exit(code),
       (err) => {
         if (err instanceof CrawlPolicyError || err instanceof StatePlanError || err instanceof StateRunPolicyError || err instanceof LedgerError || err instanceof OutputError || err instanceof JobPlanError) {
-          console.error(err.message);
+          console.error(sanitizeString(err.message));
           process.exit(3);
         }
         if (err instanceof UsageError) {
-          console.error(`${err.message}
+          console.error(`${sanitizeString(err.message)}
 
 ${USAGE}`);
           process.exit(64);
         }
-        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        console.error(`Error: ${sanitizeString(err instanceof Error ? err.message : String(err))}`);
         process.exit(1);
       }
     );

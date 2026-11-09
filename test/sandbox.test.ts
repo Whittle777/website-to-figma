@@ -8,7 +8,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { copyObserved, rawExecuteProvenance, RAW_EXECUTE_CAP, sanitizeRecord, SANDBOX_WALL_MS } from "../src/states/sandbox";
+import { copyObserved, rawExecuteProvenance, RAW_EXECUTE_CAP_BYTES, sanitizeRecord, SANDBOX_WALL_MS } from "../src/states/sandbox";
+import { initLedger as lInit, recordManual, reserveAttempt, recordOp as lRecordOp, settleAttempt as lSettle, settlePendingReconciliation as lPending, serializeLedger } from "../src/states/ledger";
+import { readFileSync } from "node:fs";
 import { sanitizeString } from "../src/states/sanitize";
 import { redact as legacyRedact } from "../src/states/execute";
 import { buildSandboxPreview, createSandboxClient, executeSandbox, runSandboxLifecycle, SandboxHardHold, SANDBOX_UNSUPPORTED, parseSandboxOutput, sandboxPreviewSha256, sandboxToCapture, validateSandboxPreview, cleanupSandbox, SANDBOX, SANDBOX_CODE, SANDBOX_URL, SANDBOX_WORST_CASE_CREDITS, type SandboxClient } from "../src/states/sandbox";
@@ -897,11 +899,11 @@ describe("failure diagnostics are preserved (never discarded, never defaulted)",
   it("raw provenance is ALWAYS valid JSON within the cap, with explicit truncation metadata, PNG elision and key redaction", () => {
     const png = "A".repeat(500_000);
     const raw = rawExecuteProvenance({ success: true, exitCode: 0, stdout: `${KEY} W2F_RESULT {"states":[{"png":"${png}"}]}` + " log".repeat(30_000), stderr: "e".repeat(40_000), weird: 1 }, [KEY]);
-    expect(raw.length).toBeLessThanOrEqual(RAW_EXECUTE_CAP);
+    expect(Buffer.byteLength(raw, "utf8")).toBeLessThanOrEqual(RAW_EXECUTE_CAP_BYTES);
     const j = JSON.parse(raw);
     expect(raw).not.toContain(KEY);
     expect(raw).not.toContain("A".repeat(100));
-    expect(j).toMatchObject({ schema: "website-to-figma/execute-raw", schemaVersion: 1, capChars: RAW_EXECUTE_CAP, envelope: { success: true, exitCode: 0 }, otherKeys: ["weird"] });
+    expect(j).toMatchObject({ schema: "website-to-figma/execute-raw", schemaVersion: 1, capBytes: RAW_EXECUTE_CAP_BYTES, envelope: { success: true, exitCode: 0 }, otherKeys: ["weird"] });
     expect(j.fields.stdout).toMatchObject({ pngElided: 1, truncated: true, keptChars: 50_000 });
     expect(j.fields.stdout.text).toContain("<elided 500000 base64 chars>");
     expect(j.fields.stderr).toMatchObject({ originalChars: 40_000, truncated: true, keptChars: 16_000 });
@@ -909,7 +911,7 @@ describe("failure diagnostics are preserved (never discarded, never defaulted)",
   it("raw provenance stays valid JSON for adversarial content (escape-heavy text shrinks budgets, never chops JSON)", () => {
     for (const nasty of ['"'.repeat(200_000), "\u0001".repeat(200_000), "\\".repeat(100_000) + '"}]', "\u2028😀".repeat(80_000)]) {
       const raw = rawExecuteProvenance({ stdout: nasty, stderr: nasty, error: nasty, result: nasty, output: nasty }, [KEY]);
-      expect(raw.length).toBeLessThanOrEqual(RAW_EXECUTE_CAP);
+      expect(Buffer.byteLength(raw, "utf8")).toBeLessThanOrEqual(RAW_EXECUTE_CAP_BYTES);
       const j = JSON.parse(raw);
       expect(j.schema).toBe("website-to-figma/execute-raw");
       if (j.fields) for (const f of Object.values(j.fields) as any[]) expect(f.keptChars).toBe(f.text.length);
@@ -1057,5 +1059,138 @@ describe("FINDING4: one local in-browser deadline; bounded single close; deadlin
     const transport = await runWith(Object.assign(new Error("execute did not finish within 120000 ms (wall clock)"), { w2fTimeout: true }));
     expect(transport.rec.timing).toMatchObject({ transportTimedOut: true, providerKilled: null, localDeadline: null });
     expect(transport.events.filter((e) => e.startsWith("delete"))).toHaveLength(1); // session DELETE still once
+  });
+});
+
+// ---------------- review 4633ca1c findings ----------------
+const BEARER = "SENTINELBEARERTOKEN0123456789";
+const BEARER_FORMS = [`Authorization: Bearer ${BEARER}`, `{"authorization":"Bearer ${BEARER}"}`, `{\\"Authorization\\":\\"Bearer ${BEARER}\\"}`, `curl -H 'authorization: bearer ${BEARER}'`, `proxy-authorization=Basic ${Buffer.from("u:SENTINELBASICPW").toString("base64")}`];
+const ALL_SENTINELS = [...SECRETS, BEARER, Buffer.from("u:SENTINELBASICPW").toString("base64"), KEY];
+const PLANTED2 = `${PLANTED} ${BEARER_FORMS.join(" ")}`;
+const noSentinel = (text: string) => {
+  for (const sec of ALL_SENTINELS) expect(text, `leaked ${sec}`).not.toContain(sec);
+};
+
+describe("FINDING2: Authorization scheme + credential fully redacted (raw AND structured)", () => {
+  it("every Bearer/Basic form is removed from execute-raw.json, sandbox.json and nested structured fields", async () => {
+    const stdout = "log " + BEARER_FORMS.join("\n") + "\n" + w2fLine({ error: `fetch failed ${BEARER_FORMS[1]}`, stage: "goto", routeInstalled: true, listenersInstalled: true, pageErrors: BEARER_FORMS, consoleErrors: [BEARER_FORMS[0]], nav: { note: BEARER_FORMS[0], headers: { authorization: `Bearer ${BEARER}` } } });
+    const { rec, raws } = await runWith({ success: true, exitCode: 0, killed: false, stdout, stderr: BEARER_FORMS.join(" "), error: BEARER_FORMS[2] });
+    noSentinel(JSON.stringify(rec));
+    noSentinel(JSON.stringify(sanitizeRecord(rec)));
+    noSentinel(raws[0]!);
+    expect(rec.pageErrors![0]).toBe("Authorization: [REDACTED]");
+    expect((rec.nav as any).headers.authorization).toBe("[REDACTED]");
+    for (const f of BEARER_FORMS) expect(sanitizeString(f)).toContain("[REDACTED]");
+  });
+  it("MUTATION: the previous Authorization rule leaves the credential (scheme only replaced)", () => {
+    const previousRule = (t: string) => t.replace(/\b(authorization|bearer)\b(\s*[:=]?\s*)(?!\[REDACTED)[^\s"',;]+/gi, "$1$2[REDACTED]");
+    expect(previousRule(BEARER_FORMS[0]!)).toContain(BEARER);
+    expect(sanitizeString(BEARER_FORMS[0]!)).not.toContain(BEARER);
+  });
+});
+
+describe("FINDING1: every ledger persistence path is sanitized before disk", () => {
+  const fileText = (p: string) => readFileSync(p, "utf8");
+  it("init / manual / reserve (url) / op detail / settle / pending settlement / resolve: no sentinel on disk; schema intact", () => {
+    const d = tmp();
+    const lp = join(d, "l.json");
+    lInit(lp, 17, `prior ${PLANTED2}`);
+    recordManual(lp, 1, `manual ${PLANTED2}`);
+    const a = reserveAttempt(lp, { url: "https://u:hunter2@bootstrapmade.com/?token=SEKRET123TOKEN", requestSha256: "a".repeat(64), reserved: 1, command: "sandbox-run" });
+    lRecordOp(lp, a.id, { op: "execute", status: "ok", detail: `detail ${PLANTED2}` });
+    lSettle(lp, a.id, "failed", null, `settle ${PLANTED2}`);
+    const b = reserveAttempt(lp, { url: SANDBOX_URL, requestSha256: "b".repeat(64), reserved: 1, command: "sandbox-run" });
+    lPending(lp, b.id, `pending ${PLANTED2}`);
+    resolveEntry(lp, b.id, 1, `resolve ${PLANTED2}`);
+    const text = fileText(lp);
+    noSentinel(text);
+    expect(text).toContain("[REDACTED-SESSION-URL]");
+    const l = readLedger(lp); // still parses with the strict schema
+    expect(l.entries.map((e) => e.status)).toEqual(["prior", "manual", "failed", "succeeded"]);
+    expect(l.entries[3]!.chargeStatus).toBe("reconciled");
+    expect(l.entries[0]!.reserved).toBe(17);
+  });
+  it("lifecycle: an in-browser error carrying secrets reaches reason -> settlement note sanitized BEFORE the ledger call AND on disk", async () => {
+    const s = setup();
+    const seen: string[] = [];
+    const capture = {
+      recordOp: ((p: string, id: string, x: any, n?: () => Date) => (seen.push(x.detail), realRecordOp(p, id, x, n))) as typeof realRecordOp,
+      settleAttempt: ((p: string, id: string, st: any, c: any, note: string) => (seen.push(note), realSettleAttempt(p, id, st, c, note))) as typeof realSettleAttempt,
+      settlePendingReconciliation: ((p: string, id: string, note: string) => (seen.push(note), realSettlePending(p, id, note))) as typeof realSettlePending,
+    };
+    const rec = await runSandboxLifecycle({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async () => client([], s.ledgerPath, { execute: { success: true, exitCode: 0, killed: false, stdout: w2fLine({ error: `boom ${PLANTED2}`, stage: "goto" }) } }), ledger: capture });
+    expect(rec.status).toBe("rejected");
+    expect(seen.some((x) => x.includes("boom"))).toBe(true); // the settlement note did carry the error
+    for (const x of seen) noSentinel(x); // ...sanitized before the ledger function was called
+    noSentinel(readFileSync(s.ledgerPath, "utf8"));
+  });
+  it("lifecycle: create error / execute transport error / delete error details are sanitized on disk", async () => {
+    for (const o of [{ create: new Error(`create ${PLANTED2}`) }, { execute: new Error(`exec ${PLANTED2}`) }, { del: new Error(`del ${PLANTED2}`) }]) {
+      const s = setup();
+      await runSandboxLifecycle({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async () => client([], s.ledgerPath, o) });
+      noSentinel(readFileSync(s.ledgerPath, "utf8"));
+    }
+  });
+  it("MUTATION: the previous ledger serializer (plain JSON.stringify) would persist the planted note", () => {
+    const l: any = { schema: "website-to-figma/credit-ledger", schemaVersion: 1, capCredits: 1000, entries: [{ id: "x", at: "t", command: "manual", url: null, requestSha256: null, reserved: 1, reportedCredits: 1, status: "manual", note: PLANTED2 }] };
+    const previous = JSON.stringify(l, null, 2);
+    for (const sec of SECRETS) expect(previous).toContain(sec);
+    noSentinel(serializeLedger(l));
+  });
+  it("CLI top-level error output is sanitized", () => {
+    const d = tmp();
+    initLedger(join(d, "l.json"), 17, "x");
+    let out = "";
+    try {
+      execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", "ledger", "resolve", "--ledger", join(d, "l.json"), "--id", `Bearer ${BEARER} https://u:hunter2@x.example/`, "--credits", "1"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    } catch (e: any) {
+      out = `${e.stdout}${e.stderr}`;
+      expect(e.status).toBe(3);
+    }
+    expect(out).toMatch(/no ledger entry/);
+    expect(out).not.toContain(BEARER);
+    expect(out).not.toContain("hunter2");
+  }, 60_000);
+});
+
+describe("FINDING3: execute-raw.json is capped in serialized UTF-8 BYTES and always valid JSON", () => {
+  const LONE_HIGH = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/;
+  for (const [name, unit] of [["4-byte emoji (surrogate pairs)", "😀"], ["3-byte CJK", "漢"], ["2-byte latin", "é"], ["mixed + escapes", '😀"\\\u0001漢']] as const) {
+    it(`${name}: bytes <= cap, parses, truncation metadata, no split surrogate`, () => {
+      const big = unit.repeat(150_000);
+      const raw = rawExecuteProvenance({ success: false, stdout: big, result: big, output: big, stderr: big, error: big }, [KEY]);
+      expect(Buffer.byteLength(raw, "utf8")).toBeLessThanOrEqual(RAW_EXECUTE_CAP_BYTES);
+      const j = JSON.parse(raw);
+      expect(j.capBytes).toBe(RAW_EXECUTE_CAP_BYTES);
+      for (const f of Object.values(j.fields) as any[]) {
+        expect(f.truncated).toBe(true);
+        expect(f.keptChars).toBe(f.text.length);
+        expect(f.keptChars).toBeLessThan(f.sanitizedChars);
+        expect(LONE_HIGH.test(f.text)).toBe(false);
+      }
+    });
+  }
+  it("lone surrogates in input still serialize to valid JSON within the byte cap", () => {
+    const raw = rawExecuteProvenance({ stdout: "\uD800x\uDC00".repeat(100_000), stderr: "a\uDBFF" }, []);
+    expect(Buffer.byteLength(raw, "utf8")).toBeLessThanOrEqual(RAW_EXECUTE_CAP_BYTES);
+    expect(() => JSON.parse(raw)).not.toThrow();
+  });
+  it("MUTATION: a char-length check alone would accept a file far over the byte cap", () => {
+    const text = JSON.stringify({ t: "😀".repeat(60_000) });
+    expect(text.length).toBeLessThanOrEqual(RAW_EXECUTE_CAP_BYTES); // passes a char check
+    expect(Buffer.byteLength(text, "utf8")).toBeGreaterThan(RAW_EXECUTE_CAP_BYTES); // but is ~240 KB
+  });
+});
+
+describe("persistence audit guard (complements the behavioral tests above)", () => {
+  it("ledger.ts has exactly two disk writers for the ledger and both use serializeLedger", () => {
+    const src = readFileSync("src/states/ledger.ts", "utf8");
+    expect(src.match(/writeSync\(fd, serializeLedger\(l\)\)/g)).toHaveLength(2);
+    expect(src).not.toMatch(/writeSync\(fd, JSON\.stringify/);
+  });
+  it("sandbox-run writes sandbox.json from sanitizeRecord and prints from the same sanitized object", () => {
+    const src = readFileSync("src/cli.ts", "utf8");
+    expect(src).toContain('const safe = sanitizeRecord(rec); // same sanitized record for disk AND terminal');
+    expect(src).toContain('writeExclusive(join(runDir, "sandbox.json"), JSON.stringify(safe, null, 2)');
   });
 });

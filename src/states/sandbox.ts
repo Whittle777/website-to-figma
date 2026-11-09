@@ -41,7 +41,7 @@
 import { assertHostedFirecrawlUrl, systemResolver, type Resolver } from "../security/urlGuard";
 import { inspectImage, sha256Hex } from "../shared/imageInfo";
 import { canonicalJson, classify, sha256, StateRunPolicyError, withTimeout } from "./execute";
-import { sanitizeString, sanitizeValue } from "./sanitize";
+import { safeSlice, sanitizeString, sanitizeValue, utf8Bytes } from "./sanitize";
 import { createInteractClient, INTERACT_API_URL, type InteractClient } from "./sandboxTransport";
 import { readLedger, reserveAttempt, settleAttempt, settlePendingReconciliation, recordOp, committedCredits, unresolved, LedgerError } from "./ledger";
 
@@ -366,7 +366,7 @@ export function buildSandboxPreview(): SandboxPreview {
       "Every request (main document and subresources) passes ONE structural policy: http/https (data:/blob: only for subresources), no credentials, no non-default port, no IP-literal or local-name host, exact hostname bootstrapmade.com (exact raw URL for the main navigation). Allowed http(s) requests are made once by route.fetch({ maxRedirects: 0, maxRetries: 0 }); any 3xx is aborted before anything is served, so no redirect hop is requested (an allowed asset behind a redirect is missing, not followed). route.continue() is used only for data:/blob:. WebSockets are refused via context.routeWebSocket (missing => fail closed). Any aborted subresource marks the capture incomplete.",
       "route.fetch requests are made by Playwright inside the hosted sandbox with the owned context's cookies, not by this tool; no DNS lookups are made by the policy and the hosted DNS exception is not expanded. Remote-browser egress is the provider's (docs/security, docs/features/threat-protection); this tool's local DNS guard covers only its own fetches.",
       "Swiper readiness: after goto + settle, page.waitForFunction (polling 100 ms, timeout 10 s) waits until the page's own Swiper instance is bound to the source-verified element (#testimonials .swiper.init-swiper); if it never binds the run fails closed with read-only diagnostics (stage, served/blocked requests, page errors, Swiper/script snapshot). Why an earlier run found it unbound is NOT determined.",
-      "Failure diagnostics: a well-formed W2F_RESULT is recovered even when the execute envelope fails (success false, killed, truncated, nonzero exit); the run stays rejected/ambiguous. Observed browser fields are kept; unobserved fields are null (guard fields need routeInstalled, page/listener fields need listenersInstalled). Everything persisted (sandbox.json, execute-raw.json, ledger notes, logs) is sanitized first: API keys, URL userinfo, credential/session/token and long opaque query values, CDP/DevTools/live-view/session/WebSocket URLs, credential key=value pairs, JWTs. execute-raw.json is always valid JSON within 200 KB with explicit per-field truncation metadata.",
+      "Failure diagnostics: a well-formed W2F_RESULT is recovered even when the execute envelope fails (success false, killed, truncated, nonzero exit); the run stays rejected/ambiguous. Observed browser fields are kept; unobserved fields are null (guard fields need routeInstalled, page/listener fields need listenersInstalled). Everything persisted or printed (sandbox.json, execute-raw.json, every ledger write via the ledger's single serializer, CLI logs and errors) is sanitized first: API keys, complete Authorization values (scheme + credential), URL userinfo, credential/session/token and long opaque query values, CDP/DevTools/live-view/session/WebSocket URLs, credential key=value pairs, JWTs. execute-raw.json is always valid JSON within 200,000 UTF-8 bytes (serialized size) with explicit per-field truncation metadata. States-run/diagnostic response files are NOT sanitized (they keep signed screenshot URLs needed for the later download step).",
       "Timing: ONE cooperative local deadline (72 s) covers setup, navigation, waits, evaluations and screenshots (each Playwright call is raced against the time left and its own timeout capped to it); the owned-context close is a separate single attempt bounded to 5 s; 13 s of the documented 90 s execute timeout remain for serialization and provider overhead. The record keeps localDeadline, ownedContextClose, providerKilled and transportTimedOut separately. Not a hard bound: synchronous work in the sandbox's Node process cannot be pre-empted, and the provider's own kill is outside this code.",
       "Swiper states rely on the known page's semantics; method names/selectors are not a safety guarantee; no side-effect-free promise. slideNext(0) states are not observed animation completions.",
       "creditsBilled is not in the current docs: informational only; the charge is reconciled from a documented account source.",
@@ -625,12 +625,14 @@ export function copyObserved(rec: SandboxRecord, r: Obj): void {
   rec.timing.ownedContextClose = isObj(r.close) ? r.close : null;
 }
 
-export const RAW_EXECUTE_CAP = 200_000;
+// cap on the SERIALIZED UTF-8 BYTES of execute-raw.json (not JS string length)
+export const RAW_EXECUTE_CAP_BYTES = 200_000;
 const RAW_FIELD_BUDGET: Record<string, number> = { stdout: 50_000, result: 50_000, output: 50_000, error: 16_000, stderr: 16_000 };
 // PRIVATE raw execute provenance. Order: PNG base64 elided -> sanitized (secrets, URL userinfo,
 // token/session query values, CDP/live-view/session URLs) -> bounded per field with explicit
-// truncation metadata -> serialized ONCE. Always valid JSON within RAW_EXECUTE_CAP (budgets shrink
-// until it fits; the serialized text is never chopped). Never parsed for decisions.
+// truncation metadata -> serialized ONCE. Always valid JSON within RAW_EXECUTE_CAP_BYTES (budgets shrink
+// until the serialized UTF-8 byte length fits; the serialized text is never chopped; field text is
+// never split inside a surrogate pair). Never parsed for decisions.
 export function rawExecuteProvenance(resp: unknown, secrets: readonly string[]): string {
   const prepared: Record<string, { originalChars: number; pngElided: number; text: string }> = {};
   const envelope: Obj = {};
@@ -656,13 +658,13 @@ export function rawExecuteProvenance(resp: unknown, secrets: readonly string[]):
     const fields: Obj = {};
     for (const [k, f] of Object.entries(prepared)) {
       const budget = Math.floor(RAW_FIELD_BUDGET[k]! * scale);
-      const kept = f.text.slice(0, budget);
+      const kept = safeSlice(f.text, budget);
       fields[k] = { originalChars: f.originalChars, pngElided: f.pngElided, sanitizedChars: f.text.length, keptChars: kept.length, truncated: kept.length < f.text.length, text: kept };
     }
-    const doc = { schema: "website-to-figma/execute-raw", schemaVersion: 1, note: "PRIVATE raw execute provenance: PNG base64 elided, sanitized (keys, URL userinfo, token/session query values, CDP/live-view/session URLs), bounded per field; truncation is explicit", capChars: RAW_EXECUTE_CAP, budgetScale: scale, ...(type ? { type } : {}), envelope, fields, otherKeys };
+    const doc = { schema: "website-to-figma/execute-raw", schemaVersion: 1, note: "PRIVATE raw execute provenance: PNG base64 elided, sanitized (keys, Authorization values, URL userinfo, token/session query values, CDP/live-view/session URLs), bounded per field (keptChars of sanitizedChars); the whole file is within capBytes UTF-8 bytes", capBytes: RAW_EXECUTE_CAP_BYTES, budgetScale: scale, ...(type ? { type } : {}), envelope, fields, otherKeys };
     const text = JSON.stringify(doc, null, 2);
-    if (text.length <= RAW_EXECUTE_CAP) return text;
-    if (scale < 1 / 1024) return JSON.stringify({ schema: "website-to-figma/execute-raw", schemaVersion: 1, capChars: RAW_EXECUTE_CAP, error: "provenance did not fit the cap at the minimum budget; fields omitted", envelope, fieldSizes: Object.fromEntries(Object.entries(prepared).map(([k, f]) => [k, f.originalChars])) });
+    if (utf8Bytes(text) <= RAW_EXECUTE_CAP_BYTES) return text;
+    if (scale < 1 / 1024) return JSON.stringify({ schema: "website-to-figma/execute-raw", schemaVersion: 1, capBytes: RAW_EXECUTE_CAP_BYTES, error: "provenance did not fit the cap at the minimum budget; fields omitted", envelope, fieldSizes: Object.fromEntries(Object.entries(prepared).map(([k, f]) => [k, f.originalChars])) });
   }
 }
 
@@ -729,7 +731,16 @@ async function lifecycleInner(o: SandboxExecuteOptions, secrets: string[]): Prom
     warnings: [],
   };
   const log = (m: string) => o.log?.(`[sandbox] ${redact500(m, secrets)}`);
-  const L: SandboxLedgerOps = { reserveAttempt, recordOp, settleAttempt, settlePendingReconciliation, ...(o.ledger ?? {}) };
+  const base: SandboxLedgerOps = { reserveAttempt, recordOp, settleAttempt, settlePendingReconciliation, ...(o.ledger ?? {}) };
+  // Every ledger write from this lifecycle passes through the secret-aware sanitizer FIRST (the
+  // ledger layer sanitizes again, without the key list, at its own serializer).
+  const sz = (t: string) => sanitizeString(t, secrets);
+  const L: SandboxLedgerOps = {
+    reserveAttempt: base.reserveAttempt,
+    recordOp: (path, id, x, n) => base.recordOp(path, id, { ...x, op: sz(x.op), detail: sz(x.detail) }, n),
+    settleAttempt: (path, id, st, credits, note) => base.settleAttempt(path, id, st, credits, sz(note)),
+    settlePendingReconciliation: (path, id, note) => base.settlePendingReconciliation(path, id, sz(note)),
+  };
   const msg = (err: unknown) => redact500(err instanceof Error ? err.message : String(err), secrets);
   try {
     await assertHostedFirecrawlUrl(SANDBOX_URL, resolver);
@@ -960,7 +971,7 @@ export async function cleanupSandbox(o: { ledgerPath: string; entryId: string; g
   const ledgerErrors: string[] = [];
   const rec = (status: "attempting" | "ok" | "failed" | "ambiguous", detail: string) => {
     try {
-      recordOp(o.ledgerPath, o.entryId, { op: "delete", status, detail }, o.now);
+      recordOp(o.ledgerPath, o.entryId, { op: "delete", status, detail: sanitizeString(detail, [key]) }, o.now);
     } catch (err) {
       ledgerErrors.push(`ledger write failed (delete ${status}): ${redact500(err instanceof Error ? err.message : String(err), [key])}`);
     }

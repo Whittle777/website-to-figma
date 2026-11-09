@@ -25,6 +25,7 @@ import { acquireImage, httpsTransport } from "./states/acquire";
 import { createHash } from "node:crypto";
 import { buildDiagnosticPreview, diagnosticPreviewSha256, executeDiagnostic, interpretDiagnostic, validateDiagnosticPreview, DIAG_URL, type DiagnosticRecord } from "./states/diagnostic";
 import { inspectImage } from "./shared/imageInfo";
+import { sanitizeString } from "./states/sanitize";
 import { SANDBOX_UNSUPPORTED, assertSandboxGates, buildSandboxPreview, cleanupSandbox, executeSandbox, sanitizeRecord, sandboxPreviewSha256, sandboxToCapture, validateSandboxPreview, SANDBOX, SANDBOX_WORST_CASE_CREDITS, type SandboxRecord } from "./states/sandbox";
 import { planConnectorJobs, parseImageHashMap, DEFAULT_MAX_JOB_CHARS, JobPlanError } from "./connector/jobs";
 import { adaptTaggedReturns } from "./states/adapt";
@@ -213,7 +214,7 @@ async function main(argv: string[]): Promise<number> {
     writeFileSync(path, text);
     console.log(`Wrote ${path} (${capture.pages.length} page(s); nothing fetched)`);
     for (const h of screenshotHints) console.log(`  screenshot URL present for ${h.pageUrl}${h.state ? ` state "${h.state}" (scrollY ${h.scrollY ?? "unknown"})` : ""} (NOT downloaded; add local bytes to the asset manifest with kind "reference", pageUrl${h.state ? " and state" : ""})`);
-    for (const w of warnings) console.log(`  warning: ${w}`);
+    for (const w of warnings) console.log(`  warning: ${sanitizeString(w)}`);
     return 0;
   }
 
@@ -298,11 +299,11 @@ async function main(argv: string[]): Promise<number> {
         return process.env.FIRECRAWL_API_KEY;
       },
       save: (i, wrapper) => writeExclusive(join(runDir, `page-${i}.response.json`), JSON.stringify(wrapper) + "\n"),
-      log: (m) => console.error(m),
+      log: (m) => console.error(sanitizeString(m)),
     });
     writeExclusive(join(runDir, "run.json"), JSON.stringify({ runId: result.runId, previewSha256: result.previewSha256, stoppedEarly: result.stoppedEarly, pages: result.pages }, null, 2) + "\n");
     console.log(`Wrote ${runDir} (PRIVATE: contains raw page content; never commit it)`);
-    for (const p of result.pages) console.log(`  ${p.pageUrl}: ${p.status}${p.reason ? ` (${p.reason})` : ""}; credits reported ${p.reportedCreditsUsed ?? "NOT reported"}${p.warnings.length ? `; ${p.warnings.join("; ")}` : ""}`);
+    for (const p of result.pages) console.log(sanitizeString(`  ${p.pageUrl}: ${p.status}${p.reason ? ` (${p.reason})` : ""}; credits reported ${p.reportedCreditsUsed ?? "NOT reported"}${p.warnings.length ? `; ${p.warnings.join("; ")}` : ""}`));
     return result.pages.every((p) => p.status === "accepted") && !result.stoppedEarly ? 0 : 4;
   }
 
@@ -402,12 +403,13 @@ async function main(argv: string[]): Promise<number> {
       },
       savePng: (seq, bytes) => writeExclusive(join(runDir, `state-${seq}.png`), bytes),
       saveRaw: (text) => writeExclusive(join(runDir, "execute-raw.json"), text + "\n"),
-      log: (m) => console.error(m),
+      log: (m) => console.error(sanitizeString(m)),
     });
     // final persistence boundary (the lifecycle already sanitized with the key; this re-check is key-less)
-    writeExclusive(join(runDir, "sandbox.json"), JSON.stringify(sanitizeRecord(rec), null, 2) + "\n");
-    console.log(`Wrote ${runDir} (PRIVATE). status ${rec.status}${rec.reason ? ` (${rec.reason})` : ""}; charge ${rec.chargeStatus}; response creditsBilled ${rec.creditsBilled ?? "absent"} (undocumented, informational)${rec.incomplete ? "; capture INCOMPLETE" : rec.incomplete === null ? "; completeness NOT OBSERVED" : ""}${rec.stage ? `; in-browser stage ${rec.stage}` : ""}${rec.rawExecute?.saved ? "; raw execute provenance: execute-raw.json" : ""}`);
-    for (const w of rec.warnings) console.log(`  warning: ${w}`);
+    const safe = sanitizeRecord(rec); // same sanitized record for disk AND terminal
+    writeExclusive(join(runDir, "sandbox.json"), JSON.stringify(safe, null, 2) + "\n");
+    console.log(`Wrote ${runDir} (PRIVATE). status ${safe.status}${safe.reason ? ` (${safe.reason})` : ""}; charge ${safe.chargeStatus}; response creditsBilled ${safe.creditsBilled ?? "absent"} (undocumented, informational)${safe.incomplete ? "; capture INCOMPLETE" : safe.incomplete === null ? "; completeness NOT OBSERVED" : ""}${safe.stage ? `; in-browser stage ${safe.stage}` : ""}${safe.rawExecute?.saved ? "; raw execute provenance: execute-raw.json" : ""}`);
+    for (const w of safe.warnings) console.log(`  warning: ${w}`);
     return rec.status === "accepted" ? 0 : 4;
   }
 
@@ -423,7 +425,7 @@ async function main(argv: string[]): Promise<number> {
       if (existsSync(".env")) process.loadEnvFile(".env");
       return process.env.FIRECRAWL_API_KEY;
     } });
-    console.log(r.detail);
+    console.log(sanitizeString(r.detail));
     return r.ok ? 0 : 4;
   }
 
@@ -487,10 +489,10 @@ async function main(argv: string[]): Promise<number> {
         return process.env.FIRECRAWL_API_KEY;
       },
       save: (w) => writeExclusive(join(runDir, "diagnostic.response.json"), JSON.stringify(w) + "\n"),
-      log: (m) => console.error(m),
+      log: (m) => console.error(sanitizeString(m)),
     });
     writeExclusive(join(runDir, "diagnostic.json"), JSON.stringify(rec, null, 2) + "\n");
-    console.log(`Wrote ${runDir} (PRIVATE). status ${rec.status}${rec.reason ? ` (${rec.reason})` : ""}; credits reported ${rec.reportedCreditsUsed ?? "NOT reported"}`);
+    console.log(sanitizeString(`Wrote ${runDir} (PRIVATE). status ${rec.status}${rec.reason ? ` (${rec.reason})` : ""}; credits reported ${rec.reportedCreditsUsed ?? "NOT reported"}`));
     return rec.status === "accepted" ? 0 : 4;
   }
 
@@ -707,7 +709,7 @@ async function main(argv: string[]): Promise<number> {
         confirmExistingCredits,
         confirmNoTopup,
         signal: abort.signal,
-        log: (m) => console.error(m),
+        log: (m) => console.error(sanitizeString(m)),
       });
     } finally {
       process.off("SIGINT", onSigint);
@@ -724,15 +726,16 @@ async function main(argv: string[]): Promise<number> {
 main(process.argv.slice(2)).then(
   (code) => process.exit(code),
   (err: unknown) => {
+    // every top-level error message is sanitized before it reaches the terminal/log
     if (err instanceof CrawlPolicyError || err instanceof StatePlanError || err instanceof StateRunPolicyError || err instanceof LedgerError || err instanceof OutputError || err instanceof JobPlanError) {
-      console.error(err.message);
+      console.error(sanitizeString(err.message));
       process.exit(3);
     }
     if (err instanceof UsageError) {
-      console.error(`${err.message}\n\n${USAGE}`);
+      console.error(`${sanitizeString(err.message)}\n\n${USAGE}`);
       process.exit(64);
     }
-    console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    console.error(`Error: ${sanitizeString(err instanceof Error ? err.message : String(err))}`);
     process.exit(1);
   },
 );

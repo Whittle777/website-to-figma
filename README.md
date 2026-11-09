@@ -654,15 +654,32 @@ Anything not observed is `null`, never a `false`/`[]`/`0` default:
 - page errors, console errors, popups and modifications count only when it reports
   `listenersInstalled: true`
 
-**Sanitization.** Everything persisted or logged is sanitized first: `sandbox.json`,
-`execute-raw.json`, ledger notes and logs. Masked:
-- API keys and authorization/bearer values
+**Sanitization.** Everything the sandbox flow persists or prints is sanitized first:
+- `sandbox.json`: the lifecycle returns a sanitized record, and the CLI writes and prints the same
+  object
+- `execute-raw.json`
+- **every ledger write**: the sandbox passes notes and details through the key-aware sanitizer
+  before each ledger call, and the ledger's single serializer sanitizes every string again
+- CLI log callbacks and top-level error output
+
+Masked:
+- API keys
+- complete `Authorization`/`Proxy-Authorization` values (scheme + credential), and bare
+  `Bearer`/`Basic` credentials
 - URL userinfo, credential/session/token query values and long opaque query values
 - CDP/DevTools/live-view/session/WebSocket URLs (removed whole)
 - credential `key=value` pairs and JWTs
 
-Non-secret URLs and geometry are kept byte-for-byte. `execute-raw.json` is always valid JSON
-within 200 KB: PNG base64 is elided, and each field carries `originalChars`/`keptChars`/`truncated`.
+Non-secret URLs and geometry are kept byte-for-byte. This is pattern-based, not a universal
+guarantee.
+
+`execute-raw.json` is always valid JSON within **200,000 UTF-8 bytes** of serialized output: PNG
+base64 is elided, and each field carries `originalChars`/`keptChars`/`truncated`. Text is never
+split inside a surrogate pair.
+
+**Not sanitized, by design:** the states-run and diagnostic response files
+(`page-*.response.json`, `diagnostic.json`). They keep the provider's signed screenshot URLs, which
+the later screenshot-download step needs.
 
 **Timing.** One cooperative local deadline (72 s) covers setup, navigation, waits, evaluations and
 screenshots: every Playwright call is raced against the time left, with its timeout capped to it.

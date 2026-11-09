@@ -15,6 +15,7 @@
 // publishes no price). Request-specific creditsUsed reported in a response is
 // recorded when present; account-wide balance deltas are never used. An entry
 // counts max(reserved, reported) unless the operator resolved it.
+import { sanitizeString, sanitizeValue } from "./sanitize";
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, openSync, readSync, renameSync, unlinkSync, writeSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 
@@ -55,7 +56,14 @@ export interface Ledger {
 
 const STATUSES: EntryStatus[] = ["attempting", "succeeded", "failed", "ambiguous", "manual", "prior"];
 const nonNegInt = (v: unknown) => typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 1_000_000;
-const clean = (s: string, n = 200) => s.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, n);
+// sanitized BEFORE truncation (a cut must never leave an unrecognizable credential fragment)
+const clean = (s: string, n = 200) => sanitizeString(s).replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, n);
+const LEDGER_SANITIZE_LIMITS = { maxString: 100_000, maxArray: 1_000_000, maxKeys: 1_000, maxDepth: 12 };
+// The ONLY ledger serializer (both disk writers use it): every string is sanitized again at the
+// persistence boundary, whatever the caller passed (notes, op details, urls).
+export function serializeLedger(l: Ledger): string {
+  return JSON.stringify(sanitizeValue(l, [], LEDGER_SANITIZE_LIMITS), null, 2) + "\n";
+}
 
 export function parseLedger(text: string): Ledger {
   let j: unknown;
@@ -136,7 +144,7 @@ function writeAtomic(path: string, l: Ledger) {
   const tmp = `${path}.tmp-${process.pid}-${randomUUID().slice(0, 8)}`;
   const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, 0o600);
   try {
-    writeSync(fd, JSON.stringify(l, null, 2) + "\n");
+    writeSync(fd, serializeLedger(l));
     fchmodSync(fd, 0o600);
     fsyncSync(fd);
   } finally {
@@ -179,7 +187,7 @@ export function initLedger(path: string, priorCredits: number, note: string, now
   }
   const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, 0o600);
   try {
-    writeSync(fd, JSON.stringify(l, null, 2) + "\n");
+    writeSync(fd, serializeLedger(l));
     fchmodSync(fd, 0o600);
     fsyncSync(fd);
   } finally {
