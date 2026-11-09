@@ -95,7 +95,8 @@ const USAGE = `Usage:
   website-to-figma sandbox-plan --out FILE
       Offline: the fixed Browser Sandbox preview (viewport before navigation; 3 same-region states).
   website-to-figma sandbox-run --preview FILE --out DIR --ledger FILE --operator-credits-per-request N
-        --operator-reported-balance N --confirm-existing-credits --confirm-no-topup [--yes]
+        --project-remaining-credits N --confirm-existing-credits --confirm-no-topup [--yes]
+      (--project-remaining-credits: origin-reported PROJECT remaining, NOT a verified account balance)
       PAID: create -> execute -> delete (always), one attempt each (documented /v2/interact); HOLDS
       without --yes. Runs in ONE owned browser context (serviceWorkers "block"), closed in finally.
   website-to-figma sandbox-cleanup --ledger FILE --id LEDGER_ID [--yes]
@@ -117,7 +118,7 @@ function parseFlags(args: string[]): { positional: string[]; flags: Map<string, 
     const a = args[i]!;
     if (a === "--yes" || a === "--help" || a === "-h" || a === "--no-map" || a === "--confirm-existing-credits" || a === "--confirm-no-topup" || a === "--acknowledge-synthetic-modifications") {
       flags.set(a.replace(/^-+/, ""), true);
-    } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label" || a === "--font-map" || a === "--normalize-reference" || a === "--plan" || a === "--state-reactions" || a === "--preview" || a === "--ledger" || a === "--operator-credits-per-request" || a === "--reviewed-continuation" || a === "--run" || a === "--prior-credits" || a === "--note" || a === "--id" || a === "--credits" || a === "--doc" || a === "--renderer" || a === "--renderer-sha256" || a === "--max-job-chars" || a === "--image-hashes" || a === "--images") {
+    } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label" || a === "--font-map" || a === "--normalize-reference" || a === "--plan" || a === "--state-reactions" || a === "--preview" || a === "--ledger" || a === "--operator-credits-per-request" || a === "--reviewed-continuation" || a === "--run" || a === "--prior-credits" || a === "--note" || a === "--id" || a === "--credits" || a === "--doc" || a === "--renderer" || a === "--renderer-sha256" || a === "--max-job-chars" || a === "--image-hashes" || a === "--images" || a === "--project-remaining-credits") {
       const v = args[++i];
       if (v === undefined) throw new UsageError(`${a} needs a value`);
       if (a === "--exclude") excludes.push(v);
@@ -366,7 +367,7 @@ async function main(argv: string[]): Promise<number> {
     const optInt = (k: string) => (flags.get(k) === undefined ? undefined : intFlag(flags.get(k), k, 0));
     const gates = {
       operatorCreditsPerRequest: optInt("operator-credits-per-request"),
-      operatorReportedBalance: optInt("operator-reported-balance"),
+      projectRemainingCredits: optInt("project-remaining-credits"),
       confirmExistingCredits: flags.has("confirm-existing-credits"),
       confirmNoTopup: flags.has("confirm-no-topup"),
       ledgerPath: typeof flags.get("ledger") === "string" ? (flags.get("ledger") as string) : undefined,
@@ -382,8 +383,10 @@ async function main(argv: string[]): Promise<number> {
       console.log(`HARD HOLD (no override; refused even with --yes): ${SANDBOX_UNSUPPORTED.join("; ")}. Nothing was sent and no key was read.`);
       return 3;
     }
-    console.log(`Reservation ${g.reservation} (worst case for the full ttl: ${SANDBOX_WORST_CASE_CREDITS}; NOT a provider cap). Ledger committed ${g.committed}, remaining local allowance ${g.remaining}.`);
-    console.log("Stops: preview mismatch; missing gate; unresolved/duplicate/over-ceiling ledger; create ambiguous (no re-create) or failed; execute error/killed/truncated/partial/oversize; in-browser redirect/viewport/swiper refusal; delete not confirmed (blocking); missing creditsBilled (ambiguous).");
+    console.log(`Reservation ${g.reservation} (worst case for the full ttl: ${SANDBOX_WORST_CASE_CREDITS}; local allowance, NOT a provider cap). Ledger committed ${g.committed}, remaining local allowance ${g.remaining}. Project remaining (origin-reported, NOT a verified account balance): ${gates.projectRemainingCredits}.`);
+    console.log("Accounting: a successful run is settled PENDING RECONCILIATION; verify the actual charge from GET /v2/team/credit-usage (remainingCredits delta) or the dashboard, then `ledger resolve`. creditsBilled is undocumented and informational only. No automatic re-run.");
+    console.log("Subresources: denied except the exact hostname bootstrapmade.com and data:/blob:; blocked third-party assets mark the capture incomplete.");
+    console.log("Stops: preview mismatch; missing gate; unresolved (incl. pending reconciliation)/duplicate/over-ceiling ledger; create ambiguous (no re-create) or failed; execute error/killed/truncated/partial/oversize; in-browser redirect/viewport/swiper/service-worker/owned-context refusal; delete not confirmed (blocking).");
     console.log("Not proven: hosted availability of page.context().browser() / browser.newContext inside the Firecrawl sandbox (fails closed; the session is still deleted).");
     if (!flags.has("yes")) {
       console.log("HOLD: nothing was sent and no key was read. Re-run with --yes only after origin review.");
@@ -401,7 +404,7 @@ async function main(argv: string[]): Promise<number> {
       log: (m) => console.error(m),
     });
     writeExclusive(join(runDir, "sandbox.json"), JSON.stringify(rec, null, 2) + "\n");
-    console.log(`Wrote ${runDir} (PRIVATE). status ${rec.status}${rec.reason ? ` (${rec.reason})` : ""}; creditsBilled ${rec.creditsBilled ?? "NOT reported"}`);
+    console.log(`Wrote ${runDir} (PRIVATE). status ${rec.status}${rec.reason ? ` (${rec.reason})` : ""}; charge ${rec.chargeStatus}; response creditsBilled ${rec.creditsBilled ?? "absent"} (undocumented, informational)${rec.incomplete ? "; capture INCOMPLETE" : ""}`);
     for (const w of rec.warnings) console.log(`  warning: ${w}`);
     return rec.status === "accepted" ? 0 : 4;
   }

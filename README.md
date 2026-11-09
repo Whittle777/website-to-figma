@@ -596,8 +596,16 @@ recorded on it.
   there is no provider hard cap.
 - **Reservation.** The local reservation must cover the full ttl, `ceil(120/60)` × 2 = 4. It is an
   allowance, not a cap.
-- **creditsBilled.** It is recorded only if the delete response carries it; it is not in the
-  current docs. A missing value makes the run ambiguous.
+- **Project remaining.** `--project-remaining-credits N` is the origin-reported PROJECT remaining
+  (for example 983 = 1000 − 17 used). It is **not** a verified account balance.
+- **Pending reconciliation.** `creditsBilled` is not in the current docs, so it is recorded as
+  informational only and is never the trusted charge (a missing value is not invented as 0). After a
+  successful lifecycle the ledger entry is `succeeded` with `chargeStatus: pending_reconciliation`;
+  the 4-credit reservation stays counted, and every paid command is blocked (no automatic re-run)
+  until it is reconciled from a documented source, `GET /v2/team/credit-usage` (`remainingCredits`)
+  or the dashboard delta:
+  `website-to-figma ledger resolve --ledger ledger.json --id <id> --credits N --note "<source>"`.
+  The entry then becomes `reconciled` (settled).
 
 **Page code.** It is fixed and takes no inputs. The preconnected default page is used only to
 reach the Browser through `page.context().browser()`, and it is never navigated. The code then:
@@ -610,9 +618,14 @@ reach the Browser through `page.context().browser()`, and it is never navigated.
    aborting any 3xx **before** `route.fulfill({ response })`, so no redirected request is made
 4. aborts every other navigation, non-http(s) schemes, credentials, and IP-literal or local-name
    hosts
-5. stops the run if a service worker controls the page, and verifies the viewport
-6. stops autoplay on the one validated Swiper (a recorded modification)
-7. captures **all three states on that same owned page**
+5. **denies subresources by default**: only the exact hostname `bootstrapmade.com` (no subdomain,
+   no trailing dot) and `data:`/`blob:` are allowed. Every other host is aborted and listed in
+   `blocked`, and the run is marked `incomplete: true` (third-party assets are missing, not
+   substituted)
+6. sets `setViewportSize(1920x1080)` on that owned page **before** `goto`
+7. stops the run if a service worker controls the page, and verifies the viewport
+8. stops autoplay on the one validated Swiper (a recorded modification)
+9. captures **all three states on that same owned page**
 
 The owned context is closed in `finally`, and the sandbox session is deleted in `finally`.
 
@@ -620,22 +633,30 @@ The owned context is closed in `finally`, and the sandbox session is deleted in 
 `browser.newContext(...)` are available inside the sandbox; their CDP example only shows
 `browser.contexts()` and `newPage()`. If either is missing, the code fails closed and the session is
 still deleted. Other limits:
-- **Subresources.** These aren't DNS-pinned or private-host checked in the remote browser.
+- **DNS.** The hosted DNS exception is unchanged (exactly `simplecss.org` and `bootstrapmade.com`,
+  for hosted requests only). Allowed `bootstrapmade.com` subresources are not DNS-resolved from the
+  remote browser; structural URL checks still apply and local fetches keep full DNS validation.
+- **Owned context.** Hosted support for `newContext` is **not proven**; it is used only as the
+  documented service-worker block.
 - **Swiper semantics.** These rely on the known page, with no promise that the states are
   side-effect free.
 - **0 ms transitions.** `slideNext(0)` states aren't animation completions.
-- **creditsBilled.** It isn't documented (a missing value makes the run ambiguous).
+- **creditsBilled.** It isn't documented; it is informational and the charge stays pending
+  reconciliation.
 
 Sources:
 - https://playwright.dev/docs/api/class-browser#browser-new-context
 - https://playwright.dev/docs/api/class-browsercontext
 - https://playwright.dev/docs/api/class-route#route-fetch
 - https://docs.firecrawl.dev/features/browser
+- https://docs.firecrawl.dev/security
+- https://docs.firecrawl.dev/features/threat-protection
+- https://docs.firecrawl.dev/api-reference/endpoint/credit-usage
 
 ```sh
 website-to-figma sandbox-plan --out sandbox.preview.json                 # offline
 website-to-figma sandbox-run --preview sandbox.preview.json --out private-runs --ledger ledger.json \
-  --operator-credits-per-request 4 --operator-reported-balance N --confirm-existing-credits \
+  --operator-credits-per-request 4 --project-remaining-credits 983 --confirm-existing-credits \
   --confirm-no-topup                                                       # HOLDS without --yes
 website-to-figma sandbox-convert --run private-runs/sandbox-run-<id> --out private-capture
 ```

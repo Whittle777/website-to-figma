@@ -29,16 +29,19 @@
 // docs). Hosted compatibility of browser.newContext inside the Firecrawl
 // sandbox is NOT proven: the code fails closed if the Browser or newContext is
 // unavailable (the session is still deleted). Also stated, not claimed away:
-// subresource requests are not DNS-pinned or private-host checked in the
-// remote browser (only IP-literal and local-name hosts are aborted, best
-// effort); Swiper states rely on the
+// remote-browser egress is the provider's (https://docs.firecrawl.dev/security:
+// browser sessions egress outside Firecrawl's internal network); no local DNS
+// applies to it and the hosted DNS exception is NOT expanded (IP-literal and
+// local-name hosts are aborted; subresources are DENIED except the exact hostname bootstrapmade.com
+// and data:/blob:, so third-party assets are blocked and the capture is marked
+// incomplete); Swiper states rely on the
 // known page's semantics (no side-effect-free promise); slideNext(0) states
 // are not observed animation completions; creditsBilled is undocumented.
 import { assertHostedFirecrawlUrl, systemResolver, type Resolver } from "../security/urlGuard";
 import { inspectImage, sha256Hex } from "../shared/imageInfo";
 import { canonicalJson, classify, redact, sha256, StateRunPolicyError, withTimeout } from "./execute";
 import { createInteractClient, INTERACT_API_URL, type InteractClient } from "./sandboxTransport";
-import { readLedger, reserveAttempt, settleAttempt, recordOp, committedCredits, unresolved, LedgerError } from "./ledger";
+import { readLedger, reserveAttempt, settleAttempt, settlePendingReconciliation, recordOp, committedCredits, unresolved, LedgerError } from "./ledger";
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -131,9 +134,9 @@ const W2F_MEASURE = (a) => {
 };`;
 
 export const SANDBOX_CODE = String.raw`// website-to-figma fixed sandbox code (reviewed; takes no inputs)
-const W = ${JSON.stringify({ url: SANDBOX.url, vw: SANDBOX.viewport.width, vh: SANDBOX.viewport.height, navTimeoutMs: SANDBOX.navTimeoutMs, settleMs: SANDBOX.settleMs, stateWaitMs: SANDBOX.stateWaitMs, scope: SANDBOX.scope, swiper: SANDBOX.swiper, states: SANDBOX.states, maxPngBytes: SANDBOX.maxPngBytes, max: { maxElements: SANDBOX.maxElements, maxTexts: SANDBOX.maxTexts, maxImages: SANDBOX.maxImages } })};
+const W = ${JSON.stringify({ url: SANDBOX.url, host: "bootstrapmade.com", vw: SANDBOX.viewport.width, vh: SANDBOX.viewport.height, navTimeoutMs: SANDBOX.navTimeoutMs, settleMs: SANDBOX.settleMs, stateWaitMs: SANDBOX.stateWaitMs, scope: SANDBOX.scope, swiper: SANDBOX.swiper, states: SANDBOX.states, maxPngBytes: SANDBOX.maxPngBytes, max: { maxElements: SANDBOX.maxElements, maxTexts: SANDBOX.maxTexts, maxImages: SANDBOX.maxImages } })};
 ${PAGE_FUNCS}
-const out = { w2f: "sandbox", v: 1, error: null, ownedContext: null, ownedContextClosed: null, mainFetch: null, nav: null, env: null, autoplay: null, modifications: [], blocked: [], popupsClosed: 0, serviceWorker: null, states: [] };
+const out = { w2f: "sandbox", v: 1, error: null, incomplete: false, ownedContext: null, ownedContextClosed: null, mainFetch: null, nav: null, env: null, autoplay: null, modifications: [], blocked: [], popupsClosed: 0, serviceWorker: null, states: [] };
 let ctx = null;
 try {
   // Reach the Browser through documented public APIs; never navigate the preconnected default page.
@@ -158,7 +161,10 @@ try {
       if (/^[0-9.]+$/.test(host) || host.includes(":")) why = "ip-literal";
       else if (host === "localhost" || /\.(local|internal|localhost|home\.arpa|test|lan)$/.test(host)) why = "local-name";
     }
-    if (why) { if (out.blocked.length < 50) out.blocked.push({ origin: u ? u.protocol + "//" + u.hostname : "(invalid)", why }); return route.abort(); }
+    // Subresources: DENY by default except the exact hostname bootstrapmade.com and data:/blob:
+    // (no DNS lookups here; this does not expand any DNS exception).
+    if (!why && !nav && !(u.protocol === "data:" || u.protocol === "blob:" || u.hostname === W.host)) why = "third-party-host";
+    if (why) { if (why === "third-party-host") out.incomplete = true; if (out.blocked.length < 50) out.blocked.push({ origin: u ? u.protocol + "//" + u.hostname : "(invalid)", why }); return route.abort(); }
     if (main) {
       // The exact main document is fetched WITHOUT following redirects; a 3xx is aborted before fulfilling.
       const resp = await route.fetch({ maxRedirects: 0, maxRetries: 0, timeout: W.navTimeoutMs });
@@ -170,6 +176,8 @@ try {
   });
   own = await ctx.newPage();
   ctx.on("page", (p) => { if (p !== own) { out.popupsClosed++; p.close().catch(() => {}); } });
+  // Viewport set on the SAME page used for all three states, BEFORE navigation.
+  await own.setViewportSize({ width: W.vw, height: W.vh });
   const resp = await own.goto(W.url, { waitUntil: "load", timeout: W.navTimeoutMs });
   const chain = []; let r = resp ? resp.request() : null;
   while (r && chain.length < 10) { chain.unshift(r.url()); r = r.redirectedFrom(); }
@@ -230,7 +238,8 @@ export function buildSandboxPreview(): SandboxPreview {
     purpose: `One disposable Browser Sandbox: viewport ${SANDBOX.viewport.width}x${SANDBOX.viewport.height} set BEFORE navigating to ${SANDBOX.url}; 3 same-region states of ${SANDBOX.scope} (baseline, Swiper next, Swiper next) measured and screenshotted on the same Playwright page.`,
     notice: [
       "NOT SENT. Paid execution (sandbox-run) HOLDS without --yes and runs at most once per lifecycle operation.",
-      "Billing per the docs: code-only 2 credits per browser-minute, 1-minute minimum; no provider hard cap. The local reservation is an allowance. creditsBilled is recorded only if the delete response carries it (not in the current docs); missing => ambiguous.",
+      "Billing per the docs: code-only 2 credits per browser-minute, 1-minute minimum; no provider hard cap. The local reservation is an allowance. A successful run is settled as PENDING RECONCILIATION: the actual charge must be verified from a documented account source (GET /v2/team/credit-usage remainingCredits delta, or the dashboard); creditsBilled (undocumented) is informational only.",
+      "--project-remaining-credits is the origin-reported PROJECT remaining (e.g. 17 used of 1000), NOT a verified account balance.",
       "Synthetic proof only: no hosted run has been observed by this tool.",
     ],
     // Documented fields only; vendor/account defaults untouched; no profile.
@@ -246,15 +255,18 @@ export function buildSandboxPreview(): SandboxPreview {
       "https://playwright.dev/docs/api/class-browser#browser-new-context (serviceWorkers: 'block' blocks all registration of Service Workers; viewport)",
       "https://playwright.dev/docs/api/class-browsercontext (browser(); route(): not for Service-Worker-intercepted requests; newPage(); close(); 'page' event fires for popups)",
       "https://docs.firecrawl.dev/features/browser (CDP example uses browser.contexts()/newPage(); newContext/service workers not mentioned)",
+      "https://docs.firecrawl.dev/security (Network protections: browser sessions incl. page subrequests egress outside Firecrawl's internal network)",
+      "https://docs.firecrawl.dev/features/threat-protection (remote browser in-page navigations are not intercepted by Threat Protection)",
+      "https://docs.firecrawl.dev/api-reference/endpoint/credit-usage (GET /v2/team/credit-usage remainingCredits: the documented account source for reconciliation)",
       "https://playwright.dev/docs/api/class-page#page-set-viewport-size (set before navigation)",
     ],
     hardHold: SANDBOX_UNSUPPORTED,
     gaps: [
       "Hosted compatibility is NOT proven: whether page.context().browser() and browser.newContext({ serviceWorkers: 'block', viewport }) are available inside the Firecrawl sandbox is not documented by Firecrawl; the code fails closed if not (the session is still deleted).",
       "`page` in execute is used only to reach the Browser; the Firecrawl examples use it without defining it, but the docs do not state it; missing => fail closed.",
-      "Subresource requests are not DNS-pinned or private-host checked in the remote browser (IP-literal and local-name hosts are aborted, best effort); this tool's local DNS guard covers only its own fetches.",
+      "Subresources are DENIED except the exact hostname bootstrapmade.com and data:/blob: (no DNS lookups; the hosted DNS exception is not expanded). Third-party assets (e.g. web fonts) are blocked and the capture is marked incomplete. Remote-browser egress is the provider's (docs/security); this tool's local DNS guard covers only its own fetches.",
       "Swiper states rely on the known page's semantics; method names/selectors are not a safety guarantee; no side-effect-free promise. slideNext(0) states are not observed animation completions.",
-      "creditsBilled is not in the current docs: recorded only if present; missing => ambiguous.",
+      "creditsBilled is not in the current docs: informational only; the charge is reconciled from a documented account source.",
     ],
   };
 }
@@ -269,7 +281,10 @@ export function validateSandboxPreview(json: unknown): { preview: SandboxPreview
 
 export interface SandboxGates {
   operatorCreditsPerRequest?: number;
-  operatorReportedBalance?: number;
+  // PROJECT remaining credits as reported by the origin (e.g. 983 of the 1000
+  // budget). NOT a verified account balance: the documented account source is
+  // GET /v2/team/credit-usage (remainingCredits), which this tool never calls.
+  projectRemainingCredits?: number;
   confirmExistingCredits?: boolean;
   confirmNoTopup?: boolean;
   ledgerPath?: string;
@@ -279,13 +294,13 @@ export interface SandboxGates {
 export function assertSandboxGates(g: SandboxGates): { reservation: number; committed: number; remaining: number } {
   const missing: string[] = [];
   if (!Number.isInteger(g.operatorCreditsPerRequest) || (g.operatorCreditsPerRequest as number) < SANDBOX_WORST_CASE_CREDITS || (g.operatorCreditsPerRequest as number) > 100) missing.push(`--operator-credits-per-request N (>= the ${SANDBOX_WORST_CASE_CREDITS}-credit worst case for the full ttl; YOUR reservation, not a price)`);
-  if (!Number.isInteger(g.operatorReportedBalance) || (g.operatorReportedBalance as number) < 0) missing.push("--operator-reported-balance N");
+  if (!Number.isInteger(g.projectRemainingCredits) || (g.projectRemainingCredits as number) < 0) missing.push("--project-remaining-credits N (origin-reported PROJECT remaining, not a verified account balance)");
   if (!g.confirmExistingCredits) missing.push("--confirm-existing-credits");
   if (!g.confirmNoTopup) missing.push("--confirm-no-topup");
   if (!g.ledgerPath) missing.push("--ledger FILE (local reservation allowance, not a provider cap)");
   if (missing.length) throw new StateRunPolicyError(`Refusing before any request: missing operator inputs:\n  ${missing.join("\n  ")}`);
   const reservation = g.operatorCreditsPerRequest as number;
-  if (reservation > (g.operatorReportedBalance as number)) throw new StateRunPolicyError(`reservation ${reservation} exceeds the operator-reported balance ${g.operatorReportedBalance}`);
+  if (reservation > (g.projectRemainingCredits as number)) throw new StateRunPolicyError(`reservation ${reservation} exceeds the origin-reported project remaining ${g.projectRemainingCredits}`);
   let l;
   try {
     l = readLedger(g.ledgerPath as string);
@@ -326,8 +341,11 @@ export interface SandboxRecord {
   status: "accepted" | "rejected" | "failed" | "ambiguous" | "not-attempted";
   reason: string | null;
   ops: { op: "create" | "execute" | "delete"; attempts: 0 | 1; status: "ok" | "failed" | "ambiguous" | "skipped"; detail: string }[];
+  // undocumented response field, informational only (never the trusted charge)
   creditsBilled: number | null;
   sessionDurationMs: number | null;
+  chargeStatus: "pending_reconciliation" | "not-settled";
+  incomplete: boolean;
   reservation: number;
   viewportSet: Obj | null;
   ownedContext: Obj | null;
@@ -439,6 +457,8 @@ export async function runSandboxLifecycle(o: SandboxExecuteOptions): Promise<San
     ops: [],
     creditsBilled: null,
     sessionDurationMs: null,
+    chargeStatus: "not-settled",
+    incomplete: false,
     reservation: gate.reservation,
     viewportSet: null,
     ownedContext: null,
@@ -545,6 +565,8 @@ export async function runSandboxLifecycle(o: SandboxExecuteOptions): Promise<San
     const r = parsed.result;
     rec.viewportSet = isObj(r.viewportSet) ? r.viewportSet : null;
     rec.mainFetch = isObj(r.mainFetch) ? r.mainFetch : null;
+    rec.incomplete = r.incomplete === true;
+    if (rec.incomplete) rec.warnings.push("capture INCOMPLETE: third-party subresources were blocked (deny-by-default except exact bootstrapmade.com)");
     rec.ownedContext = isObj(r.ownedContext) ? r.ownedContext : null;
     rec.ownedContextClosed = typeof r.ownedContextClosed === "boolean" ? r.ownedContextClosed : null;
     if (rec.ownedContextClosed !== true) rec.warnings.push("the owned browser context was not confirmed closed (the session delete still runs)");
@@ -594,11 +616,17 @@ export async function runSandboxLifecycle(o: SandboxExecuteOptions): Promise<San
       rec.warnings.push(`cleanup NOT confirmed for session ${id}: it may keep billing until its ttl; the ledger entry stays blocking until resolved (sandbox-cleanup or ledger resolve)`);
       if (overall === "accepted") overall = "ambiguous";
     }
-    if (rec.creditsBilled === null) rec.warnings.push("delete reported no creditsBilled; credits are UNKNOWN (ledger entry left ambiguous)");
     rec.status = overall;
-    const settled = cleanupOk && rec.creditsBilled !== null && (overall === "accepted" || overall === "rejected") ? "succeeded" : overall === "failed" && cleanupOk ? "failed" : "ambiguous";
-    const e = settleAttempt(ledgerPath, entryId, settled, rec.creditsBilled, `${rec.status}${rec.reason ? `: ${rec.reason}` : ""}; creditsBilled ${rec.creditsBilled ?? "not reported"}; cleanup ${cleanupOk ? "confirmed" : "NOT confirmed"}`);
-    if (e.overrun) rec.warnings.push(`OVERRUN: ${rec.creditsBilled} credits billed, above the reservation ${gate.reservation}; later runs blocked until resolved`);
+    const note = `${rec.status}${rec.reason ? `: ${rec.reason}` : ""}; response creditsBilled ${rec.creditsBilled ?? "absent"} (undocumented, informational); cleanup ${cleanupOk ? "confirmed" : "NOT confirmed"}`;
+    if (cleanupOk && (overall === "accepted" || overall === "rejected")) {
+      // No documented per-request charge: keep the reservation counted and require reconciliation.
+      settlePendingReconciliation(ledgerPath, entryId, `${note}; charge PENDING RECONCILIATION against GET /v2/team/credit-usage (remainingCredits delta) or the dashboard`);
+      rec.chargeStatus = "pending_reconciliation";
+      rec.warnings.push(`charge pending reconciliation: verify the actual credits from a documented account source (GET /v2/team/credit-usage remainingCredits delta, or the dashboard), then: ledger resolve --id ${entryId} --credits N --note "<source>". New paid runs stay blocked until then; nothing is re-run automatically.`);
+      if (rec.creditsBilled !== null && rec.creditsBilled > gate.reservation) rec.warnings.push(`response creditsBilled ${rec.creditsBilled} exceeds the reservation ${gate.reservation} (undocumented field; reconcile before trusting it)`);
+    } else {
+      settleAttempt(ledgerPath, entryId, overall === "failed" && cleanupOk ? "failed" : "ambiguous", null, note);
+    }
   }
   return rec;
 }

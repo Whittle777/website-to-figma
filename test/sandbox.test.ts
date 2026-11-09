@@ -11,7 +11,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildSandboxPreview, createSandboxClient, executeSandbox, runSandboxLifecycle, SandboxHardHold, SANDBOX_UNSUPPORTED, parseSandboxOutput, sandboxPreviewSha256, sandboxToCapture, validateSandboxPreview, cleanupSandbox, SANDBOX, SANDBOX_CODE, SANDBOX_URL, SANDBOX_WORST_CASE_CREDITS, type SandboxClient } from "../src/states/sandbox";
 import { StateRunPolicyError } from "../src/states/execute";
 import { createInteractClient } from "../src/states/sandboxTransport";
-import { initLedger, readLedger } from "../src/states/ledger";
+import { initLedger, readLedger, resolveEntry, unresolved } from "../src/states/ledger";
+import { hostedDnsExemptHostnames } from "../src/security/urlGuard";
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { syntheticPng } from "../src/fixtures/hifiSynthetic";
 import { captureFromScrapeResponses } from "../src/hifi/adapter";
 import { convertCapture } from "../src/hifi/convert";
@@ -116,6 +119,13 @@ function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: 
     goto: async () => calls.push("DEFAULT-PAGE-NAVIGATED"),
   };
   const page = {
+    setViewportSize: async (v: { width: number; height: number }) => {
+      calls.push(`viewport:${v.width}x${v.height}`);
+      if (!o.ignoreViewport) {
+        vw = v.width;
+        vh = v.height;
+      }
+    },
     goto: async (url: string) => {
       calls.push(`goto:${url}`);
       if ((await route(url, true)) === "abort") throw new Error("net::ERR_FAILED (main document aborted by route)");
@@ -123,6 +133,10 @@ function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: 
       await route("https://bootstrapmade.com/popup", true, false); // a popup/frame navigation
       // synthetic subresources and attempts the guard must refuse
       await route("https://bootstrapmade.com/content/vendors/aos/aos.js", false);
+      await route("https://fonts.googleapis.com/css?family=Synthetic", false); // third-party: denied
+      await route("https://www.bootstrapmade.com/x.js", false); // subdomain: denied (exact host only)
+      await route("https://bootstrapmade.com./x.js", false); // trailing dot: denied
+      await route("data:image/png;base64,AAAA", false); // data: allowed
       await route("http://169.254.169.254/latest/meta-data", false);
       await route("http://localhost:8080/x", false);
       await route("https://evil.example/", true);
@@ -167,7 +181,10 @@ describe("fixed sandbox preview", () => {
     expect(code).toContain("await ctx.close()");
     expect(code).toContain("route.fetch({ maxRedirects: 0, maxRetries: 0, timeout: W.navTimeoutMs })");
     expect(code.indexOf("route.fetch(")).toBeLessThan(code.indexOf("route.fulfill("));
-    for (const gone of ["page.request", "accept-redirect-gap", "launch(", "page.goto", "setViewportSize", "persistent", "storageState"]) expect(code).not.toContain(gone);
+    for (const gone of ["page.request", "accept-redirect-gap", "launch(", "page.goto", "page.setViewportSize", "persistent", "storageState"]) expect(code).not.toContain(gone);
+    expect(code.indexOf("own.setViewportSize")).toBeLessThan(code.indexOf("own.goto"));
+    expect(code.indexOf("ctx.newPage")).toBeLessThan(code.indexOf("own.setViewportSize"));
+    expect(code).toContain('"host":"bootstrapmade.com"');
     expect(p.hardHold).toEqual([]);
     expect(SANDBOX_UNSUPPORTED).toEqual([]);
     expect(code).toContain(JSON.stringify(SANDBOX_URL));
@@ -198,7 +215,7 @@ describe("the fixed page code against a fake Playwright page", () => {
     const parsed = parseSandboxOutput(raw);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    expect(p.calls.slice(0, 5)).toEqual([`newContext:{"serviceWorkers":"block","viewport":{"width":1920,"height":1080}}`, "context.route", "newPage", `goto:${SANDBOX_URL}`, `route.fetch:${SANDBOX_URL}:maxRedirects=0:maxRetries=0`]);
+    expect(p.calls.slice(0, 6)).toEqual([`newContext:{"serviceWorkers":"block","viewport":{"width":1920,"height":1080}}`, "context.route", "newPage", "viewport:1920x1080", `goto:${SANDBOX_URL}`, `route.fetch:${SANDBOX_URL}:maxRedirects=0:maxRetries=0`]);
     expect(p.calls.at(-1)).toBe("context.close");
     expect(p.calls).not.toContain("DEFAULT-PAGE-NAVIGATED");
     expect(p.network).toEqual([SANDBOX_URL]); // exactly one upstream main-document request, no pre-check duplicate
@@ -208,6 +225,10 @@ describe("the fixed page code against a fake Playwright page", () => {
       `fulfill ${SANDBOX_URL} 200`,
       "abort https://bootstrapmade.com/popup",
       "continue https://bootstrapmade.com/content/vendors/aos/aos.js",
+      "abort https://fonts.googleapis.com/css?family=Synthetic",
+      "abort https://www.bootstrapmade.com/x.js",
+      "abort https://bootstrapmade.com./x.js",
+      "continue data:image/png;base64,AAAA",
       "abort http://169.254.169.254/latest/meta-data",
       "abort http://localhost:8080/x",
       "abort https://evil.example/",
@@ -217,7 +238,8 @@ describe("the fixed page code against a fake Playwright page", () => {
     ]);
     const r = parsed.result as any;
     expect(r.env).toMatchObject({ innerWidth: 1920, innerHeight: 1080 });
-    expect(r.blocked.map((b: any) => b.why)).toEqual(["navigation-not-exact-target", "ip-literal", "local-name", "navigation-not-exact-target", "navigation-not-exact-target", "navigation-not-exact-target", "scheme"]);
+    expect(r.blocked.map((b: any) => b.why)).toEqual(["navigation-not-exact-target", "third-party-host", "third-party-host", "third-party-host", "ip-literal", "local-name", "navigation-not-exact-target", "navigation-not-exact-target", "navigation-not-exact-target", "scheme"]);
+    expect(r.incomplete).toBe(true);
     expect(r.mainFetch).toEqual({ status: 200, url: SANDBOX_URL });
     expect(r).toMatchObject({ ownedContext: { serviceWorkers: "block", viewport: { width: 1920, height: 1080 } }, ownedContextClosed: true });
     expect(r.modifications[0]).toMatch(/stopped autoplay of #testimonials \.swiper\.init-swiper via its own Swiper API/);
@@ -299,7 +321,7 @@ function setup() {
   const d = tmp();
   const ledgerPath = join(d, "ledger.json");
   initLedger(ledgerPath, 17, "origin-attributed prior project spend");
-  return { d, ledgerPath, validated: validateSandboxPreview(clone(buildSandboxPreview())), gates: { operatorCreditsPerRequest: 4, operatorReportedBalance: 983, confirmExistingCredits: true, confirmNoTopup: true, ledgerPath } };
+  return { d, ledgerPath, validated: validateSandboxPreview(clone(buildSandboxPreview())), gates: { operatorCreditsPerRequest: 4, projectRemainingCredits: 983, confirmExistingCredits: true, confirmNoTopup: true, ledgerPath } };
 }
 const goodExecute = async () => runCode(fakePage());
 function client(events: string[], ledgerPath: string, o: { create?: unknown; execute?: unknown; del?: unknown } = {}): SandboxClient {
@@ -347,11 +369,14 @@ describe("lifecycle (fake client): ledger before each op, one attempt each, dele
     const rec = await runSandboxLifecycle({ ...s, resolver: fakeIp(asked), getApiKey: () => (events.push("key"), KEY), createClient: async () => (events.push("client"), client(events, s.ledgerPath)), savePng: (i) => pngs.push(i) });
     expect(events).toEqual(["key", "client", `create {"ttl":120,"activityTtl":60} [attempting/create:attempting]`, "execute sess_1 node [attempting/execute:attempting]", "delete sess_1 [attempting/delete:attempting]"]);
     expect(asked).toEqual([]); // exact bootstrapmade.com hosted exception: no local DNS
-    expect(rec).toMatchObject({ status: "accepted", sessionId: "sess_1", creditsBilled: 1 });
+    expect(rec).toMatchObject({ status: "accepted", sessionId: "sess_1", creditsBilled: 1, chargeStatus: "pending_reconciliation", incomplete: true });
     expect(rec.ops.map((o) => `${o.op}:${o.status}:${o.attempts}`)).toEqual(["create:ok:1", "execute:ok:1", "delete:ok:1"]);
     expect(pngs).toEqual([0, 1, 2]);
     const e = readLedger(s.ledgerPath).entries.at(-1)!;
-    expect(e).toMatchObject({ status: "succeeded", reserved: 4, reportedCredits: 1, command: "sandbox-run" });
+    // undocumented creditsBilled is NOT the trusted charge: reservation stays counted, pending reconciliation
+    expect(e).toMatchObject({ status: "succeeded", reserved: 4, reportedCredits: null, chargeStatus: "pending_reconciliation", command: "sandbox-run" });
+    expect(e.note).toMatch(/response creditsBilled 1 \(undocumented, informational\).*PENDING RECONCILIATION against GET \/v2\/team\/credit-usage/);
+    expect(rec.warnings.join()).toMatch(/ledger resolve --id /);
     expect(e.ops!.map((o) => `${o.op}:${o.status}`)).toEqual(["create:attempting", "create:ok", "execute:attempting", "execute:ok", "delete:attempting", "delete:ok"]);
     expect(JSON.stringify(rec)).not.toContain(KEY);
   });
@@ -393,14 +418,23 @@ describe("lifecycle (fake client): ledger before each op, one attempt each, dele
     await expect(cleanupSandbox({ ledgerPath: s.ledgerPath, entryId: entry.id, getApiKey: () => KEY, createClient: async () => client([], s.ledgerPath) })).rejects.toThrow(/already confirmed/);
   });
 
-  it("missing creditsBilled => ambiguous; gates fail closed before key/client; reservation must cover the ttl worst case", async () => {
+  it("pending reconciliation blocks new paid runs (no auto re-run) until reconciled from a documented source; absent creditsBilled is never 0", async () => {
     const s = setup();
     const rec = await runSandboxLifecycle({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async () => client([], s.ledgerPath, { del: { success: true } }) });
-    expect(rec.warnings.join()).toMatch(/credits are UNKNOWN/);
-    expect(readLedger(s.ledgerPath).entries.at(-1)!.status).toBe("ambiguous");
+    expect(rec).toMatchObject({ status: "accepted", creditsBilled: null, chargeStatus: "pending_reconciliation" });
+    const e = readLedger(s.ledgerPath).entries.at(-1)!;
+    expect(e).toMatchObject({ reportedCredits: null, chargeStatus: "pending_reconciliation" });
+    expect(e.note).toMatch(/response creditsBilled absent/);
+    expect(unresolved(readLedger(s.ledgerPath)).map((x) => x.id)).toEqual([e.id]);
+    await expect(runSandboxLifecycle({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async () => client([], s.ledgerPath) })).rejects.toThrow(/unresolved/);
+    expect(() => resolveEntry(s.ledgerPath, e.id, null, "guess")).toThrow(/pending reconciliation: pass the actual --credits N/);
+    resolveEntry(s.ledgerPath, e.id, 2, "GET /v2/team/credit-usage remainingCredits delta");
+    const r2 = readLedger(s.ledgerPath).entries.at(-1)!;
+    expect(r2).toMatchObject({ chargeStatus: "reconciled", resolvedCredits: 2 });
+    expect(unresolved(readLedger(s.ledgerPath))).toEqual([]);
     const t = setup();
     const ev: string[] = [];
-    for (const g of [{ confirmExistingCredits: false }, { operatorCreditsPerRequest: 3 }, { confirmNoTopup: false }]) {
+    for (const g of [{ confirmExistingCredits: false }, { operatorCreditsPerRequest: 3 }, { confirmNoTopup: false }, { projectRemainingCredits: undefined }]) {
       await expect(runSandboxLifecycle({ ...t, gates: { ...t.gates, ...g }, getApiKey: () => (ev.push("key"), KEY) })).rejects.toThrow(StateRunPolicyError);
     }
     expect(ev).toEqual([]);
@@ -518,4 +552,33 @@ describe("offline conversion: one region, valid 3-state group", () => {
     expect(vs.map((v) => v.nodes.filter((n) => n.kind === "text").map((n: any) => n.text).find((t: string) => t.startsWith("Slide")))).toEqual(["Slide 0", "Slide 1", "Slide 2"]);
     expect(doc.pages[0]!.warnings.join()).not.toMatch(/suppressed/);
   });
+});
+
+describe("retained restrictions and CLI HOLD", () => {
+  it("the hosted DNS exception is NOT expanded by the sandbox (still exactly two hosts)", () => {
+    expect(hostedDnsExemptHostnames().sort()).toEqual(["bootstrapmade.com", "simplecss.org"]);
+    expect(SANDBOX_CODE).not.toMatch(/simplecss|require\(|import\(|\bdns\.|\.lookup\(|resolve[46]\(|resolveAny/);
+  });
+  it("sandbox-run HOLDS without --yes (exit 3, no key read, no run dir) and states the accounting semantics", () => {
+    const d = tmp();
+    const run = (args: string[]) => {
+      try {
+        return { code: 0, out: execFileSync(process.execPath, ["--import", "tsx", "src/cli.ts", ...args], { encoding: "utf8", env: { ...process.env, FIRECRAWL_API_KEY: KEY }, stdio: ["ignore", "pipe", "pipe"] }) };
+      } catch (e: any) {
+        return { code: e.status as number, out: `${e.stdout}${e.stderr}` };
+      }
+    };
+    run(["sandbox-plan", "--out", join(d, "s.json")]);
+    initLedger(join(d, "l.json"), 17, "origin-reported actual spend");
+    const r = run(["sandbox-run", "--preview", join(d, "s.json"), "--out", join(d, "runs"), "--ledger", join(d, "l.json"), "--operator-credits-per-request", "4", "--project-remaining-credits", "983", "--confirm-existing-credits", "--confirm-no-topup"]);
+    expect(r.code).toBe(3);
+    expect(r.out).toMatch(/Project remaining \(origin-reported, NOT a verified account balance\): 983/);
+    expect(r.out).toMatch(/PENDING RECONCILIATION/);
+    expect(r.out).toMatch(/HOLD: nothing was sent and no key was read/);
+    expect(r.out).not.toContain(KEY);
+    expect(existsSync(join(d, "runs"))).toBe(false);
+    const old = run(["sandbox-run", "--preview", join(d, "s.json"), "--out", join(d, "runs"), "--ledger", join(d, "l.json"), "--operator-credits-per-request", "4", "--operator-reported-balance", "983", "--confirm-existing-credits", "--confirm-no-topup"]);
+    expect(old.code).toBe(3);
+    expect(old.out).toMatch(/--project-remaining-credits N/);
+  }, 60_000);
 });

@@ -43,6 +43,8 @@ export interface LedgerEntry {
   // multi-operation lifecycles (browser sandbox): each operation's attempt and
   // outcome, persisted before and after the operation
   ops?: { op: string; at: string; status: "attempting" | "ok" | "failed" | "ambiguous"; detail: string }[];
+  // charge not yet verified from a documented source (e.g. GET /v2/team/credit-usage delta)
+  chargeStatus?: "pending_reconciliation" | "reconciled";
 }
 export interface Ledger {
   schema: "website-to-figma/credit-ledger";
@@ -72,7 +74,7 @@ export function parseLedger(text: string): Ledger {
       e && typeof e.id === "string" && /^[A-Za-z0-9-]{1,64}$/.test(e.id) && !ids.has(e.id) && typeof e.at === "string" && typeof e.command === "string" && nonNegInt(e.reserved) &&
       (e.reportedCredits === null || nonNegInt(e.reportedCredits)) && STATUSES.includes(e.status) && typeof e.note === "string" &&
       (e.url === null || typeof e.url === "string") && (e.requestSha256 === null || (typeof e.requestSha256 === "string" && /^[0-9a-f]{64}$/.test(e.requestSha256))) &&
-      (e.resolvedCredits === undefined || e.resolvedCredits === null || nonNegInt(e.resolvedCredits)) && (e.overrun === undefined || typeof e.overrun === "boolean") &&
+      (e.resolvedCredits === undefined || e.resolvedCredits === null || nonNegInt(e.resolvedCredits)) && (e.overrun === undefined || typeof e.overrun === "boolean") && (e.chargeStatus === undefined || e.chargeStatus === "pending_reconciliation" || e.chargeStatus === "reconciled") &&
       (e.ops === undefined || (Array.isArray(e.ops) && e.ops.length <= 20 && e.ops.every((o) => o && typeof o.op === "string" && typeof o.at === "string" && ["attempting", "ok", "failed", "ambiguous"].includes(o.status) && typeof o.detail === "string")));
     if (!ok) throw new LedgerError(`ledger: entries[${i}] is malformed`);
     ids.add(e.id);
@@ -94,7 +96,7 @@ export function committedCredits(l: Ledger): number {
 // crash-left "attempting" entry, an "ambiguous" one (outcome or credits
 // unknown), or a credit overrun.
 export function unresolved(l: Ledger): LedgerEntry[] {
-  return l.entries.filter((e) => (e.status === "attempting" || e.status === "ambiguous" || e.overrun === true) && !e.resolvedAt);
+  return l.entries.filter((e) => (e.status === "attempting" || e.status === "ambiguous" || e.overrun === true || e.chargeStatus === "pending_reconciliation") && !e.resolvedAt);
 }
 
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
@@ -246,17 +248,38 @@ export function recordOp(path: string, id: string, op: { op: string; status: "at
   });
 }
 
+// Lifecycle finished, but its charge is NOT verified: no documented
+// per-request charge exists, so the entry keeps its reservation counted and
+// stays pending (blocking new paid runs) until reconciled from a documented
+// account source. Never settles at an assumed or undocumented amount.
+export function settlePendingReconciliation(path: string, id: string, note: string): LedgerEntry {
+  return withLedgerLock(path, () => {
+    const l = readLedger(path);
+    const e = l.entries.find((x) => x.id === id);
+    if (!e || e.status !== "attempting") throw new LedgerError(`ledger entry ${id} is not an open attempt`);
+    e.status = "succeeded";
+    e.reportedCredits = null;
+    e.chargeStatus = "pending_reconciliation";
+    e.note = clean(note);
+    writeAtomic(path, l);
+    return e;
+  });
+}
+
 // Operator resolution of an attempting/ambiguous entry after manual review.
 export function resolveEntry(path: string, id: string, credits: number | null, note: string, now: () => Date = () => new Date()): LedgerEntry {
   return withLedgerLock(path, () => {
     const l = readLedger(path);
     const e = l.entries.find((x) => x.id === id);
     if (!e) throw new LedgerError(`no ledger entry ${id}`);
-    if (e.status !== "attempting" && e.status !== "ambiguous" && e.status !== "failed" && !e.overrun) throw new LedgerError(`entry ${id} (${e.status}) does not need resolution`);
+    if (e.status !== "attempting" && e.status !== "ambiguous" && e.status !== "failed" && !e.overrun && e.chargeStatus !== "pending_reconciliation") throw new LedgerError(`entry ${id} (${e.status}) does not need resolution`);
     if (credits !== null && !nonNegInt(credits)) throw new LedgerError("--credits must be a whole number or unknown");
+    // reconciliation needs a documented figure (credit-usage delta or dashboard), never "unknown"
+    if (credits === null && e.chargeStatus === "pending_reconciliation") throw new LedgerError(`entry ${id} is pending reconciliation: pass the actual --credits N from GET /v2/team/credit-usage or the dashboard`);
     e.resolvedAt = now().toISOString();
     // unknown keeps the reservation counted
     e.resolvedCredits = credits === null ? Math.max(e.reserved, e.reportedCredits ?? 0) : credits;
+    if (e.chargeStatus === "pending_reconciliation") e.chargeStatus = "reconciled";
     e.note = clean(`${e.note}; operator resolution: ${note || "reviewed"}${credits === null ? " (credits unknown; reservation kept)" : ""}`);
     writeAtomic(path, l);
     return e;
@@ -279,5 +302,5 @@ export function recordManual(path: string, credits: number, note: string, now: (
 export function ledgerSummary(l: Ledger): string {
   const committed = committedCredits(l);
   const open = unresolved(l);
-  return [`Local project budget ceiling ${l.capCredits} (operator-asserted allowance; NOT a provider cap); committed ${committed}; remaining allowance ${l.capCredits - committed}; entries ${l.entries.length}; unresolved ${open.length}`, ...l.entries.slice(-20).map((e) => `  ${e.id} ${e.status}${e.overrun ? " OVERRUN" : ""}${e.resolvedAt ? " (resolved)" : ""} reserved ${e.reserved} reported ${e.reportedCredits ?? "-"} counted ${entryCredits(e)} ${e.url ?? ""} ${e.note}`)].join("\n");
+  return [`Local project budget ceiling ${l.capCredits} (operator-asserted allowance; NOT a provider cap); committed ${committed}; remaining allowance ${l.capCredits - committed}; entries ${l.entries.length}; unresolved ${open.length}`, ...l.entries.slice(-20).map((e) => `  ${e.id} ${e.status}${e.overrun ? " OVERRUN" : ""}${e.chargeStatus ? ` ${e.chargeStatus.toUpperCase()}` : ""}${e.resolvedAt ? " (resolved)" : ""} reserved ${e.reserved} reported ${e.reportedCredits ?? "-"} counted ${entryCredits(e)} ${e.url ?? ""} ${e.note}`)].join("\n");
 }
