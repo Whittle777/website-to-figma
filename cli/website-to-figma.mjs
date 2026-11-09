@@ -451,6 +451,61 @@ function inspectImage(b) {
   }
   return null;
 }
+function sha256Hex(data) {
+  const h = new Uint32Array([1779033703, 3144134277, 1013904242, 2773480762, 1359893119, 2600822924, 528734635, 1541459225]);
+  const bitLen = data.length * 8;
+  const padded = new Uint8Array(data.length + 9 + 63 >> 6 << 6);
+  padded.set(data);
+  padded[data.length] = 128;
+  const hi = Math.floor(bitLen / 4294967296);
+  const lo = bitLen >>> 0;
+  const n = padded.length;
+  padded[n - 8] = hi >>> 24;
+  padded[n - 7] = hi >>> 16 & 255;
+  padded[n - 6] = hi >>> 8 & 255;
+  padded[n - 5] = hi & 255;
+  padded[n - 4] = lo >>> 24;
+  padded[n - 3] = lo >>> 16 & 255;
+  padded[n - 2] = lo >>> 8 & 255;
+  padded[n - 1] = lo & 255;
+  const w = new Uint32Array(64);
+  for (let off = 0; off < n; off += 64) {
+    for (let i = 0; i < 16; i++) w[i] = u32be(padded, off + i * 4);
+    for (let i = 16; i < 64; i++) {
+      const a2 = w[i - 15];
+      const b2 = w[i - 2];
+      const s0 = (a2 >>> 7 | a2 << 25) ^ (a2 >>> 18 | a2 << 14) ^ a2 >>> 3;
+      const s1 = (b2 >>> 17 | b2 << 15) ^ (b2 >>> 19 | b2 << 13) ^ b2 >>> 10;
+      w[i] = w[i - 16] + s0 + w[i - 7] + s1 >>> 0;
+    }
+    let [a, b, c, d, e2, f, g, hh] = [h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]];
+    for (let i = 0; i < 64; i++) {
+      const S1 = (e2 >>> 6 | e2 << 26) ^ (e2 >>> 11 | e2 << 21) ^ (e2 >>> 25 | e2 << 7);
+      const ch = e2 & f ^ ~e2 & g;
+      const t1 = hh + S1 + ch + K[i] + w[i] >>> 0;
+      const S0 = (a >>> 2 | a << 30) ^ (a >>> 13 | a << 19) ^ (a >>> 22 | a << 10);
+      const maj = a & b ^ a & c ^ b & c;
+      const t2 = S0 + maj >>> 0;
+      hh = g;
+      g = f;
+      f = e2;
+      e2 = d + t1 >>> 0;
+      d = c;
+      c = b;
+      b = a;
+      a = t1 + t2 >>> 0;
+    }
+    h[0] = h[0] + a >>> 0;
+    h[1] = h[1] + b >>> 0;
+    h[2] = h[2] + c >>> 0;
+    h[3] = h[3] + d >>> 0;
+    h[4] = h[4] + e2 >>> 0;
+    h[5] = h[5] + f >>> 0;
+    h[6] = h[6] + g >>> 0;
+    h[7] = h[7] + hh >>> 0;
+  }
+  return [...h].map((x) => x.toString(16).padStart(8, "0")).join("");
+}
 var K;
 var init_imageInfo = __esm({
   "src/shared/imageInfo.ts"() {
@@ -11503,7 +11558,7 @@ function parseLedger(text) {
   if (l.entries.length > MAX_ENTRIES) throw new LedgerError("ledger: too many entries");
   const ids = /* @__PURE__ */ new Set();
   for (const [i, e2] of l.entries.entries()) {
-    const ok = e2 && typeof e2.id === "string" && /^[A-Za-z0-9-]{1,64}$/.test(e2.id) && !ids.has(e2.id) && typeof e2.at === "string" && typeof e2.command === "string" && nonNegInt(e2.reserved) && (e2.reportedCredits === null || nonNegInt(e2.reportedCredits)) && STATUSES.includes(e2.status) && typeof e2.note === "string" && (e2.url === null || typeof e2.url === "string") && (e2.requestSha256 === null || typeof e2.requestSha256 === "string" && /^[0-9a-f]{64}$/.test(e2.requestSha256)) && (e2.resolvedCredits === void 0 || e2.resolvedCredits === null || nonNegInt(e2.resolvedCredits)) && (e2.overrun === void 0 || typeof e2.overrun === "boolean");
+    const ok = e2 && typeof e2.id === "string" && /^[A-Za-z0-9-]{1,64}$/.test(e2.id) && !ids.has(e2.id) && typeof e2.at === "string" && typeof e2.command === "string" && nonNegInt(e2.reserved) && (e2.reportedCredits === null || nonNegInt(e2.reportedCredits)) && STATUSES.includes(e2.status) && typeof e2.note === "string" && (e2.url === null || typeof e2.url === "string") && (e2.requestSha256 === null || typeof e2.requestSha256 === "string" && /^[0-9a-f]{64}$/.test(e2.requestSha256)) && (e2.resolvedCredits === void 0 || e2.resolvedCredits === null || nonNegInt(e2.resolvedCredits)) && (e2.overrun === void 0 || typeof e2.overrun === "boolean") && (e2.ops === void 0 || Array.isArray(e2.ops) && e2.ops.length <= 20 && e2.ops.every((o) => o && typeof o.op === "string" && typeof o.at === "string" && ["attempting", "ok", "failed", "ambiguous"].includes(o.status) && typeof o.detail === "string"));
     if (!ok) throw new LedgerError(`ledger: entries[${i}] is malformed`);
     ids.add(e2.id);
   }
@@ -11626,6 +11681,18 @@ function settleAttempt(path, id, status, reportedCredits, note2) {
     e2.note = clean(note2);
     writeAtomic(path, l);
     return e2;
+  });
+}
+function recordOp(path, id, op, now = () => /* @__PURE__ */ new Date()) {
+  withLedgerLock(path, () => {
+    const l = readLedger(path);
+    const e2 = l.entries.find((x) => x.id === id);
+    if (!e2) throw new LedgerError(`ledger entry ${id} not found`);
+    const ops = e2.ops ?? [];
+    if (ops.length >= 20) throw new LedgerError(`ledger entry ${id} has too many operation records`);
+    ops.push({ op: clean(op.op, 40), at: now().toISOString(), status: op.status, detail: clean(op.detail) });
+    e2.ops = ops;
+    writeAtomic(path, l);
   });
 }
 function resolveEntry(path, id, credits, note2, now = () => /* @__PURE__ */ new Date()) {
@@ -42232,6 +42299,476 @@ var init_diagnostic = __esm({
   }
 });
 
+// src/states/sandbox.ts
+function buildSandboxPreview() {
+  return {
+    schema: "website-to-figma/sandbox-preview",
+    schemaVersion: 1,
+    sent: false,
+    purpose: `One disposable Browser Sandbox: viewport ${SANDBOX.viewport.width}x${SANDBOX.viewport.height} set BEFORE navigating to ${SANDBOX.url}; 3 same-region states of ${SANDBOX.scope} (baseline, Swiper next, Swiper next) measured and screenshotted on the same Playwright page.`,
+    notice: [
+      "NOT SENT. Paid execution (sandbox-run) HOLDS without --yes and runs at most once per lifecycle operation.",
+      "Billing per operator-read docs: code-only sessions 2 credits per session-minute, 1-minute minimum, prorated; the local reservation is NOT a provider cap. Request-specific creditsBilled from delete is recorded; missing => ambiguous.",
+      "Synthetic proof only: no hosted run has been observed by this tool."
+    ],
+    // Vendor/account defaults (blockAds, location) untouched; no profile.
+    create: { ttl: SANDBOX.ttl, activityTtl: SANDBOX.activityTtl, streamWebView: false },
+    execute: { code: SANDBOX_CODE, language: "node", timeout: SANDBOX.executeTimeoutS },
+    delete: { always: true },
+    reservation: { worstCaseCredits: SANDBOX_WORST_CASE_CREDITS, basis: `ceil(ttl ${SANDBOX.ttl}s / 60) x 2 credits per session-minute (ttl units assumed seconds; operator confirms)` },
+    timing: { createWallMs: SANDBOX_WALL_MS.create, executeWallMs: SANDBOX_WALL_MS.execute, deleteWallMs: SANDBOX_WALL_MS.delete },
+    gaps: [
+      "ttl/activityTtl units are not stated in the installed SDK; --confirm-ttl-seconds attests the official docs say seconds.",
+      "The installed SDK uses /v2/browser endpoints; if the official docs name a different path, verify before execution.",
+      "Inside the hosted browser, IP-literal/local hosts and off-target main-frame navigations are aborted, but hostnames that RESOLVE to private addresses cannot be checked from page code, and whether route interception sees every redirect hop is unverified; the redirect-chain check detects, not prevents.",
+      "`page` availability in a standalone Browser Sandbox execute is assumed from the Interact docs; the code fails closed if it is missing."
+    ]
+  };
+}
+function validateSandboxPreview(json) {
+  const preview = buildSandboxPreview();
+  if (canonicalJson(json) !== canonicalJson(preview)) throw new StateRunPolicyError("sandbox preview does not match the fixed reviewed sandbox; regenerate it with sandbox-plan and review that exact file");
+  return { preview, previewSha256: sandboxPreviewSha256(preview), requestSha256: sha256(canonicalJson({ create: preview.create, execute: preview.execute })) };
+}
+function assertSandboxGates(g) {
+  const missing = [];
+  if (!Number.isInteger(g.operatorCreditsPerRequest) || g.operatorCreditsPerRequest < SANDBOX_WORST_CASE_CREDITS || g.operatorCreditsPerRequest > 100) missing.push(`--operator-credits-per-request N (>= the ${SANDBOX_WORST_CASE_CREDITS}-credit worst case for the full ttl; YOUR reservation, not a price)`);
+  if (!Number.isInteger(g.operatorReportedBalance) || g.operatorReportedBalance < 0) missing.push("--operator-reported-balance N");
+  if (!g.confirmExistingCredits) missing.push("--confirm-existing-credits");
+  if (!g.confirmNoTopup) missing.push("--confirm-no-topup");
+  if (!g.confirmTtlSeconds) missing.push("--confirm-ttl-seconds (you verified in the official docs that ttl/activityTtl are seconds)");
+  if (!g.ledgerPath) missing.push("--ledger FILE (local reservation allowance, not a provider cap)");
+  if (missing.length) throw new StateRunPolicyError(`Refusing before any request: missing operator inputs:
+  ${missing.join("\n  ")}`);
+  const reservation = g.operatorCreditsPerRequest;
+  if (reservation > g.operatorReportedBalance) throw new StateRunPolicyError(`reservation ${reservation} exceeds the operator-reported balance ${g.operatorReportedBalance}`);
+  let l;
+  try {
+    l = readLedger(g.ledgerPath);
+  } catch (err) {
+    throw new StateRunPolicyError(err instanceof Error ? err.message : String(err));
+  }
+  const open = unresolved(l);
+  if (open.length) throw new StateRunPolicyError(`ledger has unresolved paid attempt(s): ${open.map((e2) => e2.id).join(", ")}; resolve them first ("ledger resolve")`);
+  const committed = committedCredits(l);
+  if (committed + reservation > l.capCredits) throw new StateRunPolicyError(`ledger: ${committed} committed + ${reservation} reservation exceeds the ${l.capCredits}-credit local project budget ceiling (not a provider cap)`);
+  return { reservation, committed, remaining: l.capCredits - committed };
+}
+function sandboxClientOptions(apiKey, apiUrl = FIRECRAWL_API_URL) {
+  return { apiKey, apiUrl, timeoutMs: SANDBOX_WALL_MS.execute, maxRetries: 1 };
+}
+async function createSandboxClient(apiKey, apiUrl = FIRECRAWL_API_URL) {
+  const { default: Firecrawl2 } = await Promise.resolve().then(() => (init_dist2(), dist_exports));
+  const fc = new Firecrawl2(sandboxClientOptions(apiKey, apiUrl));
+  return {
+    browser: (a) => fc.browser(a),
+    browserExecute: (id, a) => fc.browserExecute(id, a),
+    deleteBrowser: (id) => fc.deleteBrowser(id)
+  };
+}
+function parseSandboxOutput(resp) {
+  if (!isObj8(resp)) return { ok: false, status: "ambiguous", reason: "execute response is not an object" };
+  if (resp.success === false) return { ok: false, status: "rejected", reason: `execute reported failure: ${String(resp.error ?? "").slice(0, 200)}` };
+  if (resp.truncated === true) return { ok: false, status: "ambiguous", reason: "execute output was truncated by the provider" };
+  if (resp.killed === true) return { ok: false, status: "ambiguous", reason: "execute was killed (timeout)" };
+  if (typeof resp.exitCode === "number" && resp.exitCode !== 0) return { ok: false, status: "rejected", reason: `execute exit code ${resp.exitCode}` };
+  const text = [resp.stdout, resp.output, resp.result].find((x) => typeof x === "string" && x.includes("W2F_RESULT "));
+  if (!text) return { ok: false, status: "ambiguous", reason: "no W2F_RESULT line in the execute output" };
+  if (text.length > SANDBOX.maxOutputChars) return { ok: false, status: "rejected", reason: `execute output ${text.length} chars exceeds ${SANDBOX.maxOutputChars}` };
+  const at = text.lastIndexOf("W2F_RESULT ");
+  const end = text.indexOf("\n", at);
+  const line = text.slice(at + "W2F_RESULT ".length, end < 0 ? void 0 : end);
+  let result;
+  try {
+    result = JSON.parse(line);
+  } catch {
+    return { ok: false, status: "ambiguous", reason: "W2F_RESULT is not valid JSON (partial output?)" };
+  }
+  if (!isObj8(result) || result.w2f !== "sandbox" || result.v !== 1) return { ok: false, status: "ambiguous", reason: "W2F_RESULT has the wrong schema" };
+  if (typeof result.error === "string" && result.error) return { ok: false, status: "rejected", reason: `in-browser step failed: ${result.error.slice(0, 200)}` };
+  const states = Array.isArray(result.states) ? result.states : [];
+  if (states.length !== SANDBOX.states.length) return { ok: false, status: "ambiguous", reason: `expected ${SANDBOX.states.length} states, got ${states.length}` };
+  const pngs = [];
+  const maxB64 = Math.ceil(SANDBOX.maxPngBytes / 3) * 4;
+  for (const [i, s] of states.entries()) {
+    if (!isObj8(s) || s.seq !== i || s.name !== SANDBOX.states[i] || typeof s.png !== "string") return { ok: false, status: "ambiguous", reason: `state ${i} malformed` };
+    if (s.png.length > maxB64 || s.png.length % 4 !== 0 || !B642.test(s.png)) return { ok: false, status: "rejected", reason: `state ${i} PNG base64 invalid or over ${SANDBOX.maxPngBytes} bytes` };
+    const bytes = new Uint8Array(Buffer.from(s.png, "base64"));
+    const info = inspectImage(bytes);
+    if (!info || info.mime !== "image/png") return { ok: false, status: "rejected", reason: `state ${i} is not a PNG` };
+    if (info.width < 1 || info.height < 1 || info.width > SANDBOX.viewport.width || info.height > SANDBOX.viewport.height || info.width * info.height > SANDBOX.maxPngPixels) return { ok: false, status: "rejected", reason: `state ${i} PNG ${info.width}x${info.height} outside the pixel caps` };
+    pngs.push(bytes);
+  }
+  return { ok: true, result, pngs };
+}
+async function executeSandbox(o) {
+  const now = o.now ?? (() => /* @__PURE__ */ new Date());
+  const resolver = o.resolver ?? systemResolver;
+  const gate = assertSandboxGates(o.gates);
+  const secrets = [];
+  const ledgerPath = o.gates.ledgerPath;
+  const rec = {
+    schema: "website-to-figma/sandbox-run",
+    schemaVersion: 1,
+    runId: o.runId ?? sha256(`${o.validated.previewSha256}:${now().toISOString()}:${Math.random()}`).slice(0, 16),
+    pageUrl: SANDBOX_URL,
+    previewSha256: o.validated.previewSha256,
+    requestSha256: o.validated.requestSha256,
+    ledgerEntryId: null,
+    sessionId: null,
+    status: "not-attempted",
+    reason: null,
+    ops: [],
+    creditsBilled: null,
+    sessionDurationMs: null,
+    reservation: gate.reservation,
+    viewportSet: null,
+    nav: null,
+    env: null,
+    autoplay: null,
+    blocked: [],
+    states: [],
+    warnings: []
+  };
+  const log = (m) => o.log?.(`[sandbox] ${redact(m, secrets)}`);
+  try {
+    await assertHostedFirecrawlUrl(SANDBOX_URL, resolver);
+  } catch (err) {
+    rec.status = "rejected";
+    rec.reason = `target URL failed the hosted URL guard: ${err instanceof Error ? err.message : "invalid"}`;
+    return rec;
+  }
+  const key = o.getApiKey()?.trim();
+  if (!key) {
+    rec.reason = "FIRECRAWL_API_KEY is not set; nothing was sent and no ledger attempt was recorded";
+    return rec;
+  }
+  secrets.push(key);
+  let client;
+  try {
+    client = await (o.createClient ?? createSandboxClient)(key);
+  } catch (err) {
+    rec.reason = redact(`client could not be created: ${err instanceof Error ? err.message : String(err)}`, secrets);
+    return rec;
+  }
+  let entryId;
+  try {
+    entryId = reserveAttempt(ledgerPath, { url: SANDBOX_URL, requestSha256: o.validated.requestSha256, reserved: gate.reservation, command: "sandbox-run", continuationOf: o.gates.reviewedContinuation }, now).id;
+  } catch (err) {
+    rec.reason = err instanceof LedgerError ? err.message : String(err);
+    return rec;
+  }
+  rec.ledgerEntryId = entryId;
+  const op = (name3, status, detail) => {
+    recordOp(ledgerPath, entryId, { op: name3, status, detail: redact(detail, secrets) }, now);
+    log(`${name3} ${status}${detail ? `: ${detail}` : ""}`);
+  };
+  const outcome = (err) => classify(err);
+  let overall = "ambiguous";
+  op("create", "attempting", `ttl ${SANDBOX.ttl}s activityTtl ${SANDBOX.activityTtl}s (units assumed seconds; operator-confirmed)`);
+  let created;
+  try {
+    created = await withTimeout(client.browser({ ...o.validated.preview.create }), SANDBOX_WALL_MS.create);
+  } catch (err) {
+    const k = outcome(err);
+    const d = redact(`create ${k}: ${err instanceof Error ? err.message : String(err)}`, secrets);
+    rec.ops.push({ op: "create", attempts: 1, status: k, detail: d });
+    op("create", k, d);
+    rec.status = k;
+    rec.reason = k === "ambiguous" ? `${d}; a session may exist without a known id (bounded only by its ttl); no automatic re-create` : d;
+    settleAttempt(ledgerPath, entryId, k === "failed" ? "failed" : "ambiguous", null, rec.reason);
+    return rec;
+  }
+  const id = isObj8(created) && typeof created.id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(created.id) ? created.id : null;
+  if (!isObj8(created) || created.success !== true || !id) {
+    const d = `create returned no usable session id (success ${isObj8(created) ? String(created.success) : "?"})`;
+    rec.ops.push({ op: "create", attempts: 1, status: "ambiguous", detail: d });
+    op("create", "ambiguous", d);
+    rec.status = "ambiguous";
+    rec.reason = `${d}; no automatic re-create`;
+    settleAttempt(ledgerPath, entryId, "ambiguous", null, rec.reason);
+    return rec;
+  }
+  rec.sessionId = id;
+  rec.ops.push({ op: "create", attempts: 1, status: "ok", detail: `session ${id}${typeof created.expiresAt === "string" ? ` expires ${created.expiresAt.slice(0, 40)}` : ""}` });
+  op("create", "ok", `session ${id}`);
+  let cleanupOk = false;
+  try {
+    op("execute", "attempting", `node, timeout ${SANDBOX.executeTimeoutS}s`);
+    let resp;
+    try {
+      resp = await withTimeout(client.browserExecute(id, { ...o.validated.preview.execute }), SANDBOX_WALL_MS.execute);
+    } catch (err) {
+      const k = outcome(err);
+      const d = redact(`execute ${k}: ${err instanceof Error ? err.message : String(err)}`, secrets);
+      rec.ops.push({ op: "execute", attempts: 1, status: k, detail: d });
+      op("execute", k, d);
+      overall = k === "failed" ? "failed" : "ambiguous";
+      rec.reason = d;
+      return rec;
+    }
+    const parsed = parseSandboxOutput(resp);
+    if (!parsed.ok) {
+      rec.ops.push({ op: "execute", attempts: 1, status: parsed.status === "ambiguous" ? "ambiguous" : "ok", detail: parsed.reason });
+      op("execute", parsed.status === "ambiguous" ? "ambiguous" : "ok", parsed.reason);
+      overall = parsed.status;
+      rec.reason = parsed.reason;
+      return rec;
+    }
+    rec.ops.push({ op: "execute", attempts: 1, status: "ok", detail: "W2F_RESULT parsed; 3 states" });
+    op("execute", "ok", "W2F_RESULT parsed; 3 states");
+    const r = parsed.result;
+    rec.viewportSet = isObj8(r.viewportSet) ? r.viewportSet : null;
+    rec.nav = isObj8(r.nav) ? r.nav : null;
+    rec.env = isObj8(r.env) ? r.env : null;
+    rec.autoplay = isObj8(r.autoplay) ? r.autoplay : null;
+    rec.blocked = Array.isArray(r.blocked) ? r.blocked.filter(isObj8).slice(0, 50) : [];
+    const states = r.states;
+    for (const [i, s] of states.entries()) {
+      const bytes = parsed.pngs[i];
+      const info = inspectImage(bytes);
+      rec.states.push({ seq: i, name: SANDBOX.states[i], provenance: i === 0 ? "baseline" : "page-api", trigger: isObj8(s.trigger) ? s.trigger : null, measured: isObj8(s.measured) ? s.measured : {}, clip: isObj8(s.clip) ? s.clip : { x: 0, y: 0, width: 0, height: 0 }, png: { sha256: sha256Hex(bytes), width: info.width, height: info.height, bytes: bytes.length } });
+      o.savePng?.(i, bytes);
+    }
+    const shas = rec.states.map((s) => s.png.sha256);
+    if (new Set(shas).size < shas.length) rec.warnings.push("some state screenshots are byte-identical (no visual distinctness)");
+    for (const s of rec.states.slice(1)) if (s.trigger && s.trigger.moved !== true) rec.warnings.push(`state "${s.name}": Swiper did not move`);
+    if (rec.blocked.length) rec.warnings.push(`${rec.blocked.length} request(s) aborted by the in-browser guard`);
+    overall = "accepted";
+  } finally {
+    op("delete", "attempting", `session ${id}`);
+    try {
+      const del = await withTimeout(client.deleteBrowser(id), SANDBOX_WALL_MS.delete);
+      const billed = isObj8(del) && typeof del.creditsBilled === "number" && Number.isFinite(del.creditsBilled) && del.creditsBilled >= 0 ? Math.ceil(del.creditsBilled) : null;
+      rec.creditsBilled = billed;
+      rec.sessionDurationMs = isObj8(del) && typeof del.sessionDurationMs === "number" ? del.sessionDurationMs : null;
+      if (isObj8(del) && del.success === true) {
+        cleanupOk = true;
+        rec.ops.push({ op: "delete", attempts: 1, status: "ok", detail: `creditsBilled ${billed ?? "not reported"}` });
+        op("delete", "ok", `creditsBilled ${billed ?? "not reported"}; durationMs ${rec.sessionDurationMs ?? "?"}`);
+      } else {
+        rec.ops.push({ op: "delete", attempts: 1, status: "ambiguous", detail: "delete did not report success" });
+        op("delete", "ambiguous", "delete did not report success");
+      }
+    } catch (err) {
+      const k = outcome(err);
+      const d = redact(`delete ${k}: ${err instanceof Error ? err.message : String(err)}`, secrets);
+      rec.ops.push({ op: "delete", attempts: 1, status: k, detail: d });
+      op("delete", k, d);
+    }
+    if (!cleanupOk) {
+      rec.warnings.push(`cleanup NOT confirmed for session ${id}: it may keep billing until its ttl; the ledger entry stays blocking until resolved (sandbox-cleanup or ledger resolve)`);
+      if (overall === "accepted") overall = "ambiguous";
+    }
+    if (rec.creditsBilled === null) rec.warnings.push("delete reported no creditsBilled; credits are UNKNOWN (ledger entry left ambiguous)");
+    rec.status = overall;
+    const settled = cleanupOk && rec.creditsBilled !== null && (overall === "accepted" || overall === "rejected") ? "succeeded" : overall === "failed" && cleanupOk ? "failed" : "ambiguous";
+    const e2 = settleAttempt(ledgerPath, entryId, settled, rec.creditsBilled, `${rec.status}${rec.reason ? `: ${rec.reason}` : ""}; creditsBilled ${rec.creditsBilled ?? "not reported"}; cleanup ${cleanupOk ? "confirmed" : "NOT confirmed"}`);
+    if (e2.overrun) rec.warnings.push(`OVERRUN: ${rec.creditsBilled} credits billed, above the reservation ${gate.reservation}; later runs blocked until resolved`);
+  }
+  return rec;
+}
+async function cleanupSandbox(o) {
+  const l = readLedger(o.ledgerPath);
+  const e2 = l.entries.find((x) => x.id === o.entryId);
+  if (!e2 || e2.command !== "sandbox-run") throw new StateRunPolicyError(`no sandbox-run ledger entry ${o.entryId}`);
+  const created = (e2.ops ?? []).filter((x) => x.op === "create" && x.status === "ok").map((x) => /session ([A-Za-z0-9_-]{1,128})/.exec(x.detail)?.[1]).find(Boolean);
+  if (!created) throw new StateRunPolicyError("the entry records no created session id; nothing to delete (a session with an unknown id is bounded only by its ttl)");
+  if ((e2.ops ?? []).some((x) => x.op === "delete" && x.status === "ok")) throw new StateRunPolicyError("cleanup already confirmed for this entry");
+  const key = o.getApiKey()?.trim();
+  if (!key) throw new StateRunPolicyError("FIRECRAWL_API_KEY is not set; nothing was sent");
+  const client = await (o.createClient ?? createSandboxClient)(key);
+  recordOp(o.ledgerPath, o.entryId, { op: "delete", status: "attempting", detail: `manual cleanup of session ${created}` }, o.now);
+  try {
+    const del = await withTimeout(client.deleteBrowser(created), SANDBOX_WALL_MS.delete);
+    const ok = isObj8(del) && del.success === true;
+    const detail = `manual cleanup ${ok ? "ok" : "not confirmed"}; creditsBilled ${isObj8(del) && typeof del.creditsBilled === "number" ? del.creditsBilled : "not reported"}`;
+    recordOp(o.ledgerPath, o.entryId, { op: "delete", status: ok ? "ok" : "ambiguous", detail }, o.now);
+    return { ok, detail };
+  } catch (err) {
+    const k = classify(err);
+    const detail = redact(`manual cleanup ${k}: ${err instanceof Error ? err.message : String(err)}`, [key]);
+    recordOp(o.ledgerPath, o.entryId, { op: "delete", status: k, detail }, o.now);
+    return { ok: false, detail };
+  }
+}
+function sandboxToCapture(rec, files) {
+  if (rec.status !== "accepted" || rec.states.length !== SANDBOX.states.length) throw new StateRunPolicyError(`sandbox status ${rec.status}; only accepted runs with 3 states convert`);
+  const st3 = rec.states.map((s) => {
+    const m = s.measured;
+    const target = isObj8(m.target) ? m.target : {};
+    const region = isObj8(m.region) ? m.region : {};
+    const probe = isObj8(m.probe) ? m.probe : {};
+    const measured2 = { url: SANDBOX_URL, viewport: { width: probe.innerWidth ?? SANDBOX.viewport.width, height: probe.innerHeight ?? SANDBOX.viewport.height }, documentHeight: probe.documentHeight ?? null, title: "Bootslander (sandbox region)", elements: m.elements ?? [], texts: m.texts ?? [], images: m.images ?? [], svgs: [] };
+    return {
+      seq: s.seq,
+      name: s.name,
+      provenance: s.provenance,
+      scope: { x: region.x, y: region.y, w: region.w, h: region.h },
+      screenshotScrollY: typeof region.y === "number" ? region.y : 0,
+      viewport: { width: probe.innerWidth, height: probe.innerHeight },
+      documentHeight: probe.documentHeight ?? null,
+      measured: measured2,
+      verify: { scrollY: probe.scrollY ?? null, viewport: { width: probe.innerWidth, height: probe.innerHeight }, documentHeight: probe.documentHeight ?? null, expandedViewport: typeof probe.innerHeight === "number" ? probe.innerHeight > 4320 : false, target: { selector: target.selector ?? SANDBOX.scope, viewTop: target.viewTop ?? null, viewBottom: target.viewBottom ?? null, inViewport: target.inViewport === true, partiallyVisible: true } },
+      screenshot: "action-order",
+      applied: s.provenance === "page-api" ? [{ selector: SANDBOX.swiper, mechanism: "swiper-next" }] : [],
+      refused: [],
+      missing: [],
+      trigger: s.trigger ? { kind: "swiper-next", ...s.trigger } : null,
+      truncated: false,
+      error: null,
+      residueFromSeq: null
+    };
+  });
+  return {
+    capture: { schema: "website-to-figma/capture", schemaVersion: 1, label: `sandbox run ${rec.runId} (one region: ${SANDBOX.scope})`, pages: [{ url: SANDBOX_URL, contentType: "text/html", measured: st3[0].measured, states: st3 }] },
+    manifest: { schema: "website-to-figma/asset-manifest", schemaVersion: 1, assets: rec.states.map((s, i) => ({ id: `sandbox-s${i}`, kind: "reference", file: files[i], sha256: s.png.sha256, pageUrl: SANDBOX_URL, state: s.name })) }
+  };
+}
+var isObj8, SANDBOX_URL, SANDBOX, SANDBOX_WORST_CASE_CREDITS, SANDBOX_WALL_MS, PAGE_FUNCS, SANDBOX_CODE, sandboxPreviewSha256, B642;
+var init_sandbox = __esm({
+  "src/states/sandbox.ts"() {
+    "use strict";
+    init_urlGuard();
+    init_imageInfo();
+    init_execute();
+    init_ledger();
+    isObj8 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+    SANDBOX_URL = "https://bootstrapmade.com/content/demo/Bootslander/";
+    SANDBOX = {
+      url: SANDBOX_URL,
+      viewport: { width: 1920, height: 1080 },
+      // ASSUMED SECONDS: the installed SDK does not state ttl units; the operator
+      // must confirm the official docs (--confirm-ttl-seconds) before execution.
+      ttl: 120,
+      activityTtl: 60,
+      executeTimeoutS: 90,
+      navTimeoutMs: 3e4,
+      settleMs: 2e3,
+      stateWaitMs: 800,
+      scope: "#testimonials",
+      swiper: "#testimonials .swiper.init-swiper",
+      states: ["Default", "Testimonial next", "Testimonial next 2"],
+      maxPngBytes: 15e5,
+      maxPngPixels: 1920 * 1080,
+      maxOutputChars: 65e5,
+      maxElements: 800,
+      maxTexts: 600,
+      maxImages: 50
+    };
+    SANDBOX_WORST_CASE_CREDITS = Math.ceil(SANDBOX.ttl / 60) * 2;
+    SANDBOX_WALL_MS = { create: 6e4, execute: SANDBOX.executeTimeoutS * 1e3 + 3e4, delete: 6e4 };
+    PAGE_FUNCS = String.raw`
+const W2F_PROBE = () => { const d = document.documentElement, b = document.body, vv = window.visualViewport; return { innerWidth: window.innerWidth, innerHeight: window.innerHeight, rootClientWidth: d.clientWidth, rootClientHeight: d.clientHeight, visualViewport: vv ? { width: vv.width, height: vv.height, scale: vv.scale, offsetTop: vv.offsetTop, pageTop: vv.pageTop } : null, scrollY: window.scrollY, documentHeight: Math.max(d.scrollHeight, b ? b.scrollHeight : 0), devicePixelRatio: window.devicePixelRatio, readyState: document.readyState }; };
+const W2F_SWIPER = (a) => {
+  const els = Array.from(document.querySelectorAll(a.sel));
+  const el = els.length === 1 ? els[0] : null; const sw = el ? el.swiper : null;
+  let reason = null;
+  if (els.length !== 1) reason = "selector must match exactly one element (matched " + els.length + ")";
+  else if (!el.classList.contains("swiper")) reason = "element is not a .swiper container";
+  else if (el.closest("form, a, button")) reason = "element is inside a form, link or button";
+  else if (!sw || typeof sw !== "object" || sw.el !== el || typeof sw.slideNext !== "function") reason = "no Swiper instance bound to this element";
+  else if (sw.destroyed || sw.enabled === false) reason = "Swiper instance is destroyed or disabled";
+  if (reason) return { valid: false, reason };
+  const snap = () => ({ activeIndex: sw.activeIndex, realIndex: sw.realIndex, autoplayRunning: sw.autoplay ? !!sw.autoplay.running : null });
+  const before = snap();
+  if (a.op === "stop-autoplay") { if (sw.autoplay && typeof sw.autoplay.stop === "function" && sw.autoplay.running) sw.autoplay.stop(); }
+  else if (a.op === "next") sw.slideNext(0);
+  const after = snap();
+  return { valid: true, reason: null, op: a.op, before, after, moved: after.realIndex !== before.realIndex || after.activeIndex !== before.activeIndex };
+};
+const W2F_INTO_VIEW = (sel) => { const e = document.querySelector(sel); if (!e) return false; e.scrollIntoView({ block: "start", inline: "nearest" }); return true; };
+const W2F_MEASURE = (a) => {
+  const t = document.querySelector(a.scope); if (!t) return { target: null };
+  const sx = window.scrollX, sy = window.scrollY, tr = t.getBoundingClientRect();
+  const region = { x: tr.left + sx, y: tr.top + sy, w: tr.width, h: tr.height };
+  const hit = (b) => b.width > 0 && b.height > 0 && b.left + sx < region.x + region.w && b.right + sx > region.x && b.top + sy < region.y + region.h && b.bottom + sy > region.y;
+  const props = ["backgroundColor","color","fontFamily","fontSize","fontWeight","fontStyle","lineHeight","textDecorationLine","borderTopWidth","borderRightWidth","borderBottomWidth","borderLeftWidth","borderTopColor","borderRightColor","borderBottomColor","borderLeftColor","borderRadius","opacity","display","visibility","position","paddingTop","paddingRight","paddingBottom","paddingLeft","objectFit"];
+  const styles = (e) => { const c = getComputedStyle(e); const o = {}; for (const k of props) o[k] = c[k]; return o; };
+  const elements = [], images = [], texts = [];
+  for (const e of [t, ...t.querySelectorAll("*")]) {
+    if (elements.length >= a.maxElements) break;
+    if (e.closest("svg") || ["SCRIPT","STYLE","NOSCRIPT","TEMPLATE"].includes(e.tagName)) continue;
+    const b = e.getBoundingClientRect(), s = styles(e);
+    if (!hit(b) || s.display === "none" || s.visibility === "hidden") continue;
+    const item = { tag: e.tagName.toLowerCase(), x: b.left + sx, y: b.top + sy, w: b.width, h: b.height, style: s };
+    if (e.tagName === "IMG" && images.length < a.maxImages) images.push({ ...item, src: String(e.currentSrc || e.src || "").slice(0, 2048), alt: String(e.alt || "").slice(0, 200) });
+    elements.push(item);
+  }
+  const seg = typeof Intl !== "undefined" && Intl.Segmenter ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null;
+  const walker = document.createTreeWalker(t, NodeFilter.SHOW_TEXT); let n;
+  while ((n = walker.nextNode()) && texts.length < a.maxTexts) {
+    const p = n.parentElement; if (!p || p.closest("script,style,noscript,svg")) continue;
+    const s = styles(p); if (s.display === "none" || s.visibility === "hidden") continue;
+    const str = n.textContent || ""; if (!str.trim()) continue;
+    const parts = seg ? Array.from(seg.segment(str), (x) => [x.index, x.segment]) : Array.from(str).map((ch, i) => [i, ch]);
+    let last = null; const runs = [];
+    for (const [i, g] of parts) { const r = document.createRange(); r.setStart(n, i); r.setEnd(n, i + g.length); const b = r.getBoundingClientRect(); if (!b.width || !b.height || !hit(b)) continue; const x = b.left + sx, y = b.top + sy;
+      if (last && Math.abs(last.y - y) < 1 && Math.abs(last.x + last.w - x) < 3) { last.text += g; last.w = x + b.width - last.x; last.h = Math.max(last.h, b.height); } else { last = { text: g, x, y, w: b.width, h: b.height }; runs.push(last); } }
+    for (const r of runs) if (r.text.trim() && texts.length < a.maxTexts) texts.push({ ...r, text: r.text.slice(0, 2000), style: s, tag: p.tagName.toLowerCase() });
+  }
+  // self-contained (Playwright serializes only this function): probe inlined
+  const d = document.documentElement, bd = document.body, vv = window.visualViewport;
+  const probe = { innerWidth: window.innerWidth, innerHeight: window.innerHeight, rootClientWidth: d.clientWidth, rootClientHeight: d.clientHeight, visualViewport: vv ? { width: vv.width, height: vv.height, scale: vv.scale, offsetTop: vv.offsetTop, pageTop: vv.pageTop } : null, scrollY: window.scrollY, documentHeight: Math.max(d.scrollHeight, bd ? bd.scrollHeight : 0), devicePixelRatio: window.devicePixelRatio, readyState: document.readyState };
+  return { target: { selector: a.scope, viewTop: tr.top, viewBottom: tr.bottom, left: tr.left, width: tr.width, height: tr.height, documentY: tr.top + sy, inViewport: tr.top >= -1 && tr.bottom <= window.innerHeight + 1 }, region, probe, elements, texts, images };
+};`;
+    SANDBOX_CODE = String.raw`// website-to-figma fixed sandbox code (reviewed; takes no inputs)
+const W = ${JSON.stringify({ url: SANDBOX.url, vw: SANDBOX.viewport.width, vh: SANDBOX.viewport.height, navTimeoutMs: SANDBOX.navTimeoutMs, settleMs: SANDBOX.settleMs, stateWaitMs: SANDBOX.stateWaitMs, scope: SANDBOX.scope, swiper: SANDBOX.swiper, states: SANDBOX.states, maxPngBytes: SANDBOX.maxPngBytes, max: { maxElements: SANDBOX.maxElements, maxTexts: SANDBOX.maxTexts, maxImages: SANDBOX.maxImages } })};
+${PAGE_FUNCS}
+const out = { w2f: "sandbox", v: 1, error: null, viewportSet: null, nav: null, env: null, autoplay: null, blocked: [], states: [] };
+try {
+  if (typeof page === "undefined" || !page) throw new Error("no Playwright page in this session");
+  await page.route("**/*", (route) => {
+    const req = route.request(); let u = null; try { u = new URL(req.url()); } catch (e) {}
+    let why = null;
+    if (!u) why = "invalid-url";
+    else {
+      const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+      let nav = false; try { nav = req.isNavigationRequest() && req.frame() === page.mainFrame(); } catch (e) {}
+      if (!["http:", "https:", "data:", "blob:"].includes(u.protocol)) why = "scheme";
+      else if (u.username || u.password) why = "credentials";
+      else if (/^[0-9.]+$/.test(host) || host.includes(":")) why = "ip-literal";
+      else if (host === "localhost" || /\.(local|internal|localhost|home\.arpa|test|lan)$/.test(host)) why = "local-name";
+      else if (nav && u.href !== W.url) why = "main-frame-navigation-off-target";
+    }
+    if (why) { if (out.blocked.length < 50) out.blocked.push({ origin: u ? u.protocol + "//" + u.hostname : "(invalid)", why }); return route.abort(); }
+    return route.continue();
+  });
+  await page.setViewportSize({ width: W.vw, height: W.vh });
+  out.viewportSet = { width: W.vw, height: W.vh };
+  const resp = await page.goto(W.url, { waitUntil: "load", timeout: W.navTimeoutMs });
+  const chain = []; let r = resp ? resp.request() : null;
+  while (r && chain.length < 10) { chain.unshift(r.url()); r = r.redirectedFrom(); }
+  out.nav = { status: resp ? resp.status() : null, finalUrl: page.url(), chain };
+  if (page.url() !== W.url || chain.length !== 1 || chain[0] !== W.url) throw new Error("navigation left the exact target URL (redirect or rewrite)");
+  await page.waitForTimeout(W.settleMs);
+  out.env = await page.evaluate(W2F_PROBE);
+  if (out.env.innerWidth !== W.vw || out.env.innerHeight !== W.vh) throw new Error("viewport not applied: " + out.env.innerWidth + "x" + out.env.innerHeight);
+  out.autoplay = await page.evaluate(W2F_SWIPER, { sel: W.swiper, op: "stop-autoplay" });
+  if (!out.autoplay.valid) throw new Error("swiper refused: " + out.autoplay.reason);
+  for (let seq = 0; seq < W.states.length; seq++) {
+    let trigger = null;
+    if (seq > 0) { trigger = await page.evaluate(W2F_SWIPER, { sel: W.swiper, op: "next" }); if (!trigger.valid) throw new Error("swiper refused: " + trigger.reason); }
+    if (!(await page.evaluate(W2F_INTO_VIEW, W.scope))) throw new Error("scope not found");
+    await page.waitForTimeout(W.stateWaitMs);
+    const m = await page.evaluate(W2F_MEASURE, { scope: W.scope, ...W.max });
+    if (!m.target) throw new Error("scope not found");
+    const top = Math.max(0, m.target.viewTop);
+    const clip = { x: 0, y: top, width: W.vw, height: Math.min(W.vh - top, Math.max(0, m.target.viewBottom - top)) };
+    if (clip.height < 1) throw new Error("target not visible for the screenshot");
+    const png = await page.screenshot({ type: "png", clip, timeout: 15000 });
+    if (png.length > W.maxPngBytes) throw new Error("screenshot over the byte cap");
+    out.states.push({ seq, name: W.states[seq], trigger, measured: m, clip, png: png.toString("base64") });
+  }
+} catch (e) {
+  out.error = String((e && e.message) || e).slice(0, 300);
+}
+console.log("W2F_RESULT " + JSON.stringify(out));`;
+    sandboxPreviewSha256 = (p = buildSandboxPreview()) => sha256(canonicalJson(p));
+    B642 = /^[A-Za-z0-9+/]*={0,2}$/;
+  }
+});
+
 // plugin/src/render/renderer.ts
 function nodeName(nodes, n, i, prefix, imageFilled, label) {
   if (n.kind === "box") {
@@ -42864,7 +43401,7 @@ function parseFlags(args) {
   const fontMaps = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (a === "--yes" || a === "--help" || a === "-h" || a === "--no-map" || a === "--confirm-existing-credits" || a === "--confirm-no-topup" || a === "--acknowledge-synthetic-modifications") {
+    if (a === "--yes" || a === "--help" || a === "-h" || a === "--no-map" || a === "--confirm-existing-credits" || a === "--confirm-no-topup" || a === "--acknowledge-synthetic-modifications" || a === "--confirm-ttl-seconds") {
       flags.set(a.replace(/^-+/, ""), true);
     } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label" || a === "--font-map" || a === "--normalize-reference" || a === "--plan" || a === "--state-reactions" || a === "--preview" || a === "--ledger" || a === "--operator-credits-per-request" || a === "--reviewed-continuation" || a === "--run" || a === "--prior-credits" || a === "--note" || a === "--id" || a === "--credits" || a === "--doc" || a === "--renderer" || a === "--renderer-sha256" || a === "--max-job-chars" || a === "--image-hashes" || a === "--images") {
       const v = args[++i];
@@ -43080,6 +43617,88 @@ async function main2(argv) {
     writeExclusive(join2(dir, "manifest.json"), JSON.stringify({ schema: "website-to-figma/asset-manifest", schemaVersion: 1, assets }, null, 2) + "\n");
     console.log(`Wrote ${dir} (PRIVATE; ${assets.length} saved, ${failed} need manual download)`);
     return failed ? 4 : 0;
+  }
+  if (cmd === "sandbox-plan") {
+    const out = flags.get("out");
+    if (typeof out !== "string") throw new UsageError("sandbox-plan needs --out FILE");
+    const preview = buildSandboxPreview();
+    const path = resolve4(out);
+    mkdirSync2(dirname3(path), { recursive: true });
+    writeExclusive(path, JSON.stringify(preview, null, 2) + "\n");
+    console.log(`Wrote ${path} (sandbox PREVIEW; NOTHING sent). Canonical preview sha256 ${sandboxPreviewSha256(preview)}`);
+    return 0;
+  }
+  if (cmd === "sandbox-run") {
+    const previewPath = flags.get("preview");
+    const out = flags.get("out");
+    if (typeof previewPath !== "string" || typeof out !== "string") throw new UsageError("sandbox-run needs --preview FILE --out DIR");
+    const validated = validateSandboxPreview(readBoundedJson(previewPath, 2e6, "sandbox preview"));
+    const optInt = (k) => flags.get(k) === void 0 ? void 0 : intFlag(flags.get(k), k, 0);
+    const gates = {
+      operatorCreditsPerRequest: optInt("operator-credits-per-request"),
+      operatorReportedBalance: optInt("operator-reported-balance"),
+      confirmExistingCredits: flags.has("confirm-existing-credits"),
+      confirmNoTopup: flags.has("confirm-no-topup"),
+      confirmTtlSeconds: flags.has("confirm-ttl-seconds"),
+      ledgerPath: typeof flags.get("ledger") === "string" ? flags.get("ledger") : void 0,
+      reviewedContinuation: typeof flags.get("reviewed-continuation") === "string" ? flags.get("reviewed-continuation") : void 0
+    };
+    const g = assertSandboxGates(gates);
+    console.log(`Exact sandbox lifecycle (preview sha256 ${validated.previewSha256}; request sha256 ${validated.requestSha256}), one attempt per operation, no replay:`);
+    console.log(`  create  POST /v2/browser { ttl ${SANDBOX.ttl}, activityTtl ${SANDBOX.activityTtl}, streamWebView false } (no profile; vendor defaults kept)`);
+    console.log(`  execute POST /v2/browser/{id}/execute { language node, timeout ${SANDBOX.executeTimeoutS}, fixed reviewed code } -> setViewportSize ${SANDBOX.viewport.width}x${SANDBOX.viewport.height} BEFORE goto ${SANDBOX.url}; 3 states of ${SANDBOX.scope}`);
+    console.log("  delete  DELETE /v2/browser/{id} (always, in finally)");
+    console.log(`Reservation ${g.reservation} (worst case for the full ttl: ${SANDBOX_WORST_CASE_CREDITS}; NOT a provider cap). Ledger committed ${g.committed}, remaining local allowance ${g.remaining}.`);
+    console.log("Stops: preview mismatch; missing gate; unresolved/duplicate/over-ceiling ledger; create ambiguous (no re-create) or failed; execute error/killed/truncated/partial/oversize; in-browser redirect/viewport/swiper refusal; delete not confirmed (blocking); missing creditsBilled (ambiguous).");
+    if (!flags.has("yes")) {
+      console.log("HOLD: nothing was sent and no key was read. Re-run with --yes only after origin review.");
+      return 3;
+    }
+    const runDir = createExclusiveDir(out, `sandbox-run-${sha256(`${validated.previewSha256}:${Date.now()}`).slice(0, 12)}`);
+    const rec = await executeSandbox({
+      validated,
+      gates,
+      getApiKey: () => {
+        if (existsSync(".env")) process.loadEnvFile(".env");
+        return process.env.FIRECRAWL_API_KEY;
+      },
+      savePng: (seq, bytes) => writeExclusive(join2(runDir, `state-${seq}.png`), bytes),
+      log: (m) => console.error(m)
+    });
+    writeExclusive(join2(runDir, "sandbox.json"), JSON.stringify(rec, null, 2) + "\n");
+    console.log(`Wrote ${runDir} (PRIVATE). status ${rec.status}${rec.reason ? ` (${rec.reason})` : ""}; creditsBilled ${rec.creditsBilled ?? "NOT reported"}`);
+    for (const w of rec.warnings) console.log(`  warning: ${w}`);
+    return rec.status === "accepted" ? 0 : 4;
+  }
+  if (cmd === "sandbox-cleanup") {
+    const ledgerPath = flags.get("ledger");
+    const id = flags.get("id");
+    if (typeof ledgerPath !== "string" || typeof id !== "string") throw new UsageError("sandbox-cleanup needs --ledger FILE --id LEDGER_ID");
+    if (!flags.has("yes")) {
+      console.log(`HOLD: would send ONE DELETE for the session recorded in ledger entry ${id}. Re-run with --yes.`);
+      return 3;
+    }
+    const r = await cleanupSandbox({ ledgerPath, entryId: id, getApiKey: () => {
+      if (existsSync(".env")) process.loadEnvFile(".env");
+      return process.env.FIRECRAWL_API_KEY;
+    } });
+    console.log(r.detail);
+    return r.ok ? 0 : 4;
+  }
+  if (cmd === "sandbox-convert") {
+    const runDir = flags.get("run");
+    const out = flags.get("out");
+    if (typeof runDir !== "string" || typeof out !== "string") throw new UsageError("sandbox-convert needs --run RUN_DIR --out DIR");
+    const rec = readBoundedJson(join2(runDir, "sandbox.json"), 3e7, "sandbox record");
+    if (rec?.schema !== "website-to-figma/sandbox-run") throw new UsageError("not a sandbox run record");
+    const dir = createExclusiveDir(out, `sandbox-capture-${rec.runId}`);
+    const files = rec.states.map((s) => `state-${s.seq}.png`);
+    for (const f of files) writeExclusive(join2(dir, f), readBoundedFile(join2(runDir, f), SANDBOX.maxPngBytes));
+    const { capture, manifest } = sandboxToCapture(rec, files);
+    writeExclusive(join2(dir, "capture.json"), JSON.stringify(capture) + "\n");
+    writeExclusive(join2(dir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+    console.log(`Wrote ${dir}: capture.json + manifest.json (PRIVATE). Next: hifi --capture ${join2(dir, "capture.json")} --assets ${join2(dir, "manifest.json")} --out site-v2.json`);
+    return 0;
   }
   if (cmd === "diag-plan") {
     const out = flags.get("out");
@@ -43366,6 +43985,7 @@ var init_cli = __esm({
     init_acquire();
     init_diagnostic();
     init_imageInfo();
+    init_sandbox();
     init_jobs();
     init_adapt();
     init_build();
@@ -43431,6 +44051,15 @@ var init_cli = __esm({
       Guarded local download of an accepted diagnostic's 2 screenshot URLs only; HOLDS without --yes.
   website-to-figma diag-interpret --run RUN_DIR [--images MANIFEST]
       Offline interpretation of probes (and PNG crop sizes if downloaded).
+  website-to-figma sandbox-plan --out FILE
+      Offline: the fixed Browser Sandbox preview (viewport before navigation; 3 same-region states).
+  website-to-figma sandbox-run --preview FILE --out DIR --ledger FILE --operator-credits-per-request N
+        --operator-reported-balance N --confirm-existing-credits --confirm-no-topup --confirm-ttl-seconds [--yes]
+      PAID: create -> execute -> delete (always), one attempt each; HOLDS without --yes.
+  website-to-figma sandbox-cleanup --ledger FILE --id LEDGER_ID [--yes]
+      One explicit DELETE for a recorded session whose cleanup was not confirmed; HOLDS without --yes.
+  website-to-figma sandbox-convert --run RUN_DIR --out DIR
+      Offline: accepted sandbox run -> capture.json + manifest.json for hifi.
   website-to-figma validate <FILE>
       Validate a site map JSON file (schemaVersion 1 or 2).`;
     UsageError = class extends Error {

@@ -40,6 +40,9 @@ export interface LedgerEntry {
   continuationOf?: string;
   // provider-reported request credits exceeded the reservation
   overrun?: boolean;
+  // multi-operation lifecycles (browser sandbox): each operation's attempt and
+  // outcome, persisted before and after the operation
+  ops?: { op: string; at: string; status: "attempting" | "ok" | "failed" | "ambiguous"; detail: string }[];
 }
 export interface Ledger {
   schema: "website-to-figma/credit-ledger";
@@ -69,7 +72,8 @@ export function parseLedger(text: string): Ledger {
       e && typeof e.id === "string" && /^[A-Za-z0-9-]{1,64}$/.test(e.id) && !ids.has(e.id) && typeof e.at === "string" && typeof e.command === "string" && nonNegInt(e.reserved) &&
       (e.reportedCredits === null || nonNegInt(e.reportedCredits)) && STATUSES.includes(e.status) && typeof e.note === "string" &&
       (e.url === null || typeof e.url === "string") && (e.requestSha256 === null || (typeof e.requestSha256 === "string" && /^[0-9a-f]{64}$/.test(e.requestSha256))) &&
-      (e.resolvedCredits === undefined || e.resolvedCredits === null || nonNegInt(e.resolvedCredits)) && (e.overrun === undefined || typeof e.overrun === "boolean");
+      (e.resolvedCredits === undefined || e.resolvedCredits === null || nonNegInt(e.resolvedCredits)) && (e.overrun === undefined || typeof e.overrun === "boolean") &&
+      (e.ops === undefined || (Array.isArray(e.ops) && e.ops.length <= 20 && e.ops.every((o) => o && typeof o.op === "string" && typeof o.at === "string" && ["attempting", "ok", "failed", "ambiguous"].includes(o.status) && typeof o.detail === "string")));
     if (!ok) throw new LedgerError(`ledger: entries[${i}] is malformed`);
     ids.add(e.id);
   }
@@ -225,6 +229,20 @@ export function settleAttempt(path: string, id: string, status: "succeeded" | "f
     e.note = clean(note);
     writeAtomic(path, l);
     return e;
+  });
+}
+
+// Persist one lifecycle operation step on an open entry (before and after each op).
+export function recordOp(path: string, id: string, op: { op: string; status: "attempting" | "ok" | "failed" | "ambiguous"; detail: string }, now: () => Date = () => new Date()): void {
+  withLedgerLock(path, () => {
+    const l = readLedger(path);
+    const e = l.entries.find((x) => x.id === id);
+    if (!e) throw new LedgerError(`ledger entry ${id} not found`);
+    const ops = e.ops ?? [];
+    if (ops.length >= 20) throw new LedgerError(`ledger entry ${id} has too many operation records`);
+    ops.push({ op: clean(op.op, 40), at: now().toISOString(), status: op.status, detail: clean(op.detail) });
+    e.ops = ops;
+    writeAtomic(path, l);
   });
 }
 

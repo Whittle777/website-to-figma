@@ -23,6 +23,7 @@
   ],
   "exclude": [
     "test/statesPlan.test.ts",
-    "test/diagnostic.test.ts"
+    "test/diagnostic.test.ts",
+    "test/sandbox.test.ts"
   ]
 }

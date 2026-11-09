@@ -25,6 +25,7 @@ import { acquireImage, httpsTransport } from "./states/acquire";
 import { createHash } from "node:crypto";
 import { buildDiagnosticPreview, diagnosticPreviewSha256, executeDiagnostic, interpretDiagnostic, validateDiagnosticPreview, DIAG_URL, type DiagnosticRecord } from "./states/diagnostic";
 import { inspectImage } from "./shared/imageInfo";
+import { assertSandboxGates, buildSandboxPreview, cleanupSandbox, executeSandbox, sandboxPreviewSha256, sandboxToCapture, validateSandboxPreview, SANDBOX, SANDBOX_WORST_CASE_CREDITS, type SandboxRecord } from "./states/sandbox";
 import { planConnectorJobs, parseImageHashMap, DEFAULT_MAX_JOB_CHARS, JobPlanError } from "./connector/jobs";
 import { adaptTaggedReturns } from "./states/adapt";
 import { assertLimit } from "./normalize/build";
@@ -91,6 +92,15 @@ const USAGE = `Usage:
       Guarded local download of an accepted diagnostic's 2 screenshot URLs only; HOLDS without --yes.
   website-to-figma diag-interpret --run RUN_DIR [--images MANIFEST]
       Offline interpretation of probes (and PNG crop sizes if downloaded).
+  website-to-figma sandbox-plan --out FILE
+      Offline: the fixed Browser Sandbox preview (viewport before navigation; 3 same-region states).
+  website-to-figma sandbox-run --preview FILE --out DIR --ledger FILE --operator-credits-per-request N
+        --operator-reported-balance N --confirm-existing-credits --confirm-no-topup --confirm-ttl-seconds [--yes]
+      PAID: create -> execute -> delete (always), one attempt each; HOLDS without --yes.
+  website-to-figma sandbox-cleanup --ledger FILE --id LEDGER_ID [--yes]
+      One explicit DELETE for a recorded session whose cleanup was not confirmed; HOLDS without --yes.
+  website-to-figma sandbox-convert --run RUN_DIR --out DIR
+      Offline: accepted sandbox run -> capture.json + manifest.json for hifi.
   website-to-figma validate <FILE>
       Validate a site map JSON file (schemaVersion 1 or 2).`;
 
@@ -104,7 +114,7 @@ function parseFlags(args: string[]): { positional: string[]; flags: Map<string, 
   const fontMaps: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
-    if (a === "--yes" || a === "--help" || a === "-h" || a === "--no-map" || a === "--confirm-existing-credits" || a === "--confirm-no-topup" || a === "--acknowledge-synthetic-modifications") {
+    if (a === "--yes" || a === "--help" || a === "-h" || a === "--no-map" || a === "--confirm-existing-credits" || a === "--confirm-no-topup" || a === "--acknowledge-synthetic-modifications" || a === "--confirm-ttl-seconds") {
       flags.set(a.replace(/^-+/, ""), true);
     } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label" || a === "--font-map" || a === "--normalize-reference" || a === "--plan" || a === "--state-reactions" || a === "--preview" || a === "--ledger" || a === "--operator-credits-per-request" || a === "--reviewed-continuation" || a === "--run" || a === "--prior-credits" || a === "--note" || a === "--id" || a === "--credits" || a === "--doc" || a === "--renderer" || a === "--renderer-sha256" || a === "--max-job-chars" || a === "--image-hashes" || a === "--images") {
       const v = args[++i];
@@ -334,6 +344,92 @@ async function main(argv: string[]): Promise<number> {
     writeExclusive(join(dir, "manifest.json"), JSON.stringify({ schema: "website-to-figma/asset-manifest", schemaVersion: 1, assets }, null, 2) + "\n");
     console.log(`Wrote ${dir} (PRIVATE; ${assets.length} saved, ${failed} need manual download)`);
     return failed ? 4 : 0;
+  }
+
+  if (cmd === "sandbox-plan") {
+    const out = flags.get("out");
+    if (typeof out !== "string") throw new UsageError("sandbox-plan needs --out FILE");
+    const preview = buildSandboxPreview();
+    const path = resolve(out);
+    mkdirSync(dirname(path), { recursive: true });
+    writeExclusive(path, JSON.stringify(preview, null, 2) + "\n");
+    console.log(`Wrote ${path} (sandbox PREVIEW; NOTHING sent). Canonical preview sha256 ${sandboxPreviewSha256(preview)}`);
+    return 0;
+  }
+
+  if (cmd === "sandbox-run") {
+    const previewPath = flags.get("preview");
+    const out = flags.get("out");
+    if (typeof previewPath !== "string" || typeof out !== "string") throw new UsageError("sandbox-run needs --preview FILE --out DIR");
+    const validated = validateSandboxPreview(readBoundedJson(previewPath, 2_000_000, "sandbox preview"));
+    const optInt = (k: string) => (flags.get(k) === undefined ? undefined : intFlag(flags.get(k), k, 0));
+    const gates = {
+      operatorCreditsPerRequest: optInt("operator-credits-per-request"),
+      operatorReportedBalance: optInt("operator-reported-balance"),
+      confirmExistingCredits: flags.has("confirm-existing-credits"),
+      confirmNoTopup: flags.has("confirm-no-topup"),
+      confirmTtlSeconds: flags.has("confirm-ttl-seconds"),
+      ledgerPath: typeof flags.get("ledger") === "string" ? (flags.get("ledger") as string) : undefined,
+      reviewedContinuation: typeof flags.get("reviewed-continuation") === "string" ? (flags.get("reviewed-continuation") as string) : undefined,
+    };
+    const g = assertSandboxGates(gates);
+    console.log(`Exact sandbox lifecycle (preview sha256 ${validated.previewSha256}; request sha256 ${validated.requestSha256}), one attempt per operation, no replay:`);
+    console.log(`  create  POST /v2/browser { ttl ${SANDBOX.ttl}, activityTtl ${SANDBOX.activityTtl}, streamWebView false } (no profile; vendor defaults kept)`);
+    console.log(`  execute POST /v2/browser/{id}/execute { language node, timeout ${SANDBOX.executeTimeoutS}, fixed reviewed code } -> setViewportSize ${SANDBOX.viewport.width}x${SANDBOX.viewport.height} BEFORE goto ${SANDBOX.url}; 3 states of ${SANDBOX.scope}`);
+    console.log("  delete  DELETE /v2/browser/{id} (always, in finally)");
+    console.log(`Reservation ${g.reservation} (worst case for the full ttl: ${SANDBOX_WORST_CASE_CREDITS}; NOT a provider cap). Ledger committed ${g.committed}, remaining local allowance ${g.remaining}.`);
+    console.log("Stops: preview mismatch; missing gate; unresolved/duplicate/over-ceiling ledger; create ambiguous (no re-create) or failed; execute error/killed/truncated/partial/oversize; in-browser redirect/viewport/swiper refusal; delete not confirmed (blocking); missing creditsBilled (ambiguous).");
+    if (!flags.has("yes")) {
+      console.log("HOLD: nothing was sent and no key was read. Re-run with --yes only after origin review.");
+      return 3;
+    }
+    const runDir = createExclusiveDir(out, `sandbox-run-${sha256(`${validated.previewSha256}:${Date.now()}`).slice(0, 12)}`);
+    const rec: SandboxRecord = await executeSandbox({
+      validated,
+      gates,
+      getApiKey: () => {
+        if (existsSync(".env")) process.loadEnvFile(".env");
+        return process.env.FIRECRAWL_API_KEY;
+      },
+      savePng: (seq, bytes) => writeExclusive(join(runDir, `state-${seq}.png`), bytes),
+      log: (m) => console.error(m),
+    });
+    writeExclusive(join(runDir, "sandbox.json"), JSON.stringify(rec, null, 2) + "\n");
+    console.log(`Wrote ${runDir} (PRIVATE). status ${rec.status}${rec.reason ? ` (${rec.reason})` : ""}; creditsBilled ${rec.creditsBilled ?? "NOT reported"}`);
+    for (const w of rec.warnings) console.log(`  warning: ${w}`);
+    return rec.status === "accepted" ? 0 : 4;
+  }
+
+  if (cmd === "sandbox-cleanup") {
+    const ledgerPath = flags.get("ledger");
+    const id = flags.get("id");
+    if (typeof ledgerPath !== "string" || typeof id !== "string") throw new UsageError("sandbox-cleanup needs --ledger FILE --id LEDGER_ID");
+    if (!flags.has("yes")) {
+      console.log(`HOLD: would send ONE DELETE for the session recorded in ledger entry ${id}. Re-run with --yes.`);
+      return 3;
+    }
+    const r = await cleanupSandbox({ ledgerPath, entryId: id, getApiKey: () => {
+      if (existsSync(".env")) process.loadEnvFile(".env");
+      return process.env.FIRECRAWL_API_KEY;
+    } });
+    console.log(r.detail);
+    return r.ok ? 0 : 4;
+  }
+
+  if (cmd === "sandbox-convert") {
+    const runDir = flags.get("run");
+    const out = flags.get("out");
+    if (typeof runDir !== "string" || typeof out !== "string") throw new UsageError("sandbox-convert needs --run RUN_DIR --out DIR");
+    const rec = readBoundedJson(join(runDir, "sandbox.json"), 30_000_000, "sandbox record") as SandboxRecord;
+    if (rec?.schema !== "website-to-figma/sandbox-run") throw new UsageError("not a sandbox run record");
+    const dir = createExclusiveDir(out, `sandbox-capture-${rec.runId}`);
+    const files = rec.states.map((s) => `state-${s.seq}.png`);
+    for (const f of files) writeExclusive(join(dir, f), readBoundedFile(join(runDir, f), SANDBOX.maxPngBytes));
+    const { capture, manifest } = sandboxToCapture(rec, files);
+    writeExclusive(join(dir, "capture.json"), JSON.stringify(capture) + "\n");
+    writeExclusive(join(dir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+    console.log(`Wrote ${dir}: capture.json + manifest.json (PRIVATE). Next: hifi --capture ${join(dir, "capture.json")} --assets ${join(dir, "manifest.json")} --out site-v2.json`);
+    return 0;
   }
 
   if (cmd === "diag-plan") {

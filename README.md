@@ -572,6 +572,62 @@ website-to-figma diag-screenshots --run private-runs/diag-run-<id> --out private
 website-to-figma diag-interpret --run private-runs/diag-run-<id> [--images private-assets/.../manifest.json]
 ```
 
+### Browser Sandbox experiment (one disposable session; HOLD until origin review)
+
+This is one fixed, code-only Playwright run in a disposable Firecrawl Browser Sandbox. There is no
+profile, no prompts and no clicks. It uses the installed SDK 4.52's `browser`, `browserExecute`
+and `deleteBrowser` (`dist/index.js:1649-1700`):
+- **create.** `POST /v2/browser { ttl: 120, activityTtl: 60, streamWebView: false }`. Vendor and
+  account defaults are untouched.
+- **execute.** `POST /v2/browser/{id}/execute { language: "node", timeout: 90, code }`. The code is
+  fixed and reviewed, and takes no inputs. In order, it:
+  1. installs a request guard
+  2. calls `page.setViewportSize(1920×1080)` **before** `page.goto`
+  3. navigates to the exact `https://bootstrapmade.com/content/demo/Bootslander/` and refuses any
+     redirect chain
+  4. verifies `innerWidth`/`innerHeight`
+  5. stops autoplay on the one validated Swiper (a recorded modification)
+  6. captures three states of the **same region** (`#testimonials`): baseline, `slideNext(0)` and
+     `slideNext(0)`. Each is scrolled into view, waited on, region-measured and taken as a clipped
+     PNG.
+- **delete.** `DELETE /v2/browser/{id}`. It always runs, in `finally`, and its `creditsBilled` is
+  recorded.
+
+**Safeguards**
+- **One attempt each.** Every operation is attempted once (SDK `maxRetries: 1`; these methods have
+  no resume loop).
+- **Ledger.** The ledger entry is written before create, and each operation's attempt and outcome
+  are recorded.
+- **Blocking cases.** An ambiguous create or execute, or a cleanup that wasn't confirmed, leaves the
+  entry blocking. Nothing is re-created automatically. `sandbox-cleanup` sends exactly one DELETE
+  for a recorded session id.
+- **Reservation.** It must cover the full ttl: `ceil(120/60)` × 2 credits per session-minute = 4.
+  This is not a provider cap.
+- **Bounded output.** It is bounded before any decoding: 6.5M characters of execute output,
+  1.5 MB per PNG, at most 1920×1080, and a PNG header check.
+
+**Gaps (stated, not hidden)**
+- **ttl units.** The installed SDK doesn't state them. `--confirm-ttl-seconds` attests that the
+  official docs say seconds.
+- **Endpoint path.** The SDK uses `/v2/browser`; check it against the official docs.
+- **In-browser guard.** It aborts non-http(s) schemes, credentials, IP-literal and local hosts, and
+  off-target main-frame navigations. It cannot see hostnames that *resolve* to private addresses.
+  Whether route interception sees every redirect hop is unverified, so the redirect-chain check
+  detects but does not prevent a redirected request.
+- **`page` availability.** That `page` exists in a standalone sandbox `execute` is assumed from the
+  Interact docs. The code fails closed if it doesn't.
+- **Not run live.** Nothing has been run against a hosted session.
+
+```sh
+website-to-figma sandbox-plan --out sandbox.preview.json                 # offline
+website-to-figma sandbox-run --preview sandbox.preview.json --out private-runs --ledger ledger.json \
+  --operator-credits-per-request 4 --operator-reported-balance N --confirm-existing-credits \
+  --confirm-no-topup --confirm-ttl-seconds                                # HOLDS without --yes
+website-to-figma sandbox-convert --run private-runs/sandbox-run-<id> --out private-capture
+website-to-figma hifi --capture private-capture/sandbox-capture-<runId>/capture.json \
+  --assets private-capture/sandbox-capture-<runId>/manifest.json --out site-v2.json
+```
+
 ### State variant groups are validated
 
 A variant set is created only when every measured variant shows the **same target** as the
