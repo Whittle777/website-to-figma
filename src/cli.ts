@@ -401,10 +401,11 @@ async function main(argv: string[]): Promise<number> {
         return process.env.FIRECRAWL_API_KEY;
       },
       savePng: (seq, bytes) => writeExclusive(join(runDir, `state-${seq}.png`), bytes),
+      saveRaw: (text) => writeExclusive(join(runDir, "execute-raw.json"), text + "\n"),
       log: (m) => console.error(m),
     });
     writeExclusive(join(runDir, "sandbox.json"), JSON.stringify(rec, null, 2) + "\n");
-    console.log(`Wrote ${runDir} (PRIVATE). status ${rec.status}${rec.reason ? ` (${rec.reason})` : ""}; charge ${rec.chargeStatus}; response creditsBilled ${rec.creditsBilled ?? "absent"} (undocumented, informational)${rec.incomplete ? "; capture INCOMPLETE" : ""}`);
+    console.log(`Wrote ${runDir} (PRIVATE). status ${rec.status}${rec.reason ? ` (${rec.reason})` : ""}; charge ${rec.chargeStatus}; response creditsBilled ${rec.creditsBilled ?? "absent"} (undocumented, informational)${rec.incomplete ? "; capture INCOMPLETE" : rec.incomplete === null ? "; completeness NOT OBSERVED" : ""}${rec.stage ? `; in-browser stage ${rec.stage}` : ""}${rec.rawExecute?.saved ? "; raw execute provenance: execute-raw.json" : ""}`);
     for (const w of rec.warnings) console.log(`  warning: ${w}`);
     return rec.status === "accepted" ? 0 : 4;
   }

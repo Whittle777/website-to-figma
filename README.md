@@ -633,10 +633,25 @@ reach the Browser through `page.context().browser()`, and it is never navigated.
    capture `incomplete: true` (missing, never substituted)
 6. sets `setViewportSize(1920x1080)` on that owned page **before** `goto`
 7. stops the run if a service worker controls the page, and verifies the viewport
-8. stops autoplay on the one validated Swiper (a recorded modification)
+8. waits (bounded: `page.waitForFunction`, 10 s, polling 100 ms) until the page's own Swiper is bound
+   to the source-verified `#testimonials .swiper.init-swiper`. If it never binds, the run fails
+   closed with read-only diagnostics, and the cause is not guessed. Then it stops autoplay on that
+   one Swiper (a recorded modification)
 9. captures **all three states on that same owned page**
 
 The owned context is closed in `finally`.
+
+**Diagnostics.** If the `W2F_RESULT` line parses, on success or on failure, the run record keeps
+what the browser observed:
+- the stage reached when it stopped, and the main fetch and navigation
+- viewport probe and Swiper readiness snapshot
+- blocked and served requests (bounded lists plus totals) and the `incomplete` flag
+- page and console errors, the owned-context state and any modifications
+
+Anything not observed is `null`, never a `false` or `[]` default: for example, `blocked` and
+`incomplete` are only evidence when the guard reports `routeInstalled: true`. The private run
+directory also gets `execute-raw.json`, a copy of the raw execute response capped at 200 KB, with
+PNG base64 elided and the key redacted.
 
 **Cleanup.** Once any valid session id is known, exactly **one** DELETE is sent in `finally`. The id
 counts even when create returned `success !== true`, or came in an HTTP error body. Ledger write

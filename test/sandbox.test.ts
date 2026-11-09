@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { copyObserved, rawExecuteProvenance, RAW_EXECUTE_CAP } from "../src/states/sandbox";
 import { buildSandboxPreview, createSandboxClient, executeSandbox, runSandboxLifecycle, SandboxHardHold, SANDBOX_UNSUPPORTED, parseSandboxOutput, sandboxPreviewSha256, sandboxToCapture, validateSandboxPreview, cleanupSandbox, SANDBOX, SANDBOX_CODE, SANDBOX_URL, SANDBOX_WORST_CASE_CREDITS, type SandboxClient } from "../src/states/sandbox";
 import { StateRunPolicyError } from "../src/states/execute";
 import { createInteractClient } from "../src/states/sandboxTransport";
@@ -42,7 +43,7 @@ const UPSTREAM: Record<string, { status: number; location?: string }> = {
   "https://bootstrapmade.com/content/vendors/redirector.js": { status: 302, location: "https://evil.example/payload.js" },
   "https://bootstrapmade.com/content/vendors/moved.js": { status: 301, location: "/content/vendors/moved-here.js" },
 };
-function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: boolean; main3xx?: boolean; serviceWorker?: boolean; popup?: boolean; noBrowser?: boolean; newContextThrows?: boolean; noRouteWebSocket?: boolean; subresources?: string[] } = {}) {
+function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: boolean; main3xx?: boolean; serviceWorker?: boolean; popup?: boolean; noBrowser?: boolean; newContextThrows?: boolean; noRouteWebSocket?: boolean; subresources?: string[]; swiperBindAfterMs?: number; pageError?: string } = {}) {
   const calls: string[] = [];
   const html = `<!doctype html><html><body><section id="hero">Hero</section><section id="testimonials"><div class="swiper init-swiper"><div class="swiper-wrapper"><div class="swiper-slide"><h3 id="slide">Slide 0</h3></div></div></div></section></body></html>`;
   const d = new JSDOM(html, { runScripts: "outside-only", virtualConsole: new VirtualConsole(), url: SANDBOX_URL });
@@ -71,7 +72,11 @@ function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: 
   };
   const el = w.document.querySelector(".swiper");
   let idx = 0;
-  if (!o.noSwiper) el.swiper = { el, activeIndex: 0, realIndex: 0, destroyed: false, enabled: true, autoplay: { running: true, stop() { this.running = false; calls.push("autoplay.stop"); } }, slideNext(speed: number) { calls.push(`slideNext:${speed}`); idx++; this.activeIndex = idx; this.realIndex = idx; w.document.getElementById("slide").textContent = `Slide ${idx}`; } };
+  const sw: any = o.noSwiper ? null : { el, activeIndex: 0, realIndex: 0, destroyed: false, enabled: true, autoplay: { running: true, stop() { this.running = false; calls.push("autoplay.stop"); } }, slideNext(speed: number) { calls.push(`slideNext:${speed}`); idx++; this.activeIndex = idx; this.realIndex = idx; w.document.getElementById("slide").textContent = `Slide ${idx}`; } };
+  // the page's own init binds el.swiper immediately, after a delay (async init), or never (noSwiper)
+  const bindAt = o.swiperBindAfterMs ?? 0;
+  if (sw && bindAt === 0) el.swiper = sw;
+  const pageEvents: Record<string, (x: any) => void> = {};
   if (o.serviceWorker) w.navigator.serviceWorker = { controller: {} };
   let routeHandler: ((r: any) => Promise<unknown> | unknown) | null = null;
   let pageHandler: ((p: any) => void) | null = null;
@@ -156,6 +161,7 @@ function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: 
     goto: async (url: string) => {
       calls.push(`goto:${url}`);
       if ((await route(url, true)) === "abort") throw new Error("net::ERR_FAILED (main document aborted by route)");
+      if (o.pageError) pageEvents.pageerror?.(new Error(o.pageError));
       if (o.subresources) {
         for (const sub of o.subresources) await route(sub, false);
         return { status: () => 200, request: () => ({ url: () => url, redirectedFrom: () => null }) };
@@ -183,6 +189,19 @@ function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: 
     },
     url: () => SANDBOX_URL,
     mainFrame: () => mainFrame,
+    on: (ev: string, h: (x: any) => void) => {
+      pageEvents[ev] = h;
+    },
+    // like Playwright: the predicate SOURCE is evaluated in the page, polled until truthy or timeout
+    // (virtual clock); timeout error text as Playwright reports it
+    waitForFunction: async (fn: (a: unknown) => unknown, arg: unknown, opts: { timeout: number; polling: number }) => {
+      calls.push(`waitForFunction:timeout=${opts.timeout}:polling=${opts.polling}`);
+      for (let t = 0; t <= opts.timeout; t += opts.polling) {
+        if (sw && bindAt > 0 && t >= bindAt) el.swiper = sw;
+        if (w.eval(`(${fn.toString()})`)(JSON.parse(JSON.stringify(arg ?? null)))) return { t };
+      }
+      throw new Error(`page.waitForFunction: Timeout ${opts.timeout}ms exceeded.`);
+    },
     waitForTimeout: async () => {},
     // like Playwright: only the function SOURCE crosses into the page (no closure/outer helpers)
     evaluate: async (fn: (a: unknown) => unknown, arg: unknown) => w.eval(`(${fn.toString()})`)(JSON.parse(JSON.stringify(arg ?? null))),
@@ -222,7 +241,7 @@ describe("fixed sandbox preview", () => {
     expect(p.hardHold).toEqual([]);
     expect(SANDBOX_UNSUPPORTED).toEqual([]);
     expect(code).toContain(JSON.stringify(SANDBOX_URL));
-    for (const banned of ["realViewport", "profile", ".click(", ".fill(", "keyboard", ".type(", "prompt", "addInitScript", "exposeFunction", "require(", "process.", "connectOverCDP"]) expect(code).not.toContain(banned);
+    for (const banned of ["realViewport", "profile", ".click(", ".fill(", "keyboard", "own.type(", "page.type(", "prompt", "addInitScript", "exposeFunction", "require(", "process.", "connectOverCDP"]) expect(code).not.toContain(banned);
     // the only fetch capability is route.fetch of the exact main document; exactly one owned context and page
     expect(code.match(/fetch\(/g)).toHaveLength(1);
     expect(code.match(/newContext\(/g)).toHaveLength(1);
@@ -296,7 +315,7 @@ describe("the fixed page code against a fake Playwright page", () => {
       [{ noBrowser: true }, /Browser object unavailable/],
       [{ newContextThrows: true }, /newContext not permitted/],
       [{ ignoreViewport: true }, /viewport not applied: 1920x100000/],
-      [{ noSwiper: true }, /swiper refused: no Swiper instance bound/],
+      [{ noSwiper: true }, /at stage swiper-ready: swiper not bound within 10000 ms/],
       [{ noRouteWebSocket: true }, /context.routeWebSocket unavailable/],
     ] as const) {
       const parsed = parseSandboxOutput(await runCode(fakePage(o)));
@@ -773,4 +792,117 @@ describe("retained restrictions and CLI HOLD", () => {
     expect(old.code).toBe(3);
     expect(old.out).toMatch(/--project-remaining-credits N/);
   }, 60_000);
+});
+
+describe("Swiper readiness (bounded page.waitForFunction on the source-verified selector)", () => {
+  it("waits for the page's own async Swiper init, then proceeds on the same page (no extra mechanism)", async () => {
+    const p = fakePage({ swiperBindAfterMs: 3000 });
+    const parsed = parseSandboxOutput(await runCode(p));
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const r = parsed.result as any;
+    expect(p.calls).toContain(`waitForFunction:timeout=${SANDBOX.swiperReadyMs}:polling=100`);
+    expect(SANDBOX.swiperReadyMs).toBe(10_000);
+    expect(SANDBOX.swiper).toBe("#testimonials .swiper.init-swiper"); // unchanged (source-verified)
+    expect(r.swiperReady).toMatchObject({ ready: true, timeoutMs: 10_000, diag: { matches: 1, hasSwiperProp: true } });
+    expect(r.stage).toBe("done");
+    // readiness wait happens after settle and before the autoplay stop / first state
+    const iw = p.calls.findIndex((c) => c.startsWith("waitForFunction"));
+    expect(iw).toBeGreaterThan(p.calls.findIndex((c) => c.startsWith("goto:")));
+    expect(iw).toBeLessThan(p.calls.indexOf("autoplay.stop"));
+  });
+  it("never bound: fails closed at the bounded timeout WITH read-only diagnostics; no state, no screenshot, context closed", async () => {
+    const p = fakePage({ noSwiper: true, pageError: "Swiper is not defined" });
+    const parsed = parseSandboxOutput(await runCode(p));
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) return;
+    expect(parsed.status).toBe("rejected");
+    expect(parsed.reason).toBe("in-browser step failed at stage swiper-ready: swiper not bound within 10000 ms (see swiperReady.diag)");
+    const r = parsed.result as any;
+    expect(r.swiperReady).toMatchObject({ ready: false, timeoutMs: 10_000, error: "page.waitForFunction: Timeout 10000ms exceeded." });
+    expect(r.swiperReady.diag).toMatchObject({ matches: 1, hasSwiperProp: false, initializedClass: false, windowSwiperType: "undefined", slides: 1 });
+    expect(r.pageErrors).toEqual(["Swiper is not defined"]);
+    expect(r.routeInstalled).toBe(true);
+    expect(r.served.map((x: any) => x.path)).toContain("/content/vendors/aos/aos.js");
+    expect(p.calls.some((c) => c.startsWith("slideNext") || c.startsWith("screenshot") || c === "autoplay.stop")).toBe(false);
+    expect(p.calls.at(-1)).toBe("context.close");
+  });
+});
+
+describe("failure diagnostics are preserved (never discarded, never defaulted)", () => {
+  const w2f = (o: Record<string, unknown>) => ({ success: true, exitCode: 0, killed: false, stdout: "some log\nW2F_RESULT " + JSON.stringify({ w2f: "sandbox", v: 1, states: [], ...o }) });
+  const lifecycle = async (execute: unknown) => {
+    const s = setup();
+    const events: string[] = [];
+    const raws: string[] = [];
+    const rec = await runSandboxLifecycle({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async () => client(events, s.ledgerPath, { execute }), saveRaw: (t) => raws.push(t) });
+    return { rec, events, raws, s };
+  };
+  it("synthetic W2F_RESULT with error + blocked/incomplete/env/autoplay: all observed fields kept on reject; errors[] primary", async () => {
+    const { rec, events, raws } = await lifecycle(
+      w2f({ error: "swiper refused: no Swiper instance bound to this element", stage: "autoplay", routeInstalled: true, incomplete: true, blocked: [{ origin: "https://fonts.googleapis.com", why: "third-party-host" }], blockedTotal: 7, served: [{ path: "/content/vendors/swiper/swiper-bundle.min.js", status: 200, nav: false }], servedTotal: 12, env: { innerWidth: 1920, innerHeight: 1080 }, autoplay: { valid: false, reason: "no Swiper instance bound to this element" }, mainFetch: { status: 200, url: SANDBOX_URL }, nav: { status: 200, finalUrl: SANDBOX_URL, chain: [SANDBOX_URL] }, ownedContext: { serviceWorkers: "block" }, ownedContextClosed: true, serviceWorker: false, modifications: [], pageErrors: ["TypeError: x"], consoleErrors: [], popupsClosed: 0, swiperReady: { ready: true } }),
+    );
+    expect(rec.status).toBe("rejected");
+    expect(rec).toMatchObject({
+      observation: "w2f-result",
+      stage: "autoplay",
+      routeInstalled: true,
+      incomplete: true,
+      blocked: [{ origin: "https://fonts.googleapis.com", why: "third-party-host" }],
+      blockedTotal: 7,
+      servedTotal: 12,
+      env: { innerWidth: 1920, innerHeight: 1080 },
+      autoplay: { valid: false, reason: "no Swiper instance bound to this element" },
+      mainFetch: { status: 200 },
+      ownedContext: { serviceWorkers: "block" },
+      ownedContextClosed: true,
+      serviceWorker: false,
+      pageErrors: ["TypeError: x"],
+      swiperReady: { ready: true },
+    });
+    expect(rec.errors[0]).toEqual({ stage: "execute", kind: "primary", detail: "in-browser step failed at stage autoplay: swiper refused: no Swiper instance bound to this element" });
+    expect(rec.states).toEqual([]);
+    expect(events.filter((e) => e.startsWith("delete"))).toHaveLength(1);
+    expect(raws).toHaveLength(1);
+    expect(rec.rawExecute).toEqual({ saved: true, chars: raws[0]!.length });
+    expect(raws[0]).toContain("swiper refused: no Swiper instance bound");
+  });
+  it("the REAL page code's failure output (never-bound Swiper) is preserved end to end", async () => {
+    const { rec } = await lifecycle(await runCode(fakePage({ noSwiper: true, pageError: "Swiper is not defined" })));
+    expect(rec).toMatchObject({ status: "rejected", stage: "swiper-ready", routeInstalled: true, incomplete: true, swiperReady: { ready: false, diag: { hasSwiperProp: false } }, pageErrors: ["Swiper is not defined"] });
+    expect(rec.blocked!.length).toBeGreaterThan(0);
+    expect(rec.env).toMatchObject({ innerWidth: 1920, innerHeight: 1080 });
+  });
+  it("defaults are NOT written as observations: guard never installed, legacy result shape, no W2F_RESULT, execute transport error", async () => {
+    // newContext failed: the page's own defaults (incomplete false, blocked []) are not evidence
+    const a = await lifecycle(w2f({ error: "Browser object unavailable", stage: "start", routeInstalled: false, incomplete: false, blocked: [], served: [] }));
+    expect(a.rec).toMatchObject({ status: "rejected", observation: "w2f-result", stage: "start", routeInstalled: false, incomplete: null, blocked: null, served: null, blockedTotal: null, env: null, autoplay: null });
+    // legacy shape (no routeInstalled), like the consumed run's output: unknown, not "complete"
+    const b = await lifecycle(w2f({ error: "swiper refused: no Swiper instance bound to this element", incomplete: false, blocked: [] }));
+    expect(b.rec).toMatchObject({ routeInstalled: null, incomplete: null, blocked: null, stage: null });
+    // no parsable result: nothing observed; raw provenance still saved
+    const c = await lifecycle({ success: true, exitCode: 0, stdout: "garbage only" });
+    expect(c.rec).toMatchObject({ status: "ambiguous", observation: "none", incomplete: null, blocked: null, popupsClosed: null, modifications: null });
+    expect(c.raws[0]).toContain("garbage only");
+    // execute transport error: no response, no raw, nothing observed
+    const d = await lifecycle(new Error("socket hang up"));
+    expect(d.rec).toMatchObject({ observation: "none", rawExecute: null, incomplete: null, blocked: null });
+    expect(d.raws).toEqual([]);
+  });
+  it("raw provenance is size-capped, elides PNG base64 and redacts the key", () => {
+    const png = "A".repeat(500_000);
+    const raw = rawExecuteProvenance({ success: true, exitCode: 0, stdout: `${KEY} W2F_RESULT {"states":[{"png":"${png}"}]}`, stderr: "e".repeat(40_000), weird: 1 }, [KEY]);
+    expect(raw.length).toBeLessThanOrEqual(RAW_EXECUTE_CAP);
+    expect(raw).not.toContain(KEY);
+    expect(raw).toContain("<elided 500000 base64 chars>");
+    expect(raw).not.toContain("A".repeat(100));
+    const j = JSON.parse(raw);
+    expect(j).toMatchObject({ success: true, exitCode: 0, stderrChars: 40_000, otherKeys: ["weird"] });
+    expect(j.stderr).toMatch(/\.\.\.\[truncated 24000 chars\]$/);
+  });
+  it("copyObserved ignores malformed types (no coercion into observations)", () => {
+    const rec = { observation: "none" } as any;
+    copyObserved(rec, { routeInstalled: "yes", incomplete: "true", blocked: "x", env: 5, pageErrors: [1, "ok"] });
+    expect(rec).toMatchObject({ routeInstalled: null, incomplete: null, blocked: null, env: null, pageErrors: ["ok"] });
+  });
 });

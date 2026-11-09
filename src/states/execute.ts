@@ -80,9 +80,13 @@ export function canonicalJson(v: unknown): string {
 export const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 
 export function redact(text: string, secrets: string[]): string {
+  return redactAll(text, secrets).slice(0, 500);
+}
+// Same redaction without the 500-char display cap (callers apply their own size cap).
+export function redactAll(text: string, secrets: string[]): string {
   let out = text;
   for (const s of secrets) if (s && s.length >= 4) out = out.split(s).join("[REDACTED]");
-  return out.replace(/\bfc-[A-Za-z0-9_-]{8,}\b/g, "[REDACTED]").replace(/(authorization|bearer)\s*[:=]?\s*\S+/gi, "$1 [REDACTED]").slice(0, 500);
+  return out.replace(/\bfc-[A-Za-z0-9_-]{8,}\b/g, "[REDACTED]").replace(/(authorization|bearer)\s*[:=]?\s*\S+/gi, "$1 [REDACTED]");
 }
 
 // Exactly these keys: no vendor/account safety setting is ever sent (see plan.ts).

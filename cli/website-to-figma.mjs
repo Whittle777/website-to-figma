@@ -11929,7 +11929,7 @@ function findKey(obj, key) {
   }
   return null;
 }
-function merge(...objs) {
+function merge(...objs2) {
   const { caseless, skipUndefined } = isContextDefined(this) && this || {};
   const result = {};
   const assignValue = (val, key) => {
@@ -11948,8 +11948,8 @@ function merge(...objs) {
       result[targetKey] = val;
     }
   };
-  for (let i = 0, l = objs.length; i < l; i++) {
-    const source = objs[i];
+  for (let i = 0, l = objs2.length; i < l; i++) {
+    const source = objs2[i];
     if (!source || isBuffer(source)) {
       continue;
     }
@@ -41548,9 +41548,12 @@ function canonicalJson(v) {
   return JSON.stringify(v);
 }
 function redact(text, secrets) {
+  return redactAll(text, secrets).slice(0, 500);
+}
+function redactAll(text, secrets) {
   let out = text;
   for (const s of secrets) if (s && s.length >= 4) out = out.split(s).join("[REDACTED]");
-  return out.replace(/\bfc-[A-Za-z0-9_-]{8,}\b/g, "[REDACTED]").replace(/(authorization|bearer)\s*[:=]?\s*\S+/gi, "$1 [REDACTED]").slice(0, 500);
+  return out.replace(/\bfc-[A-Za-z0-9_-]{8,}\b/g, "[REDACTED]").replace(/(authorization|bearer)\s*[:=]?\s*\S+/gi, "$1 [REDACTED]");
 }
 function validateForExecution(planJson, previewJson) {
   const plan = parseStatePlan(planJson);
@@ -42451,6 +42454,8 @@ function buildSandboxPreview() {
       "`page` in execute is used only to reach the Browser; the Firecrawl examples use it without defining it, but the docs do not state it; missing => fail closed.",
       "Every request (main document and subresources) passes ONE structural policy: http/https (data:/blob: only for subresources), no credentials, no non-default port, no IP-literal or local-name host, exact hostname bootstrapmade.com (exact raw URL for the main navigation). Allowed http(s) requests are made once by route.fetch({ maxRedirects: 0, maxRetries: 0 }); any 3xx is aborted before anything is served, so no redirect hop is requested (an allowed asset behind a redirect is missing, not followed). route.continue() is used only for data:/blob:. WebSockets are refused via context.routeWebSocket (missing => fail closed). Any aborted subresource marks the capture incomplete.",
       "route.fetch requests are made by Playwright inside the hosted sandbox with the owned context's cookies, not by this tool; no DNS lookups are made by the policy and the hosted DNS exception is not expanded. Remote-browser egress is the provider's (docs/security, docs/features/threat-protection); this tool's local DNS guard covers only its own fetches.",
+      "Swiper readiness: after goto + settle, page.waitForFunction (polling 100 ms, timeout 10 s) waits until the page's own Swiper instance is bound to the source-verified element (#testimonials .swiper.init-swiper); if it never binds the run fails closed with read-only diagnostics (stage, served/blocked requests, page errors, Swiper/script snapshot). Why an earlier run found it unbound is NOT determined.",
+      "Failure diagnostics: whenever W2F_RESULT parses (success or failure) the observed browser fields are kept in the run record; unobserved fields are null (never false/[] defaults). A size-capped, PNG-elided, key-redacted copy of the raw execute output is saved privately as execute-raw.json.",
       "Swiper states rely on the known page's semantics; method names/selectors are not a safety guarantee; no side-effect-free promise. slideNext(0) states are not observed animation completions.",
       "creditsBilled is not in the current docs: informational only; the charge is reconciled from a documented account source."
     ]
@@ -42506,18 +42511,18 @@ function parseSandboxOutput(resp) {
     return { ok: false, status: "ambiguous", reason: "W2F_RESULT is not valid JSON (partial output?)" };
   }
   if (!isObj8(result) || result.w2f !== "sandbox" || result.v !== 1) return { ok: false, status: "ambiguous", reason: "W2F_RESULT has the wrong schema" };
-  if (typeof result.error === "string" && result.error) return { ok: false, status: "rejected", reason: `in-browser step failed: ${result.error.slice(0, 200)}` };
+  if (typeof result.error === "string" && result.error) return { ok: false, status: "rejected", reason: `in-browser step failed${typeof result.stage === "string" ? ` at stage ${result.stage.slice(0, 40)}` : ""}: ${result.error.slice(0, 200)}`, result };
   const states = Array.isArray(result.states) ? result.states : [];
-  if (states.length !== SANDBOX.states.length) return { ok: false, status: "ambiguous", reason: `expected ${SANDBOX.states.length} states, got ${states.length}` };
+  if (states.length !== SANDBOX.states.length) return { ok: false, status: "ambiguous", reason: `expected ${SANDBOX.states.length} states, got ${states.length}`, result };
   const pngs = [];
   const maxB64 = Math.ceil(SANDBOX.maxPngBytes / 3) * 4;
   for (const [i, s] of states.entries()) {
-    if (!isObj8(s) || s.seq !== i || s.name !== SANDBOX.states[i] || typeof s.png !== "string") return { ok: false, status: "ambiguous", reason: `state ${i} malformed` };
-    if (s.png.length > maxB64 || s.png.length % 4 !== 0 || !B642.test(s.png)) return { ok: false, status: "rejected", reason: `state ${i} PNG base64 invalid or over ${SANDBOX.maxPngBytes} bytes` };
+    if (!isObj8(s) || s.seq !== i || s.name !== SANDBOX.states[i] || typeof s.png !== "string") return { ok: false, status: "ambiguous", reason: `state ${i} malformed`, result };
+    if (s.png.length > maxB64 || s.png.length % 4 !== 0 || !B642.test(s.png)) return { ok: false, status: "rejected", reason: `state ${i} PNG base64 invalid or over ${SANDBOX.maxPngBytes} bytes`, result };
     const bytes = new Uint8Array(Buffer.from(s.png, "base64"));
     const info = inspectImage(bytes);
-    if (!info || info.mime !== "image/png") return { ok: false, status: "rejected", reason: `state ${i} is not a PNG` };
-    if (info.width < 1 || info.height < 1 || info.width > SANDBOX.viewport.width || info.height > SANDBOX.viewport.height || info.width * info.height > SANDBOX.maxPngPixels) return { ok: false, status: "rejected", reason: `state ${i} PNG ${info.width}x${info.height} outside the pixel caps` };
+    if (!info || info.mime !== "image/png") return { ok: false, status: "rejected", reason: `state ${i} is not a PNG`, result };
+    if (info.width < 1 || info.height < 1 || info.width > SANDBOX.viewport.width || info.height > SANDBOX.viewport.height || info.width * info.height > SANDBOX.maxPngPixels) return { ok: false, status: "rejected", reason: `state ${i} PNG ${info.width}x${info.height} outside the pixel caps`, result };
     pngs.push(bytes);
   }
   const regionOf = (s) => isObj8(s.measured) && isObj8(s.measured.region) ? s.measured.region : null;
@@ -42527,17 +42532,54 @@ function parseSandboxOutput(resp) {
     const reg = regionOf(s);
     const t = targetOf(s);
     const clip = isObj8(s.clip) ? s.clip : null;
-    if (!reg || !t || t.selector !== SANDBOX.scope || !clip) return { ok: false, status: "ambiguous", reason: `state ${i} lacks its target measurement or clip` };
+    if (!reg || !t || t.selector !== SANDBOX.scope || !clip) return { ok: false, status: "ambiguous", reason: `state ${i} lacks its target measurement or clip`, result };
     const n = (v) => typeof v === "number" && Number.isFinite(v) ? v : NaN;
-    if (r0 && (Math.abs(n(reg.x) - n(r0.x)) > 2 || Math.abs(n(reg.w) - n(r0.w)) > 2 || Math.abs(n(reg.y) - n(r0.y)) > 100)) return { ok: false, status: "rejected", reason: `state ${i} measured a different region geometry` };
+    if (r0 && (Math.abs(n(reg.x) - n(r0.x)) > 2 || Math.abs(n(reg.w) - n(r0.w)) > 2 || Math.abs(n(reg.y) - n(r0.y)) > 100)) return { ok: false, status: "rejected", reason: `state ${i} measured a different region geometry`, result };
     const top = Math.max(0, n(t.viewTop));
-    if (Math.abs(n(clip.y) - top) > 1 || n(clip.height) > n(t.viewBottom) - top + 1 || n(clip.width) !== SANDBOX.viewport.width) return { ok: false, status: "rejected", reason: `state ${i} clip is not the measured target` };
+    if (Math.abs(n(clip.y) - top) > 1 || n(clip.height) > n(t.viewBottom) - top + 1 || n(clip.width) !== SANDBOX.viewport.width) return { ok: false, status: "rejected", reason: `state ${i} clip is not the measured target`, result };
   }
   return { ok: true, result, pngs };
 }
 async function executeSandbox(o) {
   if (SANDBOX_UNSUPPORTED.length) throw new SandboxHardHold(`HARD HOLD (no override): ${SANDBOX_UNSUPPORTED.join("; ")}. Nothing was sent, no key was read, no ledger entry was written.`);
   return runSandboxLifecycle(o);
+}
+function copyObserved(rec, r) {
+  rec.observation = "w2f-result";
+  rec.stage = typeof r.stage === "string" ? r.stage.slice(0, 40) : null;
+  rec.routeInstalled = typeof r.routeInstalled === "boolean" ? r.routeInstalled : null;
+  const guard = rec.routeInstalled === true;
+  rec.incomplete = guard && typeof r.incomplete === "boolean" ? r.incomplete : null;
+  rec.blocked = guard ? objs(r.blocked, 50) : null;
+  rec.blockedTotal = guard ? num2(r.blockedTotal) : null;
+  rec.served = guard ? objs(r.served, 60) : null;
+  rec.servedTotal = guard ? num2(r.servedTotal) : null;
+  rec.viewportSet = isObj8(r.viewportSet) ? r.viewportSet : null;
+  rec.mainFetch = isObj8(r.mainFetch) ? r.mainFetch : null;
+  rec.ownedContext = isObj8(r.ownedContext) ? r.ownedContext : null;
+  rec.ownedContextClosed = typeof r.ownedContextClosed === "boolean" ? r.ownedContextClosed : null;
+  rec.popupsClosed = num2(r.popupsClosed);
+  rec.modifications = strs(r.modifications, 10, 200);
+  rec.nav = isObj8(r.nav) ? r.nav : null;
+  rec.env = isObj8(r.env) ? r.env : null;
+  rec.swiperReady = isObj8(r.swiperReady) ? r.swiperReady : null;
+  rec.autoplay = isObj8(r.autoplay) ? r.autoplay : null;
+  rec.serviceWorker = typeof r.serviceWorker === "boolean" ? r.serviceWorker : null;
+  rec.pageErrors = strs(r.pageErrors, 10, 300);
+  rec.consoleErrors = strs(r.consoleErrors, 10, 300);
+}
+function rawExecuteProvenance(resp, secrets) {
+  const o = { note: "PRIVATE raw execute provenance: PNG base64 elided, fields size-capped, secrets redacted" };
+  const cap = (t, n) => t.length > n ? `${t.slice(0, n)}...[truncated ${t.length - n} chars]` : t;
+  const elide = (t) => t.replace(/"png":"([A-Za-z0-9+/=]{64,})"/g, (_m, b) => `"png":"<elided ${b.length} base64 chars>"`);
+  if (!isObj8(resp)) o.type = resp === null ? "null" : typeof resp;
+  else {
+    for (const k of ["success", "exitCode", "killed", "truncated"]) if (k in resp && (typeof resp[k] !== "object" || resp[k] === null)) o[k] = resp[k];
+    for (const k of ["error", "stderr"]) if (typeof resp[k] === "string") o[`${k}Chars`] = resp[k].length, o[k] = cap(resp[k], 16e3);
+    for (const k of ["stdout", "result", "output"]) if (typeof resp[k] === "string") o[`${k}Chars`] = resp[k].length, o[k] = cap(elide(resp[k]), 5e4);
+    o.otherKeys = Object.keys(resp).filter((k) => !["success", "exitCode", "killed", "truncated", "error", "stderr", "stdout", "result", "output"].includes(k)).slice(0, 20).map((k) => k.slice(0, 40));
+  }
+  return redactAll(JSON.stringify(o, null, 2), secrets).slice(0, RAW_EXECUTE_CAP);
 }
 async function runSandboxLifecycle(o) {
   const now = o.now ?? (() => /* @__PURE__ */ new Date());
@@ -42560,18 +42602,29 @@ async function runSandboxLifecycle(o) {
     creditsBilled: null,
     sessionDurationMs: null,
     chargeStatus: "not-settled",
-    incomplete: false,
+    incomplete: null,
     reservation: gate.reservation,
     viewportSet: null,
     ownedContext: null,
     ownedContextClosed: null,
     mainFetch: null,
-    popupsClosed: 0,
-    modifications: [],
+    popupsClosed: null,
+    modifications: null,
     nav: null,
     env: null,
     autoplay: null,
-    blocked: [],
+    blocked: null,
+    observation: "none",
+    stage: null,
+    routeInstalled: null,
+    blockedTotal: null,
+    served: null,
+    servedTotal: null,
+    pageErrors: null,
+    consoleErrors: null,
+    swiperReady: null,
+    serviceWorker: null,
+    rawExecute: null,
     states: [],
     errors: [],
     warnings: []
@@ -42693,7 +42746,16 @@ async function runSandboxLifecycle(o) {
       primary("execute", d);
       return rec;
     }
+    try {
+      const raw = rawExecuteProvenance(resp, secrets);
+      o.saveRaw?.(raw);
+      rec.rawExecute = { saved: !!o.saveRaw, chars: raw.length };
+    } catch (err) {
+      rec.rawExecute = { saved: false, chars: null };
+      rec.warnings.push(`raw execute provenance not saved: ${msg(err)}`);
+    }
     const parsed = parseSandboxOutput(resp);
+    if (parsed.result) copyObserved(rec, parsed.result);
     if (!parsed.ok) {
       rec.ops.push({ op: "execute", attempts: 1, status: parsed.status === "ambiguous" ? "ambiguous" : "ok", detail: parsed.reason });
       op("execute", parsed.status === "ambiguous" ? "ambiguous" : "ok", parsed.reason);
@@ -42704,19 +42766,8 @@ async function runSandboxLifecycle(o) {
     rec.ops.push({ op: "execute", attempts: 1, status: "ok", detail: "W2F_RESULT parsed; 3 states" });
     op("execute", "ok", "W2F_RESULT parsed; 3 states");
     const r = parsed.result;
-    rec.viewportSet = isObj8(r.viewportSet) ? r.viewportSet : null;
-    rec.mainFetch = isObj8(r.mainFetch) ? r.mainFetch : null;
-    rec.incomplete = r.incomplete === true;
     if (rec.incomplete) rec.warnings.push("capture INCOMPLETE: subresources were blocked (deny-by-default except exact bootstrapmade.com; redirects never followed; WebSockets refused)");
-    rec.ownedContext = isObj8(r.ownedContext) ? r.ownedContext : null;
-    rec.ownedContextClosed = typeof r.ownedContextClosed === "boolean" ? r.ownedContextClosed : null;
     if (rec.ownedContextClosed !== true) rec.warnings.push("the owned browser context was not confirmed closed (the session delete still runs)");
-    rec.popupsClosed = typeof r.popupsClosed === "number" ? r.popupsClosed : 0;
-    rec.modifications = Array.isArray(r.modifications) ? r.modifications.filter((x) => typeof x === "string").slice(0, 10).map((x) => x.slice(0, 200)) : [];
-    rec.nav = isObj8(r.nav) ? r.nav : null;
-    rec.env = isObj8(r.env) ? r.env : null;
-    rec.autoplay = isObj8(r.autoplay) ? r.autoplay : null;
-    rec.blocked = Array.isArray(r.blocked) ? r.blocked.filter(isObj8).slice(0, 50) : [];
     const states = r.states;
     for (const [i, s] of states.entries()) {
       const bytes = parsed.pngs[i];
@@ -42727,7 +42778,7 @@ async function runSandboxLifecycle(o) {
     const shas = rec.states.map((s) => s.png.sha256);
     if (new Set(shas).size < shas.length) rec.warnings.push("some state screenshots are byte-identical (no visual distinctness)");
     for (const s of rec.states.slice(1)) if (s.trigger && s.trigger.moved !== true) rec.warnings.push(`state "${s.name}": Swiper did not move`);
-    if (rec.blocked.length) rec.warnings.push(`${rec.blocked.length} request(s) aborted by the in-browser guard`);
+    if (rec.blocked?.length) rec.warnings.push(`${rec.blocked.length} request(s) aborted by the in-browser guard`);
     rec.warnings.push("states after slideNext(0) are measured after 0 ms transitions, not observed animation completions");
     overall = "accepted";
   } catch (err) {
@@ -42843,7 +42894,7 @@ function sandboxToCapture(rec, files) {
     manifest: { schema: "website-to-figma/asset-manifest", schemaVersion: 1, assets: rec.states.map((s, i) => ({ id: `sandbox-s${i}`, kind: "reference", file: files[i], sha256: s.png.sha256, pageUrl: SANDBOX_URL, state: s.name })) }
   };
 }
-var isObj8, SANDBOX_URL, SANDBOX, SANDBOX_UNSUPPORTED, SANDBOX_WORST_CASE_CREDITS, SANDBOX_WALL_MS, PAGE_FUNCS, SANDBOX_CODE, sandboxPreviewSha256, B642, SandboxHardHold;
+var isObj8, SANDBOX_URL, SANDBOX, SANDBOX_UNSUPPORTED, SANDBOX_WORST_CASE_CREDITS, SANDBOX_WALL_MS, PAGE_FUNCS, SANDBOX_CODE, sandboxPreviewSha256, B642, SandboxHardHold, strs, objs, num2, RAW_EXECUTE_CAP;
 var init_sandbox = __esm({
   "src/states/sandbox.ts"() {
     "use strict";
@@ -42863,6 +42914,8 @@ var init_sandbox = __esm({
       executeTimeoutS: 90,
       navTimeoutMs: 3e4,
       settleMs: 2e3,
+      // bounded wait (page.waitForFunction) for the page's own Swiper to bind to the source-verified element
+      swiperReadyMs: 1e4,
       stateWaitMs: 800,
       scope: "#testimonials",
       swiper: "#testimonials .swiper.init-swiper",
@@ -42896,6 +42949,14 @@ const W2F_SWIPER = (a) => {
   else if (a.op === "next") sw.slideNext(0);
   const after = snap();
   return { valid: true, reason: null, op: a.op, before, after, moved: after.realIndex !== before.realIndex || after.activeIndex !== before.activeIndex };
+};
+// readiness: exactly one match AND the page's own Swiper instance bound to it (self-contained)
+const W2F_SWIPER_BOUND = (sel) => { const els = document.querySelectorAll(sel); if (els.length !== 1) return false; const sw = els[0].swiper; return !!sw && typeof sw === "object" && sw.el === els[0] && typeof sw.slideNext === "function"; };
+// read-only diagnostics (no page modification) recorded whether or not the Swiper bound
+const W2F_SWIPER_DIAG = (sel) => {
+  const els = Array.from(document.querySelectorAll(sel)); const el = els[0] || null;
+  const src = (s) => { if (!s.src) return "(inline)"; try { const u = new URL(s.src); return u.host === location.host ? u.pathname.slice(0, 200) : u.protocol + "//" + u.host + "/(other host)"; } catch (e) { return "(invalid)"; } };
+  return { matches: els.length, initializedClass: el ? el.classList.contains("swiper-initialized") : null, hasSwiperProp: el ? !!el.swiper : null, windowSwiperType: typeof window.Swiper, configPresent: el ? !!el.querySelector(".swiper-config") : null, slides: el ? el.querySelectorAll(".swiper-slide").length : null, readyState: document.readyState, scripts: Array.from(document.scripts).slice(0, 30).map(src) };
 };
 const W2F_INTO_VIEW = (sel) => { const e = document.querySelector(sel); if (!e) return false; e.scrollIntoView({ block: "start", inline: "nearest" }); return true; };
 const W2F_MEASURE = (a) => {
@@ -42933,9 +42994,11 @@ const W2F_MEASURE = (a) => {
   return { target: { selector: a.scope, viewTop: tr.top, viewBottom: tr.bottom, left: tr.left, width: tr.width, height: tr.height, documentY: tr.top + sy, inViewport: tr.top >= -1 && tr.bottom <= window.innerHeight + 1 }, region, probe, elements, texts, images };
 };`;
     SANDBOX_CODE = String.raw`// website-to-figma fixed sandbox code (reviewed; takes no inputs)
-const W = ${JSON.stringify({ url: SANDBOX.url, host: "bootstrapmade.com", vw: SANDBOX.viewport.width, vh: SANDBOX.viewport.height, navTimeoutMs: SANDBOX.navTimeoutMs, settleMs: SANDBOX.settleMs, stateWaitMs: SANDBOX.stateWaitMs, scope: SANDBOX.scope, swiper: SANDBOX.swiper, states: SANDBOX.states, maxPngBytes: SANDBOX.maxPngBytes, max: { maxElements: SANDBOX.maxElements, maxTexts: SANDBOX.maxTexts, maxImages: SANDBOX.maxImages } })};
+const W = ${JSON.stringify({ url: SANDBOX.url, host: "bootstrapmade.com", vw: SANDBOX.viewport.width, vh: SANDBOX.viewport.height, navTimeoutMs: SANDBOX.navTimeoutMs, settleMs: SANDBOX.settleMs, swiperReadyMs: SANDBOX.swiperReadyMs, stateWaitMs: SANDBOX.stateWaitMs, scope: SANDBOX.scope, swiper: SANDBOX.swiper, states: SANDBOX.states, maxPngBytes: SANDBOX.maxPngBytes, max: { maxElements: SANDBOX.maxElements, maxTexts: SANDBOX.maxTexts, maxImages: SANDBOX.maxImages } })};
 ${PAGE_FUNCS}
-const out = { w2f: "sandbox", v: 1, error: null, incomplete: false, ownedContext: null, ownedContextClosed: null, mainFetch: null, nav: null, env: null, autoplay: null, modifications: [], blocked: [], popupsClosed: 0, serviceWorker: null, states: [] };
+// stage = the step in progress when an error is thrown; routeInstalled says whether blocked/served/
+// incomplete were OBSERVED by the guard (false => they are unobserved defaults, not evidence)
+const out = { w2f: "sandbox", v: 1, error: null, stage: "start", routeInstalled: false, incomplete: false, ownedContext: null, ownedContextClosed: null, mainFetch: null, nav: null, env: null, swiperReady: null, autoplay: null, modifications: [], blocked: [], blockedTotal: 0, served: [], servedTotal: 0, pageErrors: [], consoleErrors: [], popupsClosed: 0, serviceWorker: null, states: [] };
 let ctx = null;
 try {
   // Reach the Browser through documented public APIs; never navigate the preconnected default page.
@@ -42943,6 +43006,7 @@ try {
   const browser = page.context().browser();
   if (!browser || typeof browser.newContext !== "function") throw new Error("Browser object unavailable: cannot create the owned context");
   // ONE owned incognito context: service-worker registration blocked, viewport fixed BEFORE any page exists.
+  out.stage = "newContext";
   ctx = await browser.newContext({ serviceWorkers: "block", viewport: { width: W.vw, height: W.vh } });
   out.ownedContext = { serviceWorkers: "block", viewport: { width: W.vw, height: W.vh } };
   let own = null;
@@ -42964,6 +43028,7 @@ try {
   const originOf = (raw) => { try { const u = new URL(raw); return u.protocol + "//" + u.host; } catch (e) { return "(invalid)"; } };
   const deny = (route, raw, nav, why, extra) => {
     if (!nav) out.incomplete = true; // a missing subresource: the capture is incomplete, never substituted
+    out.blockedTotal++;
     if (out.blocked.length < 50) out.blocked.push({ origin: originOf(raw), why, ...(extra || {}) });
     return route.abort();
   };
@@ -42988,31 +43053,56 @@ try {
       return deny(route, raw, nav, (main ? "main-document-redirect-" : "redirect-") + st, { location: loc ? originOf(loc) : null, locationPolicy: loc ? policy(loc, nav, main) || "allowed-but-not-followed" : "missing" });
     }
     if (resp.url() !== raw) return deny(route, raw, nav, "response-url-changed");
+    out.servedTotal++;
+    if (out.served.length < 60) { let path = "(invalid)"; try { path = new URL(raw).pathname.slice(0, 200); } catch (e) {} out.served.push({ path, status: st, nav }); }
     return route.fulfill({ response: resp });
   });
+  out.routeInstalled = true;
   // WebSockets are not seen by context.route: every one is refused (never connected to a server).
   if (typeof ctx.routeWebSocket !== "function") throw new Error("context.routeWebSocket unavailable: cannot refuse WebSocket connections");
-  await ctx.routeWebSocket(/.*/, (ws) => { if (out.blocked.length < 50) out.blocked.push({ origin: originOf(ws.url()), why: "websocket" }); out.incomplete = true; ws.close(); });
+  out.stage = "routeWebSocket";
+  await ctx.routeWebSocket(/.*/, (ws) => { out.blockedTotal++; if (out.blocked.length < 50) out.blocked.push({ origin: originOf(ws.url()), why: "websocket" }); out.incomplete = true; ws.close(); });
+  out.stage = "newPage";
   own = await ctx.newPage();
+  // page script errors are recorded (bounded) as diagnostics only
+  own.on("pageerror", (e) => { if (out.pageErrors.length < 10) out.pageErrors.push(String((e && e.message) || e).slice(0, 300)); });
+  own.on("console", (m) => { try { if (m.type() === "error" && out.consoleErrors.length < 10) out.consoleErrors.push(String(m.text()).slice(0, 300)); } catch (e) {} });
   ctx.on("page", (p) => { if (p !== own) { out.popupsClosed++; p.close().catch(() => {}); } });
   // Viewport set on the SAME page used for all three states, BEFORE navigation.
   await own.setViewportSize({ width: W.vw, height: W.vh });
+  out.stage = "goto";
   const resp = await own.goto(W.url, { waitUntil: "load", timeout: W.navTimeoutMs });
   const chain = []; let r = resp ? resp.request() : null;
   while (r && chain.length < 10) { chain.unshift(r.url()); r = r.redirectedFrom(); }
   out.nav = { status: resp ? resp.status() : null, finalUrl: own.url(), chain };
   if (!out.mainFetch || out.mainFetch.status < 200 || out.mainFetch.status > 299) throw new Error("main document was not fetched with a 2xx by the route guard");
   if (own.url() !== W.url || chain.length !== 1 || chain[0] !== W.url) throw new Error("navigation left the exact target URL (redirect or rewrite)");
+  out.stage = "settle";
   await own.waitForTimeout(W.settleMs);
+  out.stage = "probe";
   out.env = await own.evaluate(W2F_PROBE);
   out.serviceWorker = await own.evaluate(() => !!(navigator.serviceWorker && navigator.serviceWorker.controller));
   if (out.serviceWorker) throw new Error("a service worker controls the page (its requests bypass routing)");
   if (out.env.innerWidth !== W.vw || out.env.innerHeight !== W.vh) throw new Error("viewport not applied: " + out.env.innerWidth + "x" + out.env.innerHeight);
+  // Bounded readiness: wait (supported page.waitForFunction) until the page's OWN Swiper is bound to the
+  // source-verified element; on timeout fail closed WITH read-only diagnostics.
+  out.stage = "swiper-ready";
+  const t0 = Date.now();
+  try {
+    await own.waitForFunction(W2F_SWIPER_BOUND, W.swiper, { timeout: W.swiperReadyMs, polling: 100 });
+    out.swiperReady = { ready: true, waitedMs: Date.now() - t0, timeoutMs: W.swiperReadyMs };
+  } catch (e) {
+    out.swiperReady = { ready: false, waitedMs: Date.now() - t0, timeoutMs: W.swiperReadyMs, error: String((e && e.message) || e).slice(0, 200) };
+  }
+  try { out.swiperReady.diag = await own.evaluate(W2F_SWIPER_DIAG, W.swiper); } catch (e) { out.swiperReady.diag = { error: String((e && e.message) || e).slice(0, 200) }; }
+  if (!out.swiperReady.ready) throw new Error("swiper not bound within " + W.swiperReadyMs + " ms (see swiperReady.diag)");
+  out.stage = "autoplay";
   out.autoplay = await own.evaluate(W2F_SWIPER, { sel: W.swiper, op: "stop-autoplay" });
   if (!out.autoplay.valid) throw new Error("swiper refused: " + out.autoplay.reason);
   if (out.autoplay.before && out.autoplay.before.autoplayRunning) out.modifications.push("stopped autoplay of " + W.swiper + " via its own Swiper API (not the page's original behavior)");
   // All three states on the SAME owned page.
   for (let seq = 0; seq < W.states.length; seq++) {
+    out.stage = "state-" + seq;
     let trigger = null;
     if (seq > 0) { trigger = await own.evaluate(W2F_SWIPER, { sel: W.swiper, op: "next" }); if (!trigger.valid) throw new Error("swiper refused: " + trigger.reason); }
     if (!(await own.evaluate(W2F_INTO_VIEW, W.scope))) throw new Error("scope not found");
@@ -43029,6 +43119,7 @@ try {
 } catch (e) {
   out.error = String((e && e.message) || e).slice(0, 300);
 } finally {
+  if (!out.error) out.stage = "done";
   if (ctx) { try { await ctx.close(); out.ownedContextClosed = true; } catch (e) { out.ownedContextClosed = false; } }
 }
 console.log("W2F_RESULT " + JSON.stringify(out));`;
@@ -43036,6 +43127,10 @@ console.log("W2F_RESULT " + JSON.stringify(out));`;
     B642 = /^[A-Za-z0-9+/]*={0,2}$/;
     SandboxHardHold = class extends StateRunPolicyError {
     };
+    strs = (v, n, len) => Array.isArray(v) ? v.filter((x) => typeof x === "string").slice(0, n).map((x) => x.slice(0, len)) : null;
+    objs = (v, n) => Array.isArray(v) ? v.filter(isObj8).slice(0, n) : null;
+    num2 = (v) => typeof v === "number" && Number.isFinite(v) ? v : null;
+    RAW_EXECUTE_CAP = 2e5;
   }
 });
 
@@ -43940,10 +44035,11 @@ async function main2(argv) {
         return process.env.FIRECRAWL_API_KEY;
       },
       savePng: (seq, bytes) => writeExclusive(join2(runDir, `state-${seq}.png`), bytes),
+      saveRaw: (text) => writeExclusive(join2(runDir, "execute-raw.json"), text + "\n"),
       log: (m) => console.error(m)
     });
     writeExclusive(join2(runDir, "sandbox.json"), JSON.stringify(rec, null, 2) + "\n");
-    console.log(`Wrote ${runDir} (PRIVATE). status ${rec.status}${rec.reason ? ` (${rec.reason})` : ""}; charge ${rec.chargeStatus}; response creditsBilled ${rec.creditsBilled ?? "absent"} (undocumented, informational)${rec.incomplete ? "; capture INCOMPLETE" : ""}`);
+    console.log(`Wrote ${runDir} (PRIVATE). status ${rec.status}${rec.reason ? ` (${rec.reason})` : ""}; charge ${rec.chargeStatus}; response creditsBilled ${rec.creditsBilled ?? "absent"} (undocumented, informational)${rec.incomplete ? "; capture INCOMPLETE" : rec.incomplete === null ? "; completeness NOT OBSERVED" : ""}${rec.stage ? `; in-browser stage ${rec.stage}` : ""}${rec.rawExecute?.saved ? "; raw execute provenance: execute-raw.json" : ""}`);
     for (const w of rec.warnings) console.log(`  warning: ${w}`);
     return rec.status === "accepted" ? 0 : 4;
   }

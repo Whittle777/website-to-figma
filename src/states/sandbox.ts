@@ -40,7 +40,7 @@
 // are not observed animation completions; creditsBilled is undocumented.
 import { assertHostedFirecrawlUrl, systemResolver, type Resolver } from "../security/urlGuard";
 import { inspectImage, sha256Hex } from "../shared/imageInfo";
-import { canonicalJson, classify, redact, sha256, StateRunPolicyError, withTimeout } from "./execute";
+import { canonicalJson, classify, redact, redactAll, sha256, StateRunPolicyError, withTimeout } from "./execute";
 import { createInteractClient, INTERACT_API_URL, type InteractClient } from "./sandboxTransport";
 import { readLedger, reserveAttempt, settleAttempt, settlePendingReconciliation, recordOp, committedCredits, unresolved, LedgerError } from "./ledger";
 
@@ -57,6 +57,8 @@ export const SANDBOX = {
   executeTimeoutS: 90,
   navTimeoutMs: 30_000,
   settleMs: 2_000,
+  // bounded wait (page.waitForFunction) for the page's own Swiper to bind to the source-verified element
+  swiperReadyMs: 10_000,
   stateWaitMs: 800,
   scope: "#testimonials",
   swiper: "#testimonials .swiper.init-swiper",
@@ -98,6 +100,14 @@ const W2F_SWIPER = (a) => {
   const after = snap();
   return { valid: true, reason: null, op: a.op, before, after, moved: after.realIndex !== before.realIndex || after.activeIndex !== before.activeIndex };
 };
+// readiness: exactly one match AND the page's own Swiper instance bound to it (self-contained)
+const W2F_SWIPER_BOUND = (sel) => { const els = document.querySelectorAll(sel); if (els.length !== 1) return false; const sw = els[0].swiper; return !!sw && typeof sw === "object" && sw.el === els[0] && typeof sw.slideNext === "function"; };
+// read-only diagnostics (no page modification) recorded whether or not the Swiper bound
+const W2F_SWIPER_DIAG = (sel) => {
+  const els = Array.from(document.querySelectorAll(sel)); const el = els[0] || null;
+  const src = (s) => { if (!s.src) return "(inline)"; try { const u = new URL(s.src); return u.host === location.host ? u.pathname.slice(0, 200) : u.protocol + "//" + u.host + "/(other host)"; } catch (e) { return "(invalid)"; } };
+  return { matches: els.length, initializedClass: el ? el.classList.contains("swiper-initialized") : null, hasSwiperProp: el ? !!el.swiper : null, windowSwiperType: typeof window.Swiper, configPresent: el ? !!el.querySelector(".swiper-config") : null, slides: el ? el.querySelectorAll(".swiper-slide").length : null, readyState: document.readyState, scripts: Array.from(document.scripts).slice(0, 30).map(src) };
+};
 const W2F_INTO_VIEW = (sel) => { const e = document.querySelector(sel); if (!e) return false; e.scrollIntoView({ block: "start", inline: "nearest" }); return true; };
 const W2F_MEASURE = (a) => {
   const t = document.querySelector(a.scope); if (!t) return { target: null };
@@ -135,9 +145,11 @@ const W2F_MEASURE = (a) => {
 };`;
 
 export const SANDBOX_CODE = String.raw`// website-to-figma fixed sandbox code (reviewed; takes no inputs)
-const W = ${JSON.stringify({ url: SANDBOX.url, host: "bootstrapmade.com", vw: SANDBOX.viewport.width, vh: SANDBOX.viewport.height, navTimeoutMs: SANDBOX.navTimeoutMs, settleMs: SANDBOX.settleMs, stateWaitMs: SANDBOX.stateWaitMs, scope: SANDBOX.scope, swiper: SANDBOX.swiper, states: SANDBOX.states, maxPngBytes: SANDBOX.maxPngBytes, max: { maxElements: SANDBOX.maxElements, maxTexts: SANDBOX.maxTexts, maxImages: SANDBOX.maxImages } })};
+const W = ${JSON.stringify({ url: SANDBOX.url, host: "bootstrapmade.com", vw: SANDBOX.viewport.width, vh: SANDBOX.viewport.height, navTimeoutMs: SANDBOX.navTimeoutMs, settleMs: SANDBOX.settleMs, swiperReadyMs: SANDBOX.swiperReadyMs, stateWaitMs: SANDBOX.stateWaitMs, scope: SANDBOX.scope, swiper: SANDBOX.swiper, states: SANDBOX.states, maxPngBytes: SANDBOX.maxPngBytes, max: { maxElements: SANDBOX.maxElements, maxTexts: SANDBOX.maxTexts, maxImages: SANDBOX.maxImages } })};
 ${PAGE_FUNCS}
-const out = { w2f: "sandbox", v: 1, error: null, incomplete: false, ownedContext: null, ownedContextClosed: null, mainFetch: null, nav: null, env: null, autoplay: null, modifications: [], blocked: [], popupsClosed: 0, serviceWorker: null, states: [] };
+// stage = the step in progress when an error is thrown; routeInstalled says whether blocked/served/
+// incomplete were OBSERVED by the guard (false => they are unobserved defaults, not evidence)
+const out = { w2f: "sandbox", v: 1, error: null, stage: "start", routeInstalled: false, incomplete: false, ownedContext: null, ownedContextClosed: null, mainFetch: null, nav: null, env: null, swiperReady: null, autoplay: null, modifications: [], blocked: [], blockedTotal: 0, served: [], servedTotal: 0, pageErrors: [], consoleErrors: [], popupsClosed: 0, serviceWorker: null, states: [] };
 let ctx = null;
 try {
   // Reach the Browser through documented public APIs; never navigate the preconnected default page.
@@ -145,6 +157,7 @@ try {
   const browser = page.context().browser();
   if (!browser || typeof browser.newContext !== "function") throw new Error("Browser object unavailable: cannot create the owned context");
   // ONE owned incognito context: service-worker registration blocked, viewport fixed BEFORE any page exists.
+  out.stage = "newContext";
   ctx = await browser.newContext({ serviceWorkers: "block", viewport: { width: W.vw, height: W.vh } });
   out.ownedContext = { serviceWorkers: "block", viewport: { width: W.vw, height: W.vh } };
   let own = null;
@@ -166,6 +179,7 @@ try {
   const originOf = (raw) => { try { const u = new URL(raw); return u.protocol + "//" + u.host; } catch (e) { return "(invalid)"; } };
   const deny = (route, raw, nav, why, extra) => {
     if (!nav) out.incomplete = true; // a missing subresource: the capture is incomplete, never substituted
+    out.blockedTotal++;
     if (out.blocked.length < 50) out.blocked.push({ origin: originOf(raw), why, ...(extra || {}) });
     return route.abort();
   };
@@ -190,31 +204,56 @@ try {
       return deny(route, raw, nav, (main ? "main-document-redirect-" : "redirect-") + st, { location: loc ? originOf(loc) : null, locationPolicy: loc ? policy(loc, nav, main) || "allowed-but-not-followed" : "missing" });
     }
     if (resp.url() !== raw) return deny(route, raw, nav, "response-url-changed");
+    out.servedTotal++;
+    if (out.served.length < 60) { let path = "(invalid)"; try { path = new URL(raw).pathname.slice(0, 200); } catch (e) {} out.served.push({ path, status: st, nav }); }
     return route.fulfill({ response: resp });
   });
+  out.routeInstalled = true;
   // WebSockets are not seen by context.route: every one is refused (never connected to a server).
   if (typeof ctx.routeWebSocket !== "function") throw new Error("context.routeWebSocket unavailable: cannot refuse WebSocket connections");
-  await ctx.routeWebSocket(/.*/, (ws) => { if (out.blocked.length < 50) out.blocked.push({ origin: originOf(ws.url()), why: "websocket" }); out.incomplete = true; ws.close(); });
+  out.stage = "routeWebSocket";
+  await ctx.routeWebSocket(/.*/, (ws) => { out.blockedTotal++; if (out.blocked.length < 50) out.blocked.push({ origin: originOf(ws.url()), why: "websocket" }); out.incomplete = true; ws.close(); });
+  out.stage = "newPage";
   own = await ctx.newPage();
+  // page script errors are recorded (bounded) as diagnostics only
+  own.on("pageerror", (e) => { if (out.pageErrors.length < 10) out.pageErrors.push(String((e && e.message) || e).slice(0, 300)); });
+  own.on("console", (m) => { try { if (m.type() === "error" && out.consoleErrors.length < 10) out.consoleErrors.push(String(m.text()).slice(0, 300)); } catch (e) {} });
   ctx.on("page", (p) => { if (p !== own) { out.popupsClosed++; p.close().catch(() => {}); } });
   // Viewport set on the SAME page used for all three states, BEFORE navigation.
   await own.setViewportSize({ width: W.vw, height: W.vh });
+  out.stage = "goto";
   const resp = await own.goto(W.url, { waitUntil: "load", timeout: W.navTimeoutMs });
   const chain = []; let r = resp ? resp.request() : null;
   while (r && chain.length < 10) { chain.unshift(r.url()); r = r.redirectedFrom(); }
   out.nav = { status: resp ? resp.status() : null, finalUrl: own.url(), chain };
   if (!out.mainFetch || out.mainFetch.status < 200 || out.mainFetch.status > 299) throw new Error("main document was not fetched with a 2xx by the route guard");
   if (own.url() !== W.url || chain.length !== 1 || chain[0] !== W.url) throw new Error("navigation left the exact target URL (redirect or rewrite)");
+  out.stage = "settle";
   await own.waitForTimeout(W.settleMs);
+  out.stage = "probe";
   out.env = await own.evaluate(W2F_PROBE);
   out.serviceWorker = await own.evaluate(() => !!(navigator.serviceWorker && navigator.serviceWorker.controller));
   if (out.serviceWorker) throw new Error("a service worker controls the page (its requests bypass routing)");
   if (out.env.innerWidth !== W.vw || out.env.innerHeight !== W.vh) throw new Error("viewport not applied: " + out.env.innerWidth + "x" + out.env.innerHeight);
+  // Bounded readiness: wait (supported page.waitForFunction) until the page's OWN Swiper is bound to the
+  // source-verified element; on timeout fail closed WITH read-only diagnostics.
+  out.stage = "swiper-ready";
+  const t0 = Date.now();
+  try {
+    await own.waitForFunction(W2F_SWIPER_BOUND, W.swiper, { timeout: W.swiperReadyMs, polling: 100 });
+    out.swiperReady = { ready: true, waitedMs: Date.now() - t0, timeoutMs: W.swiperReadyMs };
+  } catch (e) {
+    out.swiperReady = { ready: false, waitedMs: Date.now() - t0, timeoutMs: W.swiperReadyMs, error: String((e && e.message) || e).slice(0, 200) };
+  }
+  try { out.swiperReady.diag = await own.evaluate(W2F_SWIPER_DIAG, W.swiper); } catch (e) { out.swiperReady.diag = { error: String((e && e.message) || e).slice(0, 200) }; }
+  if (!out.swiperReady.ready) throw new Error("swiper not bound within " + W.swiperReadyMs + " ms (see swiperReady.diag)");
+  out.stage = "autoplay";
   out.autoplay = await own.evaluate(W2F_SWIPER, { sel: W.swiper, op: "stop-autoplay" });
   if (!out.autoplay.valid) throw new Error("swiper refused: " + out.autoplay.reason);
   if (out.autoplay.before && out.autoplay.before.autoplayRunning) out.modifications.push("stopped autoplay of " + W.swiper + " via its own Swiper API (not the page's original behavior)");
   // All three states on the SAME owned page.
   for (let seq = 0; seq < W.states.length; seq++) {
+    out.stage = "state-" + seq;
     let trigger = null;
     if (seq > 0) { trigger = await own.evaluate(W2F_SWIPER, { sel: W.swiper, op: "next" }); if (!trigger.valid) throw new Error("swiper refused: " + trigger.reason); }
     if (!(await own.evaluate(W2F_INTO_VIEW, W.scope))) throw new Error("scope not found");
@@ -231,6 +270,7 @@ try {
 } catch (e) {
   out.error = String((e && e.message) || e).slice(0, 300);
 } finally {
+  if (!out.error) out.stage = "done";
   if (ctx) { try { await ctx.close(); out.ownedContextClosed = true; } catch (e) { out.ownedContextClosed = false; } }
 }
 console.log("W2F_RESULT " + JSON.stringify(out));`;
@@ -287,6 +327,8 @@ export function buildSandboxPreview(): SandboxPreview {
       "`page` in execute is used only to reach the Browser; the Firecrawl examples use it without defining it, but the docs do not state it; missing => fail closed.",
       "Every request (main document and subresources) passes ONE structural policy: http/https (data:/blob: only for subresources), no credentials, no non-default port, no IP-literal or local-name host, exact hostname bootstrapmade.com (exact raw URL for the main navigation). Allowed http(s) requests are made once by route.fetch({ maxRedirects: 0, maxRetries: 0 }); any 3xx is aborted before anything is served, so no redirect hop is requested (an allowed asset behind a redirect is missing, not followed). route.continue() is used only for data:/blob:. WebSockets are refused via context.routeWebSocket (missing => fail closed). Any aborted subresource marks the capture incomplete.",
       "route.fetch requests are made by Playwright inside the hosted sandbox with the owned context's cookies, not by this tool; no DNS lookups are made by the policy and the hosted DNS exception is not expanded. Remote-browser egress is the provider's (docs/security, docs/features/threat-protection); this tool's local DNS guard covers only its own fetches.",
+      "Swiper readiness: after goto + settle, page.waitForFunction (polling 100 ms, timeout 10 s) waits until the page's own Swiper instance is bound to the source-verified element (#testimonials .swiper.init-swiper); if it never binds the run fails closed with read-only diagnostics (stage, served/blocked requests, page errors, Swiper/script snapshot). Why an earlier run found it unbound is NOT determined.",
+      "Failure diagnostics: whenever W2F_RESULT parses (success or failure) the observed browser fields are kept in the run record; unobserved fields are null (never false/[] defaults). A size-capped, PNG-elided, key-redacted copy of the raw execute output is saved privately as execute-raw.json.",
       "Swiper states rely on the known page's semantics; method names/selectors are not a safety guarantee; no side-effect-free promise. slideNext(0) states are not observed animation completions.",
       "creditsBilled is not in the current docs: informational only; the charge is reconciled from a documented account source.",
     ],
@@ -367,18 +409,32 @@ export interface SandboxRecord {
   creditsBilled: number | null;
   sessionDurationMs: number | null;
   chargeStatus: "pending_reconciliation" | "not-settled";
-  incomplete: boolean;
+  // null = NOT OBSERVED (no W2F_RESULT, or the route guard was never installed); never a default
+  incomplete: boolean | null;
   reservation: number;
   viewportSet: Obj | null;
   ownedContext: Obj | null;
   ownedContextClosed: boolean | null;
   mainFetch: Obj | null;
-  popupsClosed: number;
-  modifications: string[];
+  popupsClosed: number | null;
+  modifications: string[] | null;
   nav: Obj | null;
   env: Obj | null;
   autoplay: Obj | null;
-  blocked: Obj[];
+  blocked: Obj[] | null;
+  // in-browser diagnostics (null = not observed)
+  observation: "none" | "w2f-result";
+  stage: string | null;
+  routeInstalled: boolean | null;
+  blockedTotal: number | null;
+  served: Obj[] | null;
+  servedTotal: number | null;
+  pageErrors: string[] | null;
+  consoleErrors: string[] | null;
+  swiperReady: Obj | null;
+  serviceWorker: boolean | null;
+  // private raw execute provenance (size-capped, PNG base64 elided, secrets redacted)
+  rawExecute: { saved: boolean; chars: number | null } | null;
   states: SandboxStateOut[];
   // provenance of every error: the primary failure, cleanup (DELETE) errors and ledger write errors
   errors: { stage: string; kind: "primary" | "cleanup" | "ledger"; detail: string }[];
@@ -389,7 +445,8 @@ const B64 = /^[A-Za-z0-9+/]*={0,2}$/;
 
 // Strict, bounded parse of the execute output. Sizes are checked BEFORE any
 // decode/allocation; PNG header (dimensions) is read before the bytes are kept.
-export function parseSandboxOutput(resp: unknown): { ok: true; result: Obj; pngs: Uint8Array[] } | { ok: false; status: "rejected" | "ambiguous"; reason: string } {
+// On failures AFTER the W2F_RESULT JSON parsed, `result` carries the in-browser diagnostics.
+export function parseSandboxOutput(resp: unknown): { ok: true; result: Obj; pngs: Uint8Array[] } | { ok: false; status: "rejected" | "ambiguous"; reason: string; result?: Obj } {
   if (!isObj(resp)) return { ok: false, status: "ambiguous", reason: "execute response is not an object" };
   if (resp.success === false) return { ok: false, status: "rejected", reason: `execute reported failure: ${String(resp.error ?? "").slice(0, 200)}` };
   if (resp.truncated === true) return { ok: false, status: "ambiguous", reason: "execute output was truncated by the provider" };
@@ -408,18 +465,18 @@ export function parseSandboxOutput(resp: unknown): { ok: true; result: Obj; pngs
     return { ok: false, status: "ambiguous", reason: "W2F_RESULT is not valid JSON (partial output?)" };
   }
   if (!isObj(result) || result.w2f !== "sandbox" || result.v !== 1) return { ok: false, status: "ambiguous", reason: "W2F_RESULT has the wrong schema" };
-  if (typeof result.error === "string" && result.error) return { ok: false, status: "rejected", reason: `in-browser step failed: ${result.error.slice(0, 200)}` };
+  if (typeof result.error === "string" && result.error) return { ok: false, status: "rejected", reason: `in-browser step failed${typeof result.stage === "string" ? ` at stage ${result.stage.slice(0, 40)}` : ""}: ${result.error.slice(0, 200)}`, result };
   const states = Array.isArray(result.states) ? result.states : [];
-  if (states.length !== SANDBOX.states.length) return { ok: false, status: "ambiguous", reason: `expected ${SANDBOX.states.length} states, got ${states.length}` };
+  if (states.length !== SANDBOX.states.length) return { ok: false, status: "ambiguous", reason: `expected ${SANDBOX.states.length} states, got ${states.length}`, result };
   const pngs: Uint8Array[] = [];
   const maxB64 = Math.ceil(SANDBOX.maxPngBytes / 3) * 4;
   for (const [i, s] of states.entries()) {
-    if (!isObj(s) || s.seq !== i || s.name !== SANDBOX.states[i] || typeof s.png !== "string") return { ok: false, status: "ambiguous", reason: `state ${i} malformed` };
-    if (s.png.length > maxB64 || s.png.length % 4 !== 0 || !B64.test(s.png)) return { ok: false, status: "rejected", reason: `state ${i} PNG base64 invalid or over ${SANDBOX.maxPngBytes} bytes` };
+    if (!isObj(s) || s.seq !== i || s.name !== SANDBOX.states[i] || typeof s.png !== "string") return { ok: false, status: "ambiguous", reason: `state ${i} malformed`, result };
+    if (s.png.length > maxB64 || s.png.length % 4 !== 0 || !B64.test(s.png)) return { ok: false, status: "rejected", reason: `state ${i} PNG base64 invalid or over ${SANDBOX.maxPngBytes} bytes`, result };
     const bytes = new Uint8Array(Buffer.from(s.png, "base64"));
     const info = inspectImage(bytes);
-    if (!info || info.mime !== "image/png") return { ok: false, status: "rejected", reason: `state ${i} is not a PNG` };
-    if (info.width < 1 || info.height < 1 || info.width > SANDBOX.viewport.width || info.height > SANDBOX.viewport.height || info.width * info.height > SANDBOX.maxPngPixels) return { ok: false, status: "rejected", reason: `state ${i} PNG ${info.width}x${info.height} outside the pixel caps` };
+    if (!info || info.mime !== "image/png") return { ok: false, status: "rejected", reason: `state ${i} is not a PNG`, result };
+    if (info.width < 1 || info.height < 1 || info.width > SANDBOX.viewport.width || info.height > SANDBOX.viewport.height || info.width * info.height > SANDBOX.maxPngPixels) return { ok: false, status: "rejected", reason: `state ${i} PNG ${info.width}x${info.height} outside the pixel caps`, result };
     pngs.push(bytes);
   }
   // SAME target identity + geometry across states; clip inside the target
@@ -430,11 +487,11 @@ export function parseSandboxOutput(resp: unknown): { ok: true; result: Obj; pngs
     const reg = regionOf(s);
     const t = targetOf(s);
     const clip = isObj(s.clip) ? s.clip : null;
-    if (!reg || !t || t.selector !== SANDBOX.scope || !clip) return { ok: false, status: "ambiguous", reason: `state ${i} lacks its target measurement or clip` };
+    if (!reg || !t || t.selector !== SANDBOX.scope || !clip) return { ok: false, status: "ambiguous", reason: `state ${i} lacks its target measurement or clip`, result };
     const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : NaN);
-    if (r0 && (Math.abs(n(reg.x) - n(r0.x)) > 2 || Math.abs(n(reg.w) - n(r0.w)) > 2 || Math.abs(n(reg.y) - n(r0.y)) > 100)) return { ok: false, status: "rejected", reason: `state ${i} measured a different region geometry` };
+    if (r0 && (Math.abs(n(reg.x) - n(r0.x)) > 2 || Math.abs(n(reg.w) - n(r0.w)) > 2 || Math.abs(n(reg.y) - n(r0.y)) > 100)) return { ok: false, status: "rejected", reason: `state ${i} measured a different region geometry`, result };
     const top = Math.max(0, n(t.viewTop));
-    if (Math.abs(n(clip.y) - top) > 1 || n(clip.height) > n(t.viewBottom) - top + 1 || n(clip.width) !== SANDBOX.viewport.width) return { ok: false, status: "rejected", reason: `state ${i} clip is not the measured target` };
+    if (Math.abs(n(clip.y) - top) > 1 || n(clip.height) > n(t.viewBottom) - top + 1 || n(clip.width) !== SANDBOX.viewport.width) return { ok: false, status: "rejected", reason: `state ${i} clip is not the measured target`, result };
   }
   return { ok: true, result, pngs };
 }
@@ -449,6 +506,8 @@ export interface SandboxExecuteOptions {
   runId?: string;
   log?: (m: string) => void;
   savePng?: (seq: number, bytes: Uint8Array) => void;
+  // PRIVATE raw execute provenance (already capped/redacted) for the run directory
+  saveRaw?: (text: string) => void;
   // ledger operations (default: the real ./ledger functions); injectable so ledger faults can be tested
   ledger?: Partial<SandboxLedgerOps>;
 }
@@ -470,6 +529,54 @@ export async function executeSandbox(o: SandboxExecuteOptions): Promise<SandboxR
 
 // Lifecycle implementation (offline-tested with fake clients/loopback; not
 // reachable from the CLI while executeSandbox hard-holds).
+const strs = (v: unknown, n: number, len: number) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string").slice(0, n).map((x) => x.slice(0, len)) : null);
+const objs = (v: unknown, n: number) => (Array.isArray(v) ? v.filter(isObj).slice(0, n) : null);
+const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+
+// Copy what the page code OBSERVED. Guard-derived fields (blocked/served/incomplete) count as
+// observed only when the page reports routeInstalled === true; otherwise they stay null (unknown).
+export function copyObserved(rec: SandboxRecord, r: Obj): void {
+  rec.observation = "w2f-result";
+  rec.stage = typeof r.stage === "string" ? r.stage.slice(0, 40) : null;
+  rec.routeInstalled = typeof r.routeInstalled === "boolean" ? r.routeInstalled : null;
+  const guard = rec.routeInstalled === true;
+  rec.incomplete = guard && typeof r.incomplete === "boolean" ? r.incomplete : null;
+  rec.blocked = guard ? objs(r.blocked, 50) : null;
+  rec.blockedTotal = guard ? num(r.blockedTotal) : null;
+  rec.served = guard ? objs(r.served, 60) : null;
+  rec.servedTotal = guard ? num(r.servedTotal) : null;
+  rec.viewportSet = isObj(r.viewportSet) ? r.viewportSet : null;
+  rec.mainFetch = isObj(r.mainFetch) ? r.mainFetch : null;
+  rec.ownedContext = isObj(r.ownedContext) ? r.ownedContext : null;
+  rec.ownedContextClosed = typeof r.ownedContextClosed === "boolean" ? r.ownedContextClosed : null;
+  rec.popupsClosed = num(r.popupsClosed);
+  rec.modifications = strs(r.modifications, 10, 200);
+  rec.nav = isObj(r.nav) ? r.nav : null;
+  rec.env = isObj(r.env) ? r.env : null;
+  rec.swiperReady = isObj(r.swiperReady) ? r.swiperReady : null;
+  rec.autoplay = isObj(r.autoplay) ? r.autoplay : null;
+  rec.serviceWorker = typeof r.serviceWorker === "boolean" ? r.serviceWorker : null;
+  rec.pageErrors = strs(r.pageErrors, 10, 300);
+  rec.consoleErrors = strs(r.consoleErrors, 10, 300);
+}
+
+export const RAW_EXECUTE_CAP = 200_000;
+// PRIVATE raw execute provenance: known fields only, PNG base64 elided, each field capped, secrets
+// redacted. Never parsed for decisions.
+export function rawExecuteProvenance(resp: unknown, secrets: string[]): string {
+  const o: Obj = { note: "PRIVATE raw execute provenance: PNG base64 elided, fields size-capped, secrets redacted" };
+  const cap = (t: string, n: number) => (t.length > n ? `${t.slice(0, n)}...[truncated ${t.length - n} chars]` : t);
+  const elide = (t: string) => t.replace(/"png":"([A-Za-z0-9+/=]{64,})"/g, (_m, b: string) => `"png":"<elided ${b.length} base64 chars>"`);
+  if (!isObj(resp)) o.type = resp === null ? "null" : typeof resp;
+  else {
+    for (const k of ["success", "exitCode", "killed", "truncated"]) if (k in resp && (typeof resp[k] !== "object" || resp[k] === null)) o[k] = resp[k];
+    for (const k of ["error", "stderr"]) if (typeof resp[k] === "string") ((o[`${k}Chars`] = (resp[k] as string).length), (o[k] = cap(resp[k] as string, 16_000)));
+    for (const k of ["stdout", "result", "output"]) if (typeof resp[k] === "string") ((o[`${k}Chars`] = (resp[k] as string).length), (o[k] = cap(elide(resp[k] as string), 50_000)));
+    o.otherKeys = Object.keys(resp).filter((k) => !["success", "exitCode", "killed", "truncated", "error", "stderr", "stdout", "result", "output"].includes(k)).slice(0, 20).map((k) => k.slice(0, 40));
+  }
+  return redactAll(JSON.stringify(o, null, 2), secrets).slice(0, RAW_EXECUTE_CAP);
+}
+
 export async function runSandboxLifecycle(o: SandboxExecuteOptions): Promise<SandboxRecord> {
   const now = o.now ?? (() => new Date());
   const resolver = o.resolver ?? systemResolver;
@@ -491,18 +598,29 @@ export async function runSandboxLifecycle(o: SandboxExecuteOptions): Promise<San
     creditsBilled: null,
     sessionDurationMs: null,
     chargeStatus: "not-settled",
-    incomplete: false,
+    incomplete: null,
     reservation: gate.reservation,
     viewportSet: null,
     ownedContext: null,
     ownedContextClosed: null,
     mainFetch: null,
-    popupsClosed: 0,
-    modifications: [],
+    popupsClosed: null,
+    modifications: null,
     nav: null,
     env: null,
     autoplay: null,
-    blocked: [],
+    blocked: null,
+    observation: "none",
+    stage: null,
+    routeInstalled: null,
+    blockedTotal: null,
+    served: null,
+    servedTotal: null,
+    pageErrors: null,
+    consoleErrors: null,
+    swiperReady: null,
+    serviceWorker: null,
+    rawExecute: null,
     states: [],
     errors: [],
     warnings: [],
@@ -632,7 +750,17 @@ export async function runSandboxLifecycle(o: SandboxExecuteOptions): Promise<San
       primary("execute", d);
       return rec;
     }
+    try {
+      const raw = rawExecuteProvenance(resp, secrets);
+      o.saveRaw?.(raw);
+      rec.rawExecute = { saved: !!o.saveRaw, chars: raw.length };
+    } catch (err) {
+      rec.rawExecute = { saved: false, chars: null };
+      rec.warnings.push(`raw execute provenance not saved: ${msg(err)}`);
+    }
     const parsed = parseSandboxOutput(resp);
+    // in-browser diagnostics are kept on success AND on any failure where W2F_RESULT parsed
+    if (parsed.result) copyObserved(rec, parsed.result);
     if (!parsed.ok) {
       rec.ops.push({ op: "execute", attempts: 1, status: parsed.status === "ambiguous" ? "ambiguous" : "ok", detail: parsed.reason });
       op("execute", parsed.status === "ambiguous" ? "ambiguous" : "ok", parsed.reason);
@@ -643,19 +771,8 @@ export async function runSandboxLifecycle(o: SandboxExecuteOptions): Promise<San
     rec.ops.push({ op: "execute", attempts: 1, status: "ok", detail: "W2F_RESULT parsed; 3 states" });
     op("execute", "ok", "W2F_RESULT parsed; 3 states");
     const r = parsed.result;
-    rec.viewportSet = isObj(r.viewportSet) ? r.viewportSet : null;
-    rec.mainFetch = isObj(r.mainFetch) ? r.mainFetch : null;
-    rec.incomplete = r.incomplete === true;
     if (rec.incomplete) rec.warnings.push("capture INCOMPLETE: subresources were blocked (deny-by-default except exact bootstrapmade.com; redirects never followed; WebSockets refused)");
-    rec.ownedContext = isObj(r.ownedContext) ? r.ownedContext : null;
-    rec.ownedContextClosed = typeof r.ownedContextClosed === "boolean" ? r.ownedContextClosed : null;
     if (rec.ownedContextClosed !== true) rec.warnings.push("the owned browser context was not confirmed closed (the session delete still runs)");
-    rec.popupsClosed = typeof r.popupsClosed === "number" ? r.popupsClosed : 0;
-    rec.modifications = Array.isArray(r.modifications) ? r.modifications.filter((x): x is string => typeof x === "string").slice(0, 10).map((x) => x.slice(0, 200)) : [];
-    rec.nav = isObj(r.nav) ? r.nav : null;
-    rec.env = isObj(r.env) ? r.env : null;
-    rec.autoplay = isObj(r.autoplay) ? r.autoplay : null;
-    rec.blocked = Array.isArray(r.blocked) ? r.blocked.filter(isObj).slice(0, 50) : [];
     const states = r.states as Obj[];
     for (const [i, s] of states.entries()) {
       const bytes = parsed.pngs[i]!;
@@ -667,7 +784,7 @@ export async function runSandboxLifecycle(o: SandboxExecuteOptions): Promise<San
     const shas = rec.states.map((s) => s.png.sha256);
     if (new Set(shas).size < shas.length) rec.warnings.push("some state screenshots are byte-identical (no visual distinctness)");
     for (const s of rec.states.slice(1)) if (s.trigger && s.trigger.moved !== true) rec.warnings.push(`state "${s.name}": Swiper did not move`);
-    if (rec.blocked.length) rec.warnings.push(`${rec.blocked.length} request(s) aborted by the in-browser guard`);
+    if (rec.blocked?.length) rec.warnings.push(`${rec.blocked.length} request(s) aborted by the in-browser guard`);
     rec.warnings.push("states after slideNext(0) are measured after 0 ms transitions, not observed animation completions");
     overall = "accepted";
   } catch (err) {
