@@ -574,58 +574,63 @@ website-to-figma diag-interpret --run private-runs/diag-run-<id> [--images priva
 
 ### Browser Sandbox experiment (one disposable session; HOLD until origin review)
 
-This is one fixed, code-only Playwright run in a disposable Firecrawl Browser Sandbox. There is no
-profile, no prompts and no clicks. It uses the installed SDK 4.52's `browser`, `browserExecute`
-and `deleteBrowser` (`dist/index.js:1649-1700`):
-- **create.** `POST /v2/browser { ttl: 120, activityTtl: 60, streamWebView: false }`. Vendor and
-  account defaults are untouched.
-- **execute.** `POST /v2/browser/{id}/execute { language: "node", timeout: 90, code }`. The code is
-  fixed and reviewed, and takes no inputs. In order, it:
-  1. installs a request guard
-  2. calls `page.setViewportSize(1920×1080)` **before** `page.goto`
-  3. navigates to the exact `https://bootstrapmade.com/content/demo/Bootslander/` and refuses any
-     redirect chain
-  4. verifies `innerWidth`/`innerHeight`
-  5. stops autoplay on the one validated Swiper (a recorded modification)
-  6. captures three states of the **same region** (`#testimonials`): baseline, `slideNext(0)` and
-     `slideNext(0)`. Each is scrolled into view, waited on, region-measured and taken as a clipped
-     PNG.
-- **delete.** `DELETE /v2/browser/{id}`. It always runs, in `finally`, and its `creditsBilled` is
-  recorded.
+This is one fixed, code-only Playwright run in a disposable Firecrawl Browser Sandbox, following
+https://docs.firecrawl.dev/features/browser. There is no profile, no prompts and no clicks. The
+newest published SDK (4.52.0) still calls `/v2/browser`, so a narrow HTTP transport calls the
+documented endpoints instead:
+- **create.** `POST /v2/interact { ttl: 120, activityTtl: 60 }`. Both are in seconds; the documented
+  ranges are 30–3600 and 10–3600.
+- **execute.** `POST /v2/interact/{id}/execute { code, language: "node", timeout: 90 }`. The page is
+  already connected.
+- **delete.** `DELETE /v2/interact/{id}`. It always runs, in `finally`.
 
-**Safeguards**
-- **One attempt each.** Every operation is attempted once (SDK `maxRetries: 1`; these methods have
-  no resume loop).
-- **Ledger.** The ledger entry is written before create, and each operation's attempt and outcome
-  are recorded.
-- **Blocking cases.** An ambiguous create or execute, or a cleanup that wasn't confirmed, leaves the
-  entry blocking. Nothing is re-created automatically. `sandbox-cleanup` sends exactly one DELETE
-  for a recorded session id.
-- **Reservation.** It must cover the full ttl: `ceil(120/60)` × 2 credits per session-minute = 4.
-  This is not a provider cap.
-- **Bounded output.** It is bounded before any decoding: 6.5M characters of execute output,
-  1.5 MB per PNG, at most 1920×1080, and a PNG header check.
+The transport makes **one fetch** per operation, never replayed. It has an abort timeout, rejects
+redirects (`redirect: "error"`), caps response bytes while streaming, pins the endpoint (no env
+override) and sends documented body fields only.
 
-**Gaps (stated, not hidden)**
-- **ttl units.** The installed SDK doesn't state them. `--confirm-ttl-seconds` attests that the
-  official docs say seconds.
-- **Endpoint path.** The SDK uses `/v2/browser`; check it against the official docs.
-- **In-browser guard.** It aborts non-http(s) schemes, credentials, IP-literal and local hosts, and
-  off-target main-frame navigations. It cannot see hostnames that *resolve* to private addresses.
-  Whether route interception sees every redirect hop is unverified, so the redirect-chain check
-  detects but does not prevent a redirected request.
-- **`page` availability.** That `page` exists in a standalone sandbox `execute` is assumed from the
-  Interact docs. The code fails closed if it doesn't.
-- **Not run live.** Nothing has been run against a hosted session.
+**Ledger.** The entry is written before create, and each operation's attempt and outcome are
+recorded on it.
+- **Blocking cases.** An ambiguous create or execute, or an unconfirmed cleanup, blocks and nothing
+  is re-created. `sandbox-cleanup` sends exactly one DELETE.
+- **Pricing.** Code-only sessions cost 2 credits per browser-minute with a 1-minute minimum, and
+  there is no provider hard cap.
+- **Reservation.** The local reservation must cover the full ttl, `ceil(120/60)` × 2 = 4. It is an
+  allowance, not a cap.
+- **creditsBilled.** It is recorded only if the delete response carries it; it is not in the
+  current docs. A missing value makes the run ambiguous.
+
+**Page code.** It is fixed and takes no inputs. In order, it:
+1. installs a request guard
+2. calls `setViewportSize(1920×1080)` before any request to the target
+3. runs a redirect **pre-check** with `page.request.get(url, { maxRedirects: 0 })`, refusing any 3xx
+4. calls `goto` on the exact URL, allowing main-frame navigations only for that exact raw URL
+   string (no normalization)
+5. refuses any redirect chain and verifies the viewport
+6. stops autoplay on the one validated Swiper (a recorded **modification**)
+7. captures three states of the same region (`#testimonials`): baseline, `slideNext(0)` and
+   `slideNext(0)`
+
+Region identity and geometry are checked across all three states, and each clip must match its
+measured target. Output is capped (6.5M chars, 1.5 MB per PNG, at most 1920×1080) before it is
+decoded.
+
+**Precise gaps.** These are held by `--accept-redirect-gap` and are not claimed away:
+- **Redirect TOCTOU.** `page.route` does not intercept server redirect hops. The pre-check refuses a
+  3xx before navigation, but a redirect introduced between the pre-check and `goto` would be
+  followed. The chain check then refuses the run, but **it does not prevent the redirected request
+  itself**.
+- **Private-resolving hosts.** Hostnames that resolve to private addresses can't be checked from
+  page code. The local DNS guard covers only this tool's own fetches.
+- **Swiper semantics.** Method names and selectors are not a safety guarantee. The states rely on
+  this known page's semantics, with no promise that they are side-effect free.
+- **0 ms transitions.** `slideNext(0)` states are not observed completions of real animated motion.
 
 ```sh
 website-to-figma sandbox-plan --out sandbox.preview.json                 # offline
 website-to-figma sandbox-run --preview sandbox.preview.json --out private-runs --ledger ledger.json \
   --operator-credits-per-request 4 --operator-reported-balance N --confirm-existing-credits \
-  --confirm-no-topup --confirm-ttl-seconds                                # HOLDS without --yes
+  --confirm-no-topup --accept-redirect-gap                                 # HOLDS without --yes
 website-to-figma sandbox-convert --run private-runs/sandbox-run-<id> --out private-capture
-website-to-figma hifi --capture private-capture/sandbox-capture-<runId>/capture.json \
-  --assets private-capture/sandbox-capture-<runId>/manifest.json --out site-v2.json
 ```
 
 ### State variant groups are validated

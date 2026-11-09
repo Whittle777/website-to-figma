@@ -42299,6 +42299,104 @@ var init_diagnostic = __esm({
   }
 });
 
+// src/states/sandboxTransport.ts
+function createInteractClient(apiKey, opts = {}) {
+  const apiUrl = (opts.apiUrl ?? INTERACT_API_URL).replace(/\/$/, "");
+  const doFetch = opts.fetchImpl ?? fetch;
+  const L = { ...INTERACT_LIMITS, ...opts.limits ?? {} };
+  const call = async (method, path, body, timeoutMs, maxBytes) => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      let res;
+      try {
+        res = await doFetch(`${apiUrl}${path}`, {
+          method,
+          headers: { authorization: `Bearer ${apiKey}`, accept: "application/json", ...body ? { "content-type": "application/json" } : {} },
+          ...body ? { body: JSON.stringify(body) } : {},
+          redirect: "error",
+          signal: ctrl.signal
+        });
+      } catch (err) {
+        throw new TransportError(ctrl.signal.aborted ? `${method} ${path}: no response within ${timeoutMs} ms` : `${method} ${path}: ${err instanceof Error ? err.message : "network error"} (redirects are rejected)`);
+      }
+      const declared = Number(res.headers.get("content-length"));
+      if (Number.isFinite(declared) && declared > maxBytes) {
+        ctrl.abort();
+        throw new TransportError(`${method} ${path}: response ${declared} bytes exceeds the ${maxBytes}-byte cap`, res.status);
+      }
+      const chunks = [];
+      let total = 0;
+      if (res.body) {
+        const reader = res.body.getReader();
+        for (; ; ) {
+          let r;
+          try {
+            r = await reader.read();
+          } catch {
+            throw new TransportError(`${method} ${path}: response body interrupted${ctrl.signal.aborted ? " (timeout)" : ""}`, res.status);
+          }
+          if (r.done) break;
+          total += r.value.length;
+          if (total > maxBytes) {
+            ctrl.abort();
+            throw new TransportError(`${method} ${path}: response exceeds the ${maxBytes}-byte cap`, res.status);
+          }
+          chunks.push(r.value);
+        }
+      }
+      const text = Buffer.concat(chunks.map((c) => Buffer.from(c))).toString("utf8");
+      let json = null;
+      try {
+        json = text ? JSON.parse(text) : null;
+      } catch {
+        throw new TransportError(`${method} ${path}: response is not JSON (HTTP ${res.status})`, res.status);
+      }
+      if (!res.ok) {
+        const msg = json && typeof json === "object" && typeof json.error === "string" ? json.error.slice(0, 200) : "";
+        throw new TransportError(`${method} ${path}: HTTP ${res.status}${msg ? ` ${msg}` : ""}`, res.status);
+      }
+      return json;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const id = (s) => {
+    if (!SESSION_ID.test(s)) throw new TransportError("invalid session id");
+    return s;
+  };
+  return {
+    browser: (body) => call("POST", "/v2/interact", body, L.createMs, L.createBytes),
+    browserExecute: (s, body) => call("POST", `/v2/interact/${id(s)}/execute`, body, L.executeMs, L.executeBytes),
+    deleteBrowser: (s) => call("DELETE", `/v2/interact/${id(s)}`, void 0, L.deleteMs, L.deleteBytes)
+  };
+}
+var INTERACT_API_URL, INTERACT_LIMITS, TransportError, SESSION_ID;
+var init_sandboxTransport = __esm({
+  "src/states/sandboxTransport.ts"() {
+    "use strict";
+    INTERACT_API_URL = "https://api.firecrawl.dev";
+    INTERACT_LIMITS = {
+      createBytes: 64e3,
+      executeBytes: 8e6,
+      deleteBytes: 64e3,
+      createMs: 6e4,
+      executeMs: 12e4,
+      // execute timeout 90 s + margin
+      deleteMs: 6e4
+    };
+    TransportError = class extends Error {
+      constructor(message, status) {
+        super(message);
+        this.status = status;
+        this.name = "TransportError";
+      }
+      status;
+    };
+    SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
+  }
+});
+
 // src/states/sandbox.ts
 function buildSandboxPreview() {
   return {
@@ -42308,20 +42406,26 @@ function buildSandboxPreview() {
     purpose: `One disposable Browser Sandbox: viewport ${SANDBOX.viewport.width}x${SANDBOX.viewport.height} set BEFORE navigating to ${SANDBOX.url}; 3 same-region states of ${SANDBOX.scope} (baseline, Swiper next, Swiper next) measured and screenshotted on the same Playwright page.`,
     notice: [
       "NOT SENT. Paid execution (sandbox-run) HOLDS without --yes and runs at most once per lifecycle operation.",
-      "Billing per operator-read docs: code-only sessions 2 credits per session-minute, 1-minute minimum, prorated; the local reservation is NOT a provider cap. Request-specific creditsBilled from delete is recorded; missing => ambiguous.",
+      "Billing per the docs: code-only 2 credits per browser-minute, 1-minute minimum; no provider hard cap. The local reservation is an allowance. creditsBilled is recorded only if the delete response carries it (not in the current docs); missing => ambiguous.",
       "Synthetic proof only: no hosted run has been observed by this tool."
     ],
-    // Vendor/account defaults (blockAds, location) untouched; no profile.
-    create: { ttl: SANDBOX.ttl, activityTtl: SANDBOX.activityTtl, streamWebView: false },
+    // Documented fields only; vendor/account defaults untouched; no profile.
+    create: { ttl: SANDBOX.ttl, activityTtl: SANDBOX.activityTtl },
     execute: { code: SANDBOX_CODE, language: "node", timeout: SANDBOX.executeTimeoutS },
     delete: { always: true },
-    reservation: { worstCaseCredits: SANDBOX_WORST_CASE_CREDITS, basis: `ceil(ttl ${SANDBOX.ttl}s / 60) x 2 credits per session-minute (ttl units assumed seconds; operator confirms)` },
+    reservation: { worstCaseCredits: SANDBOX_WORST_CASE_CREDITS, basis: `ceil(ttl ${SANDBOX.ttl} s / 60) x 2 credits per browser-minute (documented code-only rate); allowance, not a cap` },
     timing: { createWallMs: SANDBOX_WALL_MS.create, executeWallMs: SANDBOX_WALL_MS.execute, deleteWallMs: SANDBOX_WALL_MS.delete },
+    sources: [
+      "https://docs.firecrawl.dev/features/browser (create/execute/delete, ttl 30-3600 s default 600, activityTtl 10-3600 s default 300, preconnected page, code-only 2 credits/browser-minute, 1-minute minimum)",
+      "https://playwright.dev/docs/api/class-page#page-route (route does not intercept redirect hops)",
+      "https://playwright.dev/docs/api/class-apirequestcontext#api-request-context-get (maxRedirects: 0)",
+      "https://playwright.dev/docs/api/class-page#page-set-viewport-size (set before navigation)"
+    ],
     gaps: [
-      "ttl/activityTtl units are not stated in the installed SDK; --confirm-ttl-seconds attests the official docs say seconds.",
-      "The installed SDK uses /v2/browser endpoints; if the official docs name a different path, verify before execution.",
-      "Inside the hosted browser, IP-literal/local hosts and off-target main-frame navigations are aborted, but hostnames that RESOLVE to private addresses cannot be checked from page code, and whether route interception sees every redirect hop is unverified; the redirect-chain check detects, not prevents.",
-      "`page` availability in a standalone Browser Sandbox execute is assumed from the Interact docs; the code fails closed if it is missing."
+      "REDIRECT GAP (accepted only via --accept-redirect-gap): page.route does not see server redirect hops; the maxRedirects:0 pre-check refuses a 3xx before navigating, but a redirect introduced between the pre-check and goto would be followed by the browser. The chain check then detects it and the run is refused; the redirected request itself is NOT prevented.",
+      "Hostnames that resolve to private addresses cannot be checked from page code.",
+      "Swiper states rely on the known page's semantics; method names/selectors are not a safety guarantee; no side-effect-free promise. slideNext(0) states are not observed animation completions.",
+      "creditsBilled is not in the current docs: recorded only if present; missing => ambiguous."
     ]
   };
 }
@@ -42336,7 +42440,7 @@ function assertSandboxGates(g) {
   if (!Number.isInteger(g.operatorReportedBalance) || g.operatorReportedBalance < 0) missing.push("--operator-reported-balance N");
   if (!g.confirmExistingCredits) missing.push("--confirm-existing-credits");
   if (!g.confirmNoTopup) missing.push("--confirm-no-topup");
-  if (!g.confirmTtlSeconds) missing.push("--confirm-ttl-seconds (you verified in the official docs that ttl/activityTtl are seconds)");
+  if (!g.acceptRedirectGap) missing.push("--accept-redirect-gap (you reviewed the documented redirect gap: pre-check + chain refusal, no prevention of a redirect introduced after the pre-check)");
   if (!g.ledgerPath) missing.push("--ledger FILE (local reservation allowance, not a provider cap)");
   if (missing.length) throw new StateRunPolicyError(`Refusing before any request: missing operator inputs:
   ${missing.join("\n  ")}`);
@@ -42354,17 +42458,8 @@ function assertSandboxGates(g) {
   if (committed + reservation > l.capCredits) throw new StateRunPolicyError(`ledger: ${committed} committed + ${reservation} reservation exceeds the ${l.capCredits}-credit local project budget ceiling (not a provider cap)`);
   return { reservation, committed, remaining: l.capCredits - committed };
 }
-function sandboxClientOptions(apiKey, apiUrl = FIRECRAWL_API_URL) {
-  return { apiKey, apiUrl, timeoutMs: SANDBOX_WALL_MS.execute, maxRetries: 1 };
-}
-async function createSandboxClient(apiKey, apiUrl = FIRECRAWL_API_URL) {
-  const { default: Firecrawl2 } = await Promise.resolve().then(() => (init_dist2(), dist_exports));
-  const fc = new Firecrawl2(sandboxClientOptions(apiKey, apiUrl));
-  return {
-    browser: (a) => fc.browser(a),
-    browserExecute: (id, a) => fc.browserExecute(id, a),
-    deleteBrowser: (id) => fc.deleteBrowser(id)
-  };
+async function createSandboxClient(apiKey, apiUrl = INTERACT_API_URL) {
+  return createInteractClient(apiKey, { apiUrl });
 }
 function parseSandboxOutput(resp) {
   if (!isObj8(resp)) return { ok: false, status: "ambiguous", reason: "execute response is not an object" };
@@ -42399,6 +42494,19 @@ function parseSandboxOutput(resp) {
     if (info.width < 1 || info.height < 1 || info.width > SANDBOX.viewport.width || info.height > SANDBOX.viewport.height || info.width * info.height > SANDBOX.maxPngPixels) return { ok: false, status: "rejected", reason: `state ${i} PNG ${info.width}x${info.height} outside the pixel caps` };
     pngs.push(bytes);
   }
+  const regionOf = (s) => isObj8(s.measured) && isObj8(s.measured.region) ? s.measured.region : null;
+  const targetOf = (s) => isObj8(s.measured) && isObj8(s.measured.target) ? s.measured.target : null;
+  const r0 = regionOf(states[0]);
+  for (const [i, s] of states.entries()) {
+    const reg = regionOf(s);
+    const t = targetOf(s);
+    const clip = isObj8(s.clip) ? s.clip : null;
+    if (!reg || !t || t.selector !== SANDBOX.scope || !clip) return { ok: false, status: "ambiguous", reason: `state ${i} lacks its target measurement or clip` };
+    const n = (v) => typeof v === "number" && Number.isFinite(v) ? v : NaN;
+    if (r0 && (Math.abs(n(reg.x) - n(r0.x)) > 2 || Math.abs(n(reg.w) - n(r0.w)) > 2 || Math.abs(n(reg.y) - n(r0.y)) > 100)) return { ok: false, status: "rejected", reason: `state ${i} measured a different region geometry` };
+    const top = Math.max(0, n(t.viewTop));
+    if (Math.abs(n(clip.y) - top) > 1 || n(clip.height) > n(t.viewBottom) - top + 1 || n(clip.width) !== SANDBOX.viewport.width) return { ok: false, status: "rejected", reason: `state ${i} clip is not the measured target` };
+  }
   return { ok: true, result, pngs };
 }
 async function executeSandbox(o) {
@@ -42423,6 +42531,8 @@ async function executeSandbox(o) {
     sessionDurationMs: null,
     reservation: gate.reservation,
     viewportSet: null,
+    precheck: null,
+    modifications: [],
     nav: null,
     env: null,
     autoplay: null,
@@ -42519,6 +42629,8 @@ async function executeSandbox(o) {
     op("execute", "ok", "W2F_RESULT parsed; 3 states");
     const r = parsed.result;
     rec.viewportSet = isObj8(r.viewportSet) ? r.viewportSet : null;
+    rec.precheck = isObj8(r.precheck) ? r.precheck : null;
+    rec.modifications = Array.isArray(r.modifications) ? r.modifications.filter((x) => typeof x === "string").slice(0, 10).map((x) => x.slice(0, 200)) : [];
     rec.nav = isObj8(r.nav) ? r.nav : null;
     rec.env = isObj8(r.env) ? r.env : null;
     rec.autoplay = isObj8(r.autoplay) ? r.autoplay : null;
@@ -42534,6 +42646,7 @@ async function executeSandbox(o) {
     if (new Set(shas).size < shas.length) rec.warnings.push("some state screenshots are byte-identical (no visual distinctness)");
     for (const s of rec.states.slice(1)) if (s.trigger && s.trigger.moved !== true) rec.warnings.push(`state "${s.name}": Swiper did not move`);
     if (rec.blocked.length) rec.warnings.push(`${rec.blocked.length} request(s) aborted by the in-browser guard`);
+    rec.warnings.push("states after slideNext(0) are measured after 0 ms transitions, not observed animation completions");
     overall = "accepted";
   } finally {
     op("delete", "attempting", `session ${id}`);
@@ -42632,14 +42745,14 @@ var init_sandbox = __esm({
     init_urlGuard();
     init_imageInfo();
     init_execute();
+    init_sandboxTransport();
     init_ledger();
     isObj8 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
     SANDBOX_URL = "https://bootstrapmade.com/content/demo/Bootslander/";
     SANDBOX = {
       url: SANDBOX_URL,
       viewport: { width: 1920, height: 1080 },
-      // ASSUMED SECONDS: the installed SDK does not state ttl units; the operator
-      // must confirm the official docs (--confirm-ttl-seconds) before execution.
+      // seconds (documented ranges: ttl 30-3600, activityTtl 10-3600)
       ttl: 120,
       activityTtl: 60,
       executeTimeoutS: 90,
@@ -42657,6 +42770,7 @@ var init_sandbox = __esm({
       maxImages: 50
     };
     SANDBOX_WORST_CASE_CREDITS = Math.ceil(SANDBOX.ttl / 60) * 2;
+    if (SANDBOX.ttl < 30 || SANDBOX.ttl > 3600 || SANDBOX.activityTtl < 10 || SANDBOX.activityTtl > 3600) throw new Error("sandbox ttl outside the documented ranges");
     SANDBOX_WALL_MS = { create: 6e4, execute: SANDBOX.executeTimeoutS * 1e3 + 3e4, delete: 6e4 };
     PAGE_FUNCS = String.raw`
 const W2F_PROBE = () => { const d = document.documentElement, b = document.body, vv = window.visualViewport; return { innerWidth: window.innerWidth, innerHeight: window.innerHeight, rootClientWidth: d.clientWidth, rootClientHeight: d.clientHeight, visualViewport: vv ? { width: vv.width, height: vv.height, scale: vv.scale, offsetTop: vv.offsetTop, pageTop: vv.pageTop } : null, scrollY: window.scrollY, documentHeight: Math.max(d.scrollHeight, b ? b.scrollHeight : 0), devicePixelRatio: window.devicePixelRatio, readyState: document.readyState }; };
@@ -42715,7 +42829,7 @@ const W2F_MEASURE = (a) => {
     SANDBOX_CODE = String.raw`// website-to-figma fixed sandbox code (reviewed; takes no inputs)
 const W = ${JSON.stringify({ url: SANDBOX.url, vw: SANDBOX.viewport.width, vh: SANDBOX.viewport.height, navTimeoutMs: SANDBOX.navTimeoutMs, settleMs: SANDBOX.settleMs, stateWaitMs: SANDBOX.stateWaitMs, scope: SANDBOX.scope, swiper: SANDBOX.swiper, states: SANDBOX.states, maxPngBytes: SANDBOX.maxPngBytes, max: { maxElements: SANDBOX.maxElements, maxTexts: SANDBOX.maxTexts, maxImages: SANDBOX.maxImages } })};
 ${PAGE_FUNCS}
-const out = { w2f: "sandbox", v: 1, error: null, viewportSet: null, nav: null, env: null, autoplay: null, blocked: [], states: [] };
+const out = { w2f: "sandbox", v: 1, error: null, viewportSet: null, precheck: null, nav: null, env: null, autoplay: null, modifications: [], blocked: [], states: [] };
 try {
   if (typeof page === "undefined" || !page) throw new Error("no Playwright page in this session");
   await page.route("**/*", (route) => {
@@ -42729,13 +42843,19 @@ try {
       else if (u.username || u.password) why = "credentials";
       else if (/^[0-9.]+$/.test(host) || host.includes(":")) why = "ip-literal";
       else if (host === "localhost" || /\.(local|internal|localhost|home\.arpa|test|lan)$/.test(host)) why = "local-name";
-      else if (nav && u.href !== W.url) why = "main-frame-navigation-off-target";
+      else if (nav && req.url() !== W.url) why = "main-frame-navigation-off-target"; // raw string, no normalization
     }
     if (why) { if (out.blocked.length < 50) out.blocked.push({ origin: u ? u.protocol + "//" + u.hostname : "(invalid)", why }); return route.abort(); }
     return route.continue();
   });
   await page.setViewportSize({ width: W.vw, height: W.vh });
   out.viewportSet = { width: W.vw, height: W.vh };
+  // Redirect PRE-CHECK (no redirect followed): refuse the run on any 3xx.
+  if (!page.request || typeof page.request.get !== "function") throw new Error("APIRequestContext unavailable: redirect pre-check not possible");
+  const pre = await page.request.get(W.url, { maxRedirects: 0, timeout: W.navTimeoutMs });
+  out.precheck = { status: pre.status(), url: pre.url() };
+  if (pre.status() >= 300 && pre.status() < 400) throw new Error("target answered a redirect (" + pre.status() + ") in the pre-check; not navigating");
+  if (pre.url() !== W.url) throw new Error("pre-check URL differs from the exact target");
   const resp = await page.goto(W.url, { waitUntil: "load", timeout: W.navTimeoutMs });
   const chain = []; let r = resp ? resp.request() : null;
   while (r && chain.length < 10) { chain.unshift(r.url()); r = r.redirectedFrom(); }
@@ -42746,6 +42866,7 @@ try {
   if (out.env.innerWidth !== W.vw || out.env.innerHeight !== W.vh) throw new Error("viewport not applied: " + out.env.innerWidth + "x" + out.env.innerHeight);
   out.autoplay = await page.evaluate(W2F_SWIPER, { sel: W.swiper, op: "stop-autoplay" });
   if (!out.autoplay.valid) throw new Error("swiper refused: " + out.autoplay.reason);
+  if (out.autoplay.before && out.autoplay.before.autoplayRunning) out.modifications.push("stopped autoplay of " + W.swiper + " via its own Swiper API (not the page's original behavior)");
   for (let seq = 0; seq < W.states.length; seq++) {
     let trigger = null;
     if (seq > 0) { trigger = await page.evaluate(W2F_SWIPER, { sel: W.swiper, op: "next" }); if (!trigger.valid) throw new Error("swiper refused: " + trigger.reason); }
@@ -43401,7 +43522,7 @@ function parseFlags(args) {
   const fontMaps = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (a === "--yes" || a === "--help" || a === "-h" || a === "--no-map" || a === "--confirm-existing-credits" || a === "--confirm-no-topup" || a === "--acknowledge-synthetic-modifications" || a === "--confirm-ttl-seconds") {
+    if (a === "--yes" || a === "--help" || a === "-h" || a === "--no-map" || a === "--confirm-existing-credits" || a === "--confirm-no-topup" || a === "--acknowledge-synthetic-modifications" || a === "--accept-redirect-gap") {
       flags.set(a.replace(/^-+/, ""), true);
     } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label" || a === "--font-map" || a === "--normalize-reference" || a === "--plan" || a === "--state-reactions" || a === "--preview" || a === "--ledger" || a === "--operator-credits-per-request" || a === "--reviewed-continuation" || a === "--run" || a === "--prior-credits" || a === "--note" || a === "--id" || a === "--credits" || a === "--doc" || a === "--renderer" || a === "--renderer-sha256" || a === "--max-job-chars" || a === "--image-hashes" || a === "--images") {
       const v = args[++i];
@@ -43639,15 +43760,16 @@ async function main2(argv) {
       operatorReportedBalance: optInt("operator-reported-balance"),
       confirmExistingCredits: flags.has("confirm-existing-credits"),
       confirmNoTopup: flags.has("confirm-no-topup"),
-      confirmTtlSeconds: flags.has("confirm-ttl-seconds"),
+      acceptRedirectGap: flags.has("accept-redirect-gap"),
       ledgerPath: typeof flags.get("ledger") === "string" ? flags.get("ledger") : void 0,
       reviewedContinuation: typeof flags.get("reviewed-continuation") === "string" ? flags.get("reviewed-continuation") : void 0
     };
     const g = assertSandboxGates(gates);
     console.log(`Exact sandbox lifecycle (preview sha256 ${validated.previewSha256}; request sha256 ${validated.requestSha256}), one attempt per operation, no replay:`);
-    console.log(`  create  POST /v2/browser { ttl ${SANDBOX.ttl}, activityTtl ${SANDBOX.activityTtl}, streamWebView false } (no profile; vendor defaults kept)`);
-    console.log(`  execute POST /v2/browser/{id}/execute { language node, timeout ${SANDBOX.executeTimeoutS}, fixed reviewed code } -> setViewportSize ${SANDBOX.viewport.width}x${SANDBOX.viewport.height} BEFORE goto ${SANDBOX.url}; 3 states of ${SANDBOX.scope}`);
-    console.log("  delete  DELETE /v2/browser/{id} (always, in finally)");
+    console.log(`  create  POST https://api.firecrawl.dev/v2/interact { ttl ${SANDBOX.ttl}, activityTtl ${SANDBOX.activityTtl} } (seconds; no profile; vendor defaults kept)`);
+    console.log(`  execute POST https://api.firecrawl.dev/v2/interact/{id}/execute { language node, timeout ${SANDBOX.executeTimeoutS}, fixed reviewed code } -> setViewportSize ${SANDBOX.viewport.width}x${SANDBOX.viewport.height}, redirect pre-check (maxRedirects 0), goto ${SANDBOX.url}; 3 states of ${SANDBOX.scope}`);
+    console.log("  delete  DELETE https://api.firecrawl.dev/v2/interact/{id} (always, in finally)");
+    console.log("Gaps accepted by --accept-redirect-gap: a redirect introduced after the pre-check is followed by the browser (detected and refused afterwards, NOT prevented); private-resolving hostnames cannot be checked in page code; Swiper states rely on known page semantics (no side-effect-free promise); 0 ms transitions are not animation completions; creditsBilled is undocumented (missing => ambiguous).");
     console.log(`Reservation ${g.reservation} (worst case for the full ttl: ${SANDBOX_WORST_CASE_CREDITS}; NOT a provider cap). Ledger committed ${g.committed}, remaining local allowance ${g.remaining}.`);
     console.log("Stops: preview mismatch; missing gate; unresolved/duplicate/over-ceiling ledger; create ambiguous (no re-create) or failed; execute error/killed/truncated/partial/oversize; in-browser redirect/viewport/swiper refusal; delete not confirmed (blocking); missing creditsBilled (ambiguous).");
     if (!flags.has("yes")) {
@@ -44054,8 +44176,8 @@ var init_cli = __esm({
   website-to-figma sandbox-plan --out FILE
       Offline: the fixed Browser Sandbox preview (viewport before navigation; 3 same-region states).
   website-to-figma sandbox-run --preview FILE --out DIR --ledger FILE --operator-credits-per-request N
-        --operator-reported-balance N --confirm-existing-credits --confirm-no-topup --confirm-ttl-seconds [--yes]
-      PAID: create -> execute -> delete (always), one attempt each; HOLDS without --yes.
+        --operator-reported-balance N --confirm-existing-credits --confirm-no-topup --accept-redirect-gap [--yes]
+      PAID: create -> execute -> delete (always), one attempt each (documented /v2/interact); HOLDS without --yes.
   website-to-figma sandbox-cleanup --ledger FILE --id LEDGER_ID [--yes]
       One explicit DELETE for a recorded session whose cleanup was not confirmed; HOLDS without --yes.
   website-to-figma sandbox-convert --run RUN_DIR --out DIR

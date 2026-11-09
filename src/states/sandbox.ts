@@ -1,33 +1,44 @@
 // ONE disposable Firecrawl Browser Sandbox experiment (code-only Playwright),
 // fixed and reviewed; nothing here runs unless an operator passes every gate
-// and --yes. Lifecycle (installed SDK 4.52 dist/index.js:1649-1700):
-//   create  POST   /v2/browser            { ttl, activityTtl, streamWebView }
-//   execute POST   /v2/browser/{id}/execute { code, language: "node", timeout }
-//   delete  DELETE /v2/browser/{id}       -> { creditsBilled, sessionDurationMs }
-// Each operation is attempted ONCE (SDK maxRetries 1; these methods have no
-// resume loop). Delete runs in `finally` whenever create returned an id. The
-// ledger entry is written BEFORE create and every operation's attempt and
-// outcome is persisted; an ambiguous create/execute or a failed/ambiguous
-// cleanup leaves the entry blocking and nothing is re-created automatically.
+// and --yes. Documented lifecycle (https://docs.firecrawl.dev/features/browser,
+// public curl reference; transport in sandboxTransport.ts):
+//   create  POST   /v2/interact               { ttl: 120, activityTtl: 60 }   (seconds; ttl 30-3600, activityTtl 10-3600)
+//   execute POST   /v2/interact/{id}/execute  { code, language: "node", timeout }  (the page is preconnected)
+//   delete  DELETE /v2/interact/{id}
+// Each operation is ONE fetch (no retry/replay). Delete runs in `finally`
+// whenever create returned an id. The ledger entry is written BEFORE create
+// and every operation's attempt and outcome is persisted; an ambiguous
+// create/execute or a failed/ambiguous cleanup leaves the entry blocking and
+// nothing is re-created automatically. Billing per the docs: code-only 2
+// credits per browser-minute, 1-minute minimum; there is no provider hard cap.
 //
-// Page code (fixed, no inputs): request guard, setViewportSize BEFORE goto,
-// exact target URL, redirect chain recorded and refused, viewport verified,
-// autoplay of the ONE validated Swiper stopped (recorded modification), then
-// three same-region states of #testimonials (baseline, slideNext(0),
-// slideNext(0)) each: scroll into view -> wait -> region measurement ->
-// clipped PNG. No clicks, prompts, profiles, internal flags or other URLs.
+// Page code (fixed, no inputs): request guard; setViewportSize BEFORE any
+// request to the target; a redirect PRE-CHECK of the exact target with
+// Playwright's APIRequestContext (maxRedirects 0, refuse any 3xx); goto the
+// exact URL; main-frame navigations allowed ONLY for the exact raw URL string
+// (no normalization); redirect chain refused; viewport verified; Swiper
+// autoplay stopped (recorded MODIFICATION); three states of ONE region
+// (#testimonials): baseline, slideNext(0), slideNext(0).
 //
-// URL safety: the start URL passes the hosted guard (exact bootstrapmade.com
-// DNS exception only). Inside the hosted browser, a Playwright route guard
-// aborts non-http(s) schemes, credentials, IP-literal and local hosts, and any
-// main-frame navigation other than the exact target. GAP (stated, not hidden):
-// whether Playwright route interception sees every server-side redirect hop is
-// not verified offline, and hostnames that RESOLVE to private addresses cannot
-// be checked from page code; the final-URL/redirect-chain check detects but
-// does not prevent such a request.
+// Precise gaps (an acceptance gate holds on them; they are not claimed away):
+//  * page.route does not intercept server redirect hops; the pre-check
+//    narrows but cannot eliminate a redirect between the pre-check and goto
+//    (time-of-check/time-of-use). The post-navigation chain check DETECTS a
+//    redirect; it does not prevent the redirected request (no SSRF prevention
+//    is claimed after a redirect).
+//  * Hostnames that RESOLVE to private addresses cannot be checked from page
+//    code (the local DNS guard applies only to this tool's own fetches).
+//  * Swiper: method names and selectors are not a safety guarantee; the
+//    states rely on the known page's supplied HTML/JS semantics (autoplay,
+//    loop, no `on` handlers) and are not promised side-effect free.
+//  * slideNext(0) states are measured after 0 ms transitions: they are not
+//    observed completions of real animated motion.
+//  * creditsBilled on delete is not in the current docs: recorded only if
+//    present; missing => ambiguous.
 import { assertHostedFirecrawlUrl, systemResolver, type Resolver } from "../security/urlGuard";
 import { inspectImage, sha256Hex } from "../shared/imageInfo";
-import { canonicalJson, classify, redact, sha256, StateRunPolicyError, withTimeout, FIRECRAWL_API_URL } from "./execute";
+import { canonicalJson, classify, redact, sha256, StateRunPolicyError, withTimeout } from "./execute";
+import { createInteractClient, INTERACT_API_URL, type InteractClient } from "./sandboxTransport";
 import { readLedger, reserveAttempt, settleAttempt, recordOp, committedCredits, unresolved, LedgerError } from "./ledger";
 
 type Obj = Record<string, unknown>;
@@ -37,8 +48,7 @@ export const SANDBOX_URL = "https://bootstrapmade.com/content/demo/Bootslander/"
 export const SANDBOX = {
   url: SANDBOX_URL,
   viewport: { width: 1920, height: 1080 },
-  // ASSUMED SECONDS: the installed SDK does not state ttl units; the operator
-  // must confirm the official docs (--confirm-ttl-seconds) before execution.
+  // seconds (documented ranges: ttl 30-3600, activityTtl 10-3600)
   ttl: 120,
   activityTtl: 60,
   executeTimeoutS: 90,
@@ -58,6 +68,7 @@ export const SANDBOX = {
 // Worst case if the session lives its whole ttl (2 credits per session-minute,
 // code-only, per the operator-read pricing): NOT a provider cap.
 export const SANDBOX_WORST_CASE_CREDITS = Math.ceil(SANDBOX.ttl / 60) * 2;
+if (SANDBOX.ttl < 30 || SANDBOX.ttl > 3600 || SANDBOX.activityTtl < 10 || SANDBOX.activityTtl > 3600) throw new Error("sandbox ttl outside the documented ranges");
 export const SANDBOX_WALL_MS = { create: 60_000, execute: SANDBOX.executeTimeoutS * 1000 + 30_000, delete: 60_000 };
 
 // ---- fixed page-side functions (serialized by Playwright page.evaluate) ----
@@ -119,7 +130,7 @@ const W2F_MEASURE = (a) => {
 export const SANDBOX_CODE = String.raw`// website-to-figma fixed sandbox code (reviewed; takes no inputs)
 const W = ${JSON.stringify({ url: SANDBOX.url, vw: SANDBOX.viewport.width, vh: SANDBOX.viewport.height, navTimeoutMs: SANDBOX.navTimeoutMs, settleMs: SANDBOX.settleMs, stateWaitMs: SANDBOX.stateWaitMs, scope: SANDBOX.scope, swiper: SANDBOX.swiper, states: SANDBOX.states, maxPngBytes: SANDBOX.maxPngBytes, max: { maxElements: SANDBOX.maxElements, maxTexts: SANDBOX.maxTexts, maxImages: SANDBOX.maxImages } })};
 ${PAGE_FUNCS}
-const out = { w2f: "sandbox", v: 1, error: null, viewportSet: null, nav: null, env: null, autoplay: null, blocked: [], states: [] };
+const out = { w2f: "sandbox", v: 1, error: null, viewportSet: null, precheck: null, nav: null, env: null, autoplay: null, modifications: [], blocked: [], states: [] };
 try {
   if (typeof page === "undefined" || !page) throw new Error("no Playwright page in this session");
   await page.route("**/*", (route) => {
@@ -133,13 +144,19 @@ try {
       else if (u.username || u.password) why = "credentials";
       else if (/^[0-9.]+$/.test(host) || host.includes(":")) why = "ip-literal";
       else if (host === "localhost" || /\.(local|internal|localhost|home\.arpa|test|lan)$/.test(host)) why = "local-name";
-      else if (nav && u.href !== W.url) why = "main-frame-navigation-off-target";
+      else if (nav && req.url() !== W.url) why = "main-frame-navigation-off-target"; // raw string, no normalization
     }
     if (why) { if (out.blocked.length < 50) out.blocked.push({ origin: u ? u.protocol + "//" + u.hostname : "(invalid)", why }); return route.abort(); }
     return route.continue();
   });
   await page.setViewportSize({ width: W.vw, height: W.vh });
   out.viewportSet = { width: W.vw, height: W.vh };
+  // Redirect PRE-CHECK (no redirect followed): refuse the run on any 3xx.
+  if (!page.request || typeof page.request.get !== "function") throw new Error("APIRequestContext unavailable: redirect pre-check not possible");
+  const pre = await page.request.get(W.url, { maxRedirects: 0, timeout: W.navTimeoutMs });
+  out.precheck = { status: pre.status(), url: pre.url() };
+  if (pre.status() >= 300 && pre.status() < 400) throw new Error("target answered a redirect (" + pre.status() + ") in the pre-check; not navigating");
+  if (pre.url() !== W.url) throw new Error("pre-check URL differs from the exact target");
   const resp = await page.goto(W.url, { waitUntil: "load", timeout: W.navTimeoutMs });
   const chain = []; let r = resp ? resp.request() : null;
   while (r && chain.length < 10) { chain.unshift(r.url()); r = r.redirectedFrom(); }
@@ -150,6 +167,7 @@ try {
   if (out.env.innerWidth !== W.vw || out.env.innerHeight !== W.vh) throw new Error("viewport not applied: " + out.env.innerWidth + "x" + out.env.innerHeight);
   out.autoplay = await page.evaluate(W2F_SWIPER, { sel: W.swiper, op: "stop-autoplay" });
   if (!out.autoplay.valid) throw new Error("swiper refused: " + out.autoplay.reason);
+  if (out.autoplay.before && out.autoplay.before.autoplayRunning) out.modifications.push("stopped autoplay of " + W.swiper + " via its own Swiper API (not the page's original behavior)");
   for (let seq = 0; seq < W.states.length; seq++) {
     let trigger = null;
     if (seq > 0) { trigger = await page.evaluate(W2F_SWIPER, { sel: W.swiper, op: "next" }); if (!trigger.valid) throw new Error("swiper refused: " + trigger.reason); }
@@ -175,11 +193,12 @@ export interface SandboxPreview {
   sent: false;
   purpose: string;
   notice: string[];
-  create: { ttl: number; activityTtl: number; streamWebView: false };
+  create: { ttl: number; activityTtl: number };
   execute: { code: string; language: "node"; timeout: number };
   delete: { always: true };
   reservation: { worstCaseCredits: number; basis: string };
   timing: { createWallMs: number; executeWallMs: number; deleteWallMs: number };
+  sources: string[];
   gaps: string[];
 }
 
@@ -191,20 +210,26 @@ export function buildSandboxPreview(): SandboxPreview {
     purpose: `One disposable Browser Sandbox: viewport ${SANDBOX.viewport.width}x${SANDBOX.viewport.height} set BEFORE navigating to ${SANDBOX.url}; 3 same-region states of ${SANDBOX.scope} (baseline, Swiper next, Swiper next) measured and screenshotted on the same Playwright page.`,
     notice: [
       "NOT SENT. Paid execution (sandbox-run) HOLDS without --yes and runs at most once per lifecycle operation.",
-      "Billing per operator-read docs: code-only sessions 2 credits per session-minute, 1-minute minimum, prorated; the local reservation is NOT a provider cap. Request-specific creditsBilled from delete is recorded; missing => ambiguous.",
+      "Billing per the docs: code-only 2 credits per browser-minute, 1-minute minimum; no provider hard cap. The local reservation is an allowance. creditsBilled is recorded only if the delete response carries it (not in the current docs); missing => ambiguous.",
       "Synthetic proof only: no hosted run has been observed by this tool.",
     ],
-    // Vendor/account defaults (blockAds, location) untouched; no profile.
-    create: { ttl: SANDBOX.ttl, activityTtl: SANDBOX.activityTtl, streamWebView: false },
+    // Documented fields only; vendor/account defaults untouched; no profile.
+    create: { ttl: SANDBOX.ttl, activityTtl: SANDBOX.activityTtl },
     execute: { code: SANDBOX_CODE, language: "node", timeout: SANDBOX.executeTimeoutS },
     delete: { always: true },
-    reservation: { worstCaseCredits: SANDBOX_WORST_CASE_CREDITS, basis: `ceil(ttl ${SANDBOX.ttl}s / 60) x 2 credits per session-minute (ttl units assumed seconds; operator confirms)` },
+    reservation: { worstCaseCredits: SANDBOX_WORST_CASE_CREDITS, basis: `ceil(ttl ${SANDBOX.ttl} s / 60) x 2 credits per browser-minute (documented code-only rate); allowance, not a cap` },
     timing: { createWallMs: SANDBOX_WALL_MS.create, executeWallMs: SANDBOX_WALL_MS.execute, deleteWallMs: SANDBOX_WALL_MS.delete },
+    sources: [
+      "https://docs.firecrawl.dev/features/browser (create/execute/delete, ttl 30-3600 s default 600, activityTtl 10-3600 s default 300, preconnected page, code-only 2 credits/browser-minute, 1-minute minimum)",
+      "https://playwright.dev/docs/api/class-page#page-route (route does not intercept redirect hops)",
+      "https://playwright.dev/docs/api/class-apirequestcontext#api-request-context-get (maxRedirects: 0)",
+      "https://playwright.dev/docs/api/class-page#page-set-viewport-size (set before navigation)",
+    ],
     gaps: [
-      "ttl/activityTtl units are not stated in the installed SDK; --confirm-ttl-seconds attests the official docs say seconds.",
-      "The installed SDK uses /v2/browser endpoints; if the official docs name a different path, verify before execution.",
-      "Inside the hosted browser, IP-literal/local hosts and off-target main-frame navigations are aborted, but hostnames that RESOLVE to private addresses cannot be checked from page code, and whether route interception sees every redirect hop is unverified; the redirect-chain check detects, not prevents.",
-      "`page` availability in a standalone Browser Sandbox execute is assumed from the Interact docs; the code fails closed if it is missing.",
+      "REDIRECT GAP (accepted only via --accept-redirect-gap): page.route does not see server redirect hops; the maxRedirects:0 pre-check refuses a 3xx before navigating, but a redirect introduced between the pre-check and goto would be followed by the browser. The chain check then detects it and the run is refused; the redirected request itself is NOT prevented.",
+      "Hostnames that resolve to private addresses cannot be checked from page code.",
+      "Swiper states rely on the known page's semantics; method names/selectors are not a safety guarantee; no side-effect-free promise. slideNext(0) states are not observed animation completions.",
+      "creditsBilled is not in the current docs: recorded only if present; missing => ambiguous.",
     ],
   };
 }
@@ -222,7 +247,7 @@ export interface SandboxGates {
   operatorReportedBalance?: number;
   confirmExistingCredits?: boolean;
   confirmNoTopup?: boolean;
-  confirmTtlSeconds?: boolean;
+  acceptRedirectGap?: boolean;
   ledgerPath?: string;
   reviewedContinuation?: string;
 }
@@ -233,7 +258,7 @@ export function assertSandboxGates(g: SandboxGates): { reservation: number; comm
   if (!Number.isInteger(g.operatorReportedBalance) || (g.operatorReportedBalance as number) < 0) missing.push("--operator-reported-balance N");
   if (!g.confirmExistingCredits) missing.push("--confirm-existing-credits");
   if (!g.confirmNoTopup) missing.push("--confirm-no-topup");
-  if (!g.confirmTtlSeconds) missing.push("--confirm-ttl-seconds (you verified in the official docs that ttl/activityTtl are seconds)");
+  if (!g.acceptRedirectGap) missing.push("--accept-redirect-gap (you reviewed the documented redirect gap: pre-check + chain refusal, no prevention of a redirect introduced after the pre-check)");
   if (!g.ledgerPath) missing.push("--ledger FILE (local reservation allowance, not a provider cap)");
   if (missing.length) throw new StateRunPolicyError(`Refusing before any request: missing operator inputs:\n  ${missing.join("\n  ")}`);
   const reservation = g.operatorCreditsPerRequest as number;
@@ -251,23 +276,10 @@ export function assertSandboxGates(g: SandboxGates): { reservation: number; comm
   return { reservation, committed, remaining: l.capCredits - committed };
 }
 
-// Minimal client surface (create/execute/delete only).
-export interface SandboxClient {
-  browser(args: Obj): Promise<unknown>;
-  browserExecute(id: string, args: Obj): Promise<unknown>;
-  deleteBrowser(id: string): Promise<unknown>;
-}
-export function sandboxClientOptions(apiKey: string, apiUrl: string = FIRECRAWL_API_URL) {
-  return { apiKey, apiUrl, timeoutMs: SANDBOX_WALL_MS.execute, maxRetries: 1 };
-}
-export async function createSandboxClient(apiKey: string, apiUrl: string = FIRECRAWL_API_URL): Promise<SandboxClient> {
-  const { default: Firecrawl } = await import("@mendable/firecrawl-js");
-  const fc = new Firecrawl(sandboxClientOptions(apiKey, apiUrl));
-  return {
-    browser: (a) => fc.browser(a as never) as Promise<unknown>,
-    browserExecute: (id, a) => fc.browserExecute(id, a as never) as Promise<unknown>,
-    deleteBrowser: (id) => fc.deleteBrowser(id) as Promise<unknown>,
-  };
+// Minimal client surface (create/execute/delete only): the narrow documented transport.
+export type SandboxClient = InteractClient;
+export async function createSandboxClient(apiKey: string, apiUrl: string = INTERACT_API_URL): Promise<SandboxClient> {
+  return createInteractClient(apiKey, { apiUrl });
 }
 
 export interface SandboxStateOut {
@@ -295,6 +307,8 @@ export interface SandboxRecord {
   sessionDurationMs: number | null;
   reservation: number;
   viewportSet: Obj | null;
+  precheck: Obj | null;
+  modifications: string[];
   nav: Obj | null;
   env: Obj | null;
   autoplay: Obj | null;
@@ -340,6 +354,20 @@ export function parseSandboxOutput(resp: unknown): { ok: true; result: Obj; pngs
     if (info.width < 1 || info.height < 1 || info.width > SANDBOX.viewport.width || info.height > SANDBOX.viewport.height || info.width * info.height > SANDBOX.maxPngPixels) return { ok: false, status: "rejected", reason: `state ${i} PNG ${info.width}x${info.height} outside the pixel caps` };
     pngs.push(bytes);
   }
+  // SAME target identity + geometry across states; clip inside the target
+  const regionOf = (s: Obj) => (isObj(s.measured) && isObj(s.measured.region) ? s.measured.region : null);
+  const targetOf = (s: Obj) => (isObj(s.measured) && isObj(s.measured.target) ? s.measured.target : null);
+  const r0 = regionOf(states[0] as Obj);
+  for (const [i, s] of (states as Obj[]).entries()) {
+    const reg = regionOf(s);
+    const t = targetOf(s);
+    const clip = isObj(s.clip) ? s.clip : null;
+    if (!reg || !t || t.selector !== SANDBOX.scope || !clip) return { ok: false, status: "ambiguous", reason: `state ${i} lacks its target measurement or clip` };
+    const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : NaN);
+    if (r0 && (Math.abs(n(reg.x) - n(r0.x)) > 2 || Math.abs(n(reg.w) - n(r0.w)) > 2 || Math.abs(n(reg.y) - n(r0.y)) > 100)) return { ok: false, status: "rejected", reason: `state ${i} measured a different region geometry` };
+    const top = Math.max(0, n(t.viewTop));
+    if (Math.abs(n(clip.y) - top) > 1 || n(clip.height) > n(t.viewBottom) - top + 1 || n(clip.width) !== SANDBOX.viewport.width) return { ok: false, status: "rejected", reason: `state ${i} clip is not the measured target` };
+  }
   return { ok: true, result, pngs };
 }
 
@@ -377,6 +405,8 @@ export async function executeSandbox(o: SandboxExecuteOptions): Promise<SandboxR
     sessionDurationMs: null,
     reservation: gate.reservation,
     viewportSet: null,
+    precheck: null,
+    modifications: [],
     nav: null,
     env: null,
     autoplay: null,
@@ -475,6 +505,8 @@ export async function executeSandbox(o: SandboxExecuteOptions): Promise<SandboxR
     op("execute", "ok", "W2F_RESULT parsed; 3 states");
     const r = parsed.result;
     rec.viewportSet = isObj(r.viewportSet) ? r.viewportSet : null;
+    rec.precheck = isObj(r.precheck) ? r.precheck : null;
+    rec.modifications = Array.isArray(r.modifications) ? r.modifications.filter((x): x is string => typeof x === "string").slice(0, 10).map((x) => x.slice(0, 200)) : [];
     rec.nav = isObj(r.nav) ? r.nav : null;
     rec.env = isObj(r.env) ? r.env : null;
     rec.autoplay = isObj(r.autoplay) ? r.autoplay : null;
@@ -491,6 +523,7 @@ export async function executeSandbox(o: SandboxExecuteOptions): Promise<SandboxR
     if (new Set(shas).size < shas.length) rec.warnings.push("some state screenshots are byte-identical (no visual distinctness)");
     for (const s of rec.states.slice(1)) if (s.trigger && s.trigger.moved !== true) rec.warnings.push(`state "${s.name}": Swiper did not move`);
     if (rec.blocked.length) rec.warnings.push(`${rec.blocked.length} request(s) aborted by the in-browser guard`);
+    rec.warnings.push("states after slideNext(0) are measured after 0 ms transitions, not observed animation completions");
     overall = "accepted";
   } finally {
     // ---- delete (one attempt, always) ----

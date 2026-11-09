@@ -8,9 +8,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import Firecrawl from "@mendable/firecrawl-js";
 import { buildSandboxPreview, createSandboxClient, executeSandbox, parseSandboxOutput, sandboxPreviewSha256, sandboxToCapture, validateSandboxPreview, cleanupSandbox, SANDBOX, SANDBOX_CODE, SANDBOX_URL, SANDBOX_WORST_CASE_CREDITS, type SandboxClient } from "../src/states/sandbox";
 import { StateRunPolicyError } from "../src/states/execute";
+import { createInteractClient } from "../src/states/sandboxTransport";
 import { initLedger, readLedger } from "../src/states/ledger";
 import { syntheticPng } from "../src/fixtures/hifiSynthetic";
 import { captureFromScrapeResponses } from "../src/hifi/adapter";
@@ -30,7 +30,7 @@ const fakeIp = (asked: string[] = []) => async (h: string) => (asked.push(h), ["
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 
 // ---------------- fake Playwright page over jsdom ----------------
-function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: boolean } = {}) {
+function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: boolean; precheck3xx?: boolean } = {}) {
   const calls: string[] = [];
   const html = `<!doctype html><html><body><section id="hero">Hero</section><section id="testimonials"><div class="swiper init-swiper"><div class="swiper-wrapper"><div class="swiper-slide"><h3 id="slide">Slide 0</h3></div></div></div></section></body></html>`;
   const d = new JSDOM(html, { runScripts: "outside-only", virtualConsole: new VirtualConsole(), url: SANDBOX_URL });
@@ -85,12 +85,20 @@ function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: 
       route("http://169.254.169.254/latest/meta-data", false);
       route("http://localhost:8080/x", false);
       route("https://evil.example/", true);
+      route("https://bootstrapmade.com/content/demo/Bootslander", true); // missing slash: raw string differs
+      route("https://BOOTSTRAPMADE.com/content/demo/Bootslander/", true); // case variant: raw string differs
       route("file:///etc/passwd", false);
       const first = { url: () => "https://bootstrapmade.com/old", redirectedFrom: () => null };
       const final = { url: () => url, redirectedFrom: () => (o.redirect ? first : null) };
       return { status: () => 200, request: () => final };
     },
     url: () => SANDBOX_URL,
+    request: {
+      get: async (url: string, opts: { maxRedirects: number }) => {
+        calls.push(`precheck:${url}:maxRedirects=${opts.maxRedirects}`);
+        return { status: () => (o.precheck3xx ? 301 : 200), url: () => url };
+      },
+    },
     mainFrame: () => mainFrame,
     waitForTimeout: async () => {},
     // like Playwright: only the function SOURCE crosses into the page (no closure/outer helpers)
@@ -111,13 +119,16 @@ async function runCode(p: ReturnType<typeof fakePage>) {
 describe("fixed sandbox preview", () => {
   it("creates with ttl/activityTtl only (no profile/location/blockAds override), node code, viewport before navigation", () => {
     const p = buildSandboxPreview();
-    expect(p.create).toEqual({ ttl: 120, activityTtl: 60, streamWebView: false });
+    expect(p.create).toEqual({ ttl: 120, activityTtl: 60 });
+    expect(p.sources[0]).toMatch(/^https:\/\/docs\.firecrawl\.dev\/features\/browser/);
     expect(p.execute).toMatchObject({ language: "node", timeout: 90 });
     expect(p.reservation.worstCaseCredits).toBe(SANDBOX_WORST_CASE_CREDITS);
     expect(SANDBOX_WORST_CASE_CREDITS).toBe(4);
     const code = p.execute.code;
     expect(code.indexOf("page.setViewportSize")).toBeLessThan(code.indexOf("page.goto"));
     expect(code.indexOf("page.route")).toBeLessThan(code.indexOf("page.goto"));
+    expect(code.indexOf("maxRedirects: 0")).toBeGreaterThan(code.indexOf("page.setViewportSize"));
+    expect(code.indexOf("maxRedirects: 0")).toBeLessThan(code.indexOf("page.goto"));
     expect(code).toContain(JSON.stringify(SANDBOX_URL));
     for (const banned of ["realViewport", "profile", ".click(", ".fill(", "keyboard", ".type(", "prompt", "newPage", "addInitScript", "exposeFunction", "require(", "process.", "fetch(", "connectOverCDP"]) expect(code).not.toContain(banned);
     expect(sandboxPreviewSha256()).toMatch(/^[0-9a-f]{64}$/);
@@ -142,7 +153,7 @@ describe("the fixed page code against a fake Playwright page", () => {
     const parsed = parseSandboxOutput(raw);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    expect(p.calls.slice(0, 3)).toEqual(["route", "viewport:1920x1080", `goto:${SANDBOX_URL}`]);
+    expect(p.calls.slice(0, 4)).toEqual(["route", "viewport:1920x1080", `precheck:${SANDBOX_URL}:maxRedirects=0`, `goto:${SANDBOX_URL}`]);
     expect(p.calls).toContain("autoplay.stop");
     expect(p.calls.filter((c) => c.startsWith("slideNext"))).toEqual(["slideNext:0", "slideNext:0"]);
     expect(p.guard).toEqual([
@@ -151,11 +162,14 @@ describe("the fixed page code against a fake Playwright page", () => {
       "abort http://169.254.169.254/latest/meta-data",
       "abort http://localhost:8080/x",
       "abort https://evil.example/",
+      "abort https://bootstrapmade.com/content/demo/Bootslander",
+      "abort https://BOOTSTRAPMADE.com/content/demo/Bootslander/",
       "abort file:///etc/passwd",
     ]);
     const r = parsed.result as any;
     expect(r.env).toMatchObject({ innerWidth: 1920, innerHeight: 1080 });
-    expect(r.blocked.map((b: any) => b.why)).toEqual(["ip-literal", "local-name", "main-frame-navigation-off-target", "scheme"]);
+    expect(r.blocked.map((b: any) => b.why)).toEqual(["ip-literal", "local-name", "main-frame-navigation-off-target", "main-frame-navigation-off-target", "main-frame-navigation-off-target", "scheme"]);
+    expect(r.modifications[0]).toMatch(/stopped autoplay of #testimonials \.swiper\.init-swiper via its own Swiper API/);
     expect(r.states.map((s: any) => [s.seq, s.name, s.measured.target.selector, s.measured.region.y])).toEqual([[0, "Default", "#testimonials", 4000], [1, "Testimonial next", "#testimonials", 4000], [2, "Testimonial next 2", "#testimonials", 4000]]);
     expect(r.states.map((s: any) => s.measured.texts.find((t: any) => t.text.startsWith("Slide")).text)).toEqual(["Slide 0", "Slide 1", "Slide 2"]);
     expect(r.states[1].trigger).toMatchObject({ valid: true, moved: true, before: { realIndex: 0 }, after: { realIndex: 1 } });
@@ -165,6 +179,7 @@ describe("the fixed page code against a fake Playwright page", () => {
   it("refuses a redirect chain, an unapplied viewport, and a missing Swiper (fail closed, still emits a result)", async () => {
     for (const [o, re] of [
       [{ redirect: true }, /navigation left the exact target URL/],
+      [{ precheck3xx: true }, /target answered a redirect \(301\) in the pre-check; not navigating/],
       [{ ignoreViewport: true }, /viewport not applied: 1920x100000/],
       [{ noSwiper: true }, /swiper refused: no Swiper instance bound/],
     ] as const) {
@@ -186,6 +201,12 @@ describe("the fixed page code against a fake Playwright page", () => {
     const notPng = clone(r);
     notPng.states[0].png = Buffer.from("GIF89a-not-a-png!!!").toString("base64");
     expect(parseSandboxOutput({ ...good, stdout: "W2F_RESULT " + JSON.stringify(notPng) })).toMatchObject({ ok: false });
+    const moved = clone(r);
+    moved.states[2].measured.region.y += 5000;
+    expect(parseSandboxOutput({ ...good, stdout: "W2F_RESULT " + JSON.stringify(moved) })).toMatchObject({ ok: false, reason: expect.stringMatching(/different region geometry/) });
+    const badClip = clone(r);
+    badClip.states[1].clip.y += 50;
+    expect(parseSandboxOutput({ ...good, stdout: "W2F_RESULT " + JSON.stringify(badClip) })).toMatchObject({ ok: false, reason: expect.stringMatching(/clip is not the measured target/) });
     const tooTall = clone(r);
     tooTall.states[0].png = Buffer.from(syntheticPng(1920, 1200, [0, 0, 0], [1, 1, 1])).toString("base64");
     expect(parseSandboxOutput({ ...good, stdout: "W2F_RESULT " + JSON.stringify(tooTall) })).toMatchObject({ ok: false, reason: expect.stringMatching(/outside the pixel caps/) });
@@ -197,7 +218,7 @@ function setup() {
   const d = tmp();
   const ledgerPath = join(d, "ledger.json");
   initLedger(ledgerPath, 17, "origin-attributed prior project spend");
-  return { d, ledgerPath, validated: validateSandboxPreview(clone(buildSandboxPreview())), gates: { operatorCreditsPerRequest: 4, operatorReportedBalance: 983, confirmExistingCredits: true, confirmNoTopup: true, confirmTtlSeconds: true, ledgerPath } };
+  return { d, ledgerPath, validated: validateSandboxPreview(clone(buildSandboxPreview())), gates: { operatorCreditsPerRequest: 4, operatorReportedBalance: 983, confirmExistingCredits: true, confirmNoTopup: true, acceptRedirectGap: true, ledgerPath } };
 }
 const goodExecute = async () => runCode(fakePage());
 function client(events: string[], ledgerPath: string, o: { create?: unknown; execute?: unknown; del?: unknown } = {}): SandboxClient {
@@ -233,7 +254,7 @@ describe("lifecycle (fake client): ledger before each op, one attempt each, dele
     const asked: string[] = [];
     const pngs: number[] = [];
     const rec = await executeSandbox({ ...s, resolver: fakeIp(asked), getApiKey: () => (events.push("key"), KEY), createClient: async () => (events.push("client"), client(events, s.ledgerPath)), savePng: (i) => pngs.push(i) });
-    expect(events).toEqual(["key", "client", `create {"ttl":120,"activityTtl":60,"streamWebView":false} [attempting/create:attempting]`, "execute sess_1 node [attempting/execute:attempting]", "delete sess_1 [attempting/delete:attempting]"]);
+    expect(events).toEqual(["key", "client", `create {"ttl":120,"activityTtl":60} [attempting/create:attempting]`, "execute sess_1 node [attempting/execute:attempting]", "delete sess_1 [attempting/delete:attempting]"]);
     expect(asked).toEqual([]); // exact bootstrapmade.com hosted exception: no local DNS
     expect(rec).toMatchObject({ status: "accepted", sessionId: "sess_1", creditsBilled: 1 });
     expect(rec.ops.map((o) => `${o.op}:${o.status}:${o.attempts}`)).toEqual(["create:ok:1", "execute:ok:1", "delete:ok:1"]);
@@ -288,37 +309,44 @@ describe("lifecycle (fake client): ledger before each op, one attempt each, dele
     expect(readLedger(s.ledgerPath).entries.at(-1)!.status).toBe("ambiguous");
     const t = setup();
     const ev: string[] = [];
-    for (const g of [{ confirmTtlSeconds: false }, { operatorCreditsPerRequest: 3 }, { confirmNoTopup: false }]) {
+    for (const g of [{ acceptRedirectGap: false }, { operatorCreditsPerRequest: 3 }, { confirmNoTopup: false }]) {
       await expect(executeSandbox({ ...t, gates: { ...t.gates, ...g }, getApiKey: () => (ev.push("key"), KEY) })).rejects.toThrow(StateRunPolicyError);
     }
     expect(ev).toEqual([]);
   });
 });
 
-// ---------------- real SDK over loopback ----------------
-describe("real installed SDK over loopback: one attempt per lifecycle operation", () => {
+// ---------------- narrow documented transport over loopback ----------------
+describe("documented /v2/interact transport over loopback: one fetch per lifecycle operation", () => {
   let server: Server;
   let base = "";
-  const seen: string[] = [];
-  let mode: Record<string, number | "hang"> = {};
+  const seen: { line: string; auth?: string; body: string }[] = [];
+  let mode: Record<string, number | "hang" | "redirect" | "huge"> = {};
   beforeAll(async () => {
-    process.env.NO_PROXY = "127.0.0.1,localhost";
     server = createServer((req, res) => {
       let b = "";
       req.on("data", (c) => (b += c));
       req.on("end", async () => {
         const op = req.method === "DELETE" ? "delete" : req.url!.endsWith("/execute") ? "execute" : "create";
-        seen.push(`${req.method} ${req.url}`);
+        seen.push({ line: `${req.method} ${req.url}`, auth: req.headers.authorization, body: b });
         const m = mode[op];
         if (m === "hang") return;
+        if (m === "redirect") {
+          res.writeHead(302, { location: "http://127.0.0.1:1/elsewhere" });
+          return res.end();
+        }
+        if (m === "huge") {
+          res.writeHead(200, { "content-type": "application/json" });
+          return res.end(JSON.stringify({ success: true, id: "x".repeat(100_000) }));
+        }
         if (typeof m === "number") {
           res.writeHead(m, { "content-type": "application/json" });
-          return res.end(JSON.stringify(m === 408 ? { success: false, code: "SCRAPE_TIMEOUT", details: { state: "processing_continues", retryAfterSeconds: 1 } } : { success: false, error: "x" }));
+          return res.end(JSON.stringify({ success: false, error: "x" }));
         }
         res.writeHead(200, { "content-type": "application/json" });
-        if (op === "create") return res.end(JSON.stringify({ success: true, id: "sess_lb", expiresAt: "2026-11-08T23:59:00Z" }));
+        if (op === "create") return res.end(JSON.stringify({ success: true, id: "sess_lb" }));
         if (op === "execute") return res.end(JSON.stringify(await goodExecute()));
-        return res.end(JSON.stringify({ success: true, status: "destroyed", sessionDurationMs: 9000, creditsBilled: 1 }));
+        return res.end(JSON.stringify({ success: true, creditsBilled: 1 }));
       });
     });
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -328,47 +356,57 @@ describe("real installed SDK over loopback: one attempt per lifecycle operation"
     server.closeAllConnections();
     await new Promise((r) => server.close(r));
   });
-  const run = async () => {
+  const run = async (limits?: Record<string, number>) => {
     const s = setup();
-    return executeSandbox({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: (k) => createSandboxClient(k, base) });
+    return executeSandbox({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async (k) => createInteractClient(k, { apiUrl: base, limits }) });
   };
 
-  it("happy path: exactly POST create, POST execute, DELETE, in order", async () => {
+  it("happy path: exactly the documented POST create, POST execute, DELETE with documented bodies only", async () => {
     seen.length = 0;
     mode = {};
     const rec = await run();
     expect(rec.status).toBe("accepted");
-    expect(seen).toEqual(["POST /v2/browser", "POST /v2/browser/sess_lb/execute", "DELETE /v2/browser/sess_lb"]);
+    expect(seen.map((x) => x.line)).toEqual(["POST /v2/interact", "POST /v2/interact/sess_lb/execute", "DELETE /v2/interact/sess_lb"]);
+    expect(seen.every((x) => x.auth === `Bearer ${KEY}`)).toBe(true);
+    expect(JSON.parse(seen[0]!.body)).toEqual({ ttl: 120, activityTtl: 60 });
+    expect(Object.keys(JSON.parse(seen[1]!.body)).sort()).toEqual(["code", "language", "timeout"]);
+    expect(seen[2]!.body).toBe("");
+    expect(JSON.stringify(rec)).not.toContain(KEY);
   });
-  it("5xx/408 on each operation: one attempt each, no replay; create failure skips execute/delete", async () => {
-    for (const [m, expected] of [
-      [{ create: 502 }, ["POST /v2/browser"]],
-      [{ create: 500 }, ["POST /v2/browser"]],
-      [{ execute: 502 }, ["POST /v2/browser", "POST /v2/browser/sess_lb/execute", "DELETE /v2/browser/sess_lb"]],
-      [{ execute: 408 }, ["POST /v2/browser", "POST /v2/browser/sess_lb/execute", "DELETE /v2/browser/sess_lb"]],
-      [{ delete: 502 }, ["POST /v2/browser", "POST /v2/browser/sess_lb/execute", "DELETE /v2/browser/sess_lb"]],
+
+  it("5xx/408/redirect/oversize on each operation: one request each, no replay; create failure skips execute/delete", async () => {
+    const C = "POST /v2/interact", E = "POST /v2/interact/sess_lb/execute", D = "DELETE /v2/interact/sess_lb";
+    for (const [m, expected, status] of [
+      [{ create: 502 }, [C], "ambiguous"],
+      [{ create: 400 }, [C], "failed"],
+      [{ create: "redirect" }, [C], "ambiguous"],
+      [{ create: "huge" }, [C], "ambiguous"],
+      [{ execute: 502 }, [C, E, D], "ambiguous"],
+      [{ execute: 408 }, [C, E, D], "ambiguous"],
+      [{ execute: "redirect" }, [C, E, D], "ambiguous"],
+      [{ delete: 500 }, [C, E, D], "ambiguous"],
+      [{ delete: "redirect" }, [C, E, D], "ambiguous"],
     ] as const) {
       seen.length = 0;
-      mode = { ...m };
+      mode = { ...m } as typeof mode;
       const rec = await run();
-      expect(seen).toEqual(expected);
-      expect(rec.status).toBe("ambiguous");
+      expect(seen.map((x) => x.line)).toEqual(expected);
+      expect(rec.status).toBe(status);
     }
   });
-  it("timeouts are single attempts (real SDK, short client timeout)", { timeout: 30_000 }, async () => {
-    seen.length = 0;
-    mode = { create: "hang" };
-    const fc = new Firecrawl({ apiKey: KEY, apiUrl: base, timeoutMs: 800, maxRetries: 1 });
-    await expect(fc.browser({ ttl: 120 })).rejects.toBeTruthy();
-    expect(seen).toEqual(["POST /v2/browser"]);
-    seen.length = 0;
-    mode = { execute: "hang" };
-    await expect(fc.browserExecute("sess_lb", { code: "1", language: "node", timeout: 1 })).rejects.toBeTruthy();
-    expect(seen).toEqual(["POST /v2/browser/sess_lb/execute"]);
-    seen.length = 0;
-    mode = { delete: "hang" };
-    await expect(fc.deleteBrowser("sess_lb")).rejects.toBeTruthy();
-    expect(seen).toEqual(["DELETE /v2/browser/sess_lb"]);
+
+  it("timeouts are single attempts (short per-op limits)", { timeout: 30_000 }, async () => {
+    for (const [op, expected] of [
+      ["create", ["POST /v2/interact"]],
+      ["execute", ["POST /v2/interact", "POST /v2/interact/sess_lb/execute", "DELETE /v2/interact/sess_lb"]],
+      ["delete", ["POST /v2/interact", "POST /v2/interact/sess_lb/execute", "DELETE /v2/interact/sess_lb"]],
+    ] as const) {
+      seen.length = 0;
+      mode = { [op]: "hang" };
+      const rec = await run({ createMs: 400, executeMs: 400, deleteMs: 400 });
+      expect(seen.map((x) => x.line)).toEqual(expected);
+      expect(rec.status).toBe("ambiguous");
+    }
   });
 });
 

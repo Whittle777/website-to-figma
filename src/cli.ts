@@ -95,8 +95,8 @@ const USAGE = `Usage:
   website-to-figma sandbox-plan --out FILE
       Offline: the fixed Browser Sandbox preview (viewport before navigation; 3 same-region states).
   website-to-figma sandbox-run --preview FILE --out DIR --ledger FILE --operator-credits-per-request N
-        --operator-reported-balance N --confirm-existing-credits --confirm-no-topup --confirm-ttl-seconds [--yes]
-      PAID: create -> execute -> delete (always), one attempt each; HOLDS without --yes.
+        --operator-reported-balance N --confirm-existing-credits --confirm-no-topup --accept-redirect-gap [--yes]
+      PAID: create -> execute -> delete (always), one attempt each (documented /v2/interact); HOLDS without --yes.
   website-to-figma sandbox-cleanup --ledger FILE --id LEDGER_ID [--yes]
       One explicit DELETE for a recorded session whose cleanup was not confirmed; HOLDS without --yes.
   website-to-figma sandbox-convert --run RUN_DIR --out DIR
@@ -114,7 +114,7 @@ function parseFlags(args: string[]): { positional: string[]; flags: Map<string, 
   const fontMaps: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
-    if (a === "--yes" || a === "--help" || a === "-h" || a === "--no-map" || a === "--confirm-existing-credits" || a === "--confirm-no-topup" || a === "--acknowledge-synthetic-modifications" || a === "--confirm-ttl-seconds") {
+    if (a === "--yes" || a === "--help" || a === "-h" || a === "--no-map" || a === "--confirm-existing-credits" || a === "--confirm-no-topup" || a === "--acknowledge-synthetic-modifications" || a === "--accept-redirect-gap") {
       flags.set(a.replace(/^-+/, ""), true);
     } else if (a === "--limit" || a === "--timeout" || a === "--out" || a === "--max-credits" || a === "--exclude" || a === "--operator-reported-balance" || a === "--capture" || a === "--assets" || a === "--scrape" || a === "--label" || a === "--font-map" || a === "--normalize-reference" || a === "--plan" || a === "--state-reactions" || a === "--preview" || a === "--ledger" || a === "--operator-credits-per-request" || a === "--reviewed-continuation" || a === "--run" || a === "--prior-credits" || a === "--note" || a === "--id" || a === "--credits" || a === "--doc" || a === "--renderer" || a === "--renderer-sha256" || a === "--max-job-chars" || a === "--image-hashes" || a === "--images") {
       const v = args[++i];
@@ -368,15 +368,16 @@ async function main(argv: string[]): Promise<number> {
       operatorReportedBalance: optInt("operator-reported-balance"),
       confirmExistingCredits: flags.has("confirm-existing-credits"),
       confirmNoTopup: flags.has("confirm-no-topup"),
-      confirmTtlSeconds: flags.has("confirm-ttl-seconds"),
+      acceptRedirectGap: flags.has("accept-redirect-gap"),
       ledgerPath: typeof flags.get("ledger") === "string" ? (flags.get("ledger") as string) : undefined,
       reviewedContinuation: typeof flags.get("reviewed-continuation") === "string" ? (flags.get("reviewed-continuation") as string) : undefined,
     };
     const g = assertSandboxGates(gates);
     console.log(`Exact sandbox lifecycle (preview sha256 ${validated.previewSha256}; request sha256 ${validated.requestSha256}), one attempt per operation, no replay:`);
-    console.log(`  create  POST /v2/browser { ttl ${SANDBOX.ttl}, activityTtl ${SANDBOX.activityTtl}, streamWebView false } (no profile; vendor defaults kept)`);
-    console.log(`  execute POST /v2/browser/{id}/execute { language node, timeout ${SANDBOX.executeTimeoutS}, fixed reviewed code } -> setViewportSize ${SANDBOX.viewport.width}x${SANDBOX.viewport.height} BEFORE goto ${SANDBOX.url}; 3 states of ${SANDBOX.scope}`);
-    console.log("  delete  DELETE /v2/browser/{id} (always, in finally)");
+    console.log(`  create  POST https://api.firecrawl.dev/v2/interact { ttl ${SANDBOX.ttl}, activityTtl ${SANDBOX.activityTtl} } (seconds; no profile; vendor defaults kept)`);
+    console.log(`  execute POST https://api.firecrawl.dev/v2/interact/{id}/execute { language node, timeout ${SANDBOX.executeTimeoutS}, fixed reviewed code } -> setViewportSize ${SANDBOX.viewport.width}x${SANDBOX.viewport.height}, redirect pre-check (maxRedirects 0), goto ${SANDBOX.url}; 3 states of ${SANDBOX.scope}`);
+    console.log("  delete  DELETE https://api.firecrawl.dev/v2/interact/{id} (always, in finally)");
+    console.log("Gaps accepted by --accept-redirect-gap: a redirect introduced after the pre-check is followed by the browser (detected and refused afterwards, NOT prevented); private-resolving hostnames cannot be checked in page code; Swiper states rely on known page semantics (no side-effect-free promise); 0 ms transitions are not animation completions; creditsBilled is undocumented (missing => ambiguous).");
     console.log(`Reservation ${g.reservation} (worst case for the full ttl: ${SANDBOX_WORST_CASE_CREDITS}; NOT a provider cap). Ledger committed ${g.committed}, remaining local allowance ${g.remaining}.`);
     console.log("Stops: preview mismatch; missing gate; unresolved/duplicate/over-ceiling ledger; create ambiguous (no re-create) or failed; execute error/killed/truncated/partial/oversize; in-browser redirect/viewport/swiper refusal; delete not confirmed (blocking); missing creditsBilled (ambiguous).");
     if (!flags.has("yes")) {
