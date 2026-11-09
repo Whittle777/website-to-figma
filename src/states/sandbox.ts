@@ -72,15 +72,23 @@ export const SANDBOX = {
   // first evaluation (the page functions always return a non-null object)
   swiperOpMs: 1_500,
   stateWaitMs: 800,
+  // bounded wait for a stable slider position after an INSTANT scrollIntoView (per state)
+  frameStableMs: 1_000,
+  framePollMs: 100,
   scope: "#testimonials",
   swiper: "#testimonials .swiper.init-swiper",
   states: ["Default", "Testimonial next", "Testimonial next 2"],
-  maxPngBytes: 1_500_000,
+  maxPngBytes: 400_000,
   maxPngPixels: 1920 * 1080,
-  maxOutputChars: 6_500_000,
-  maxElements: 800,
-  maxTexts: 600,
-  maxImages: 50,
+  // the provider truncated execute stdout at exactly 1,048,576 chars (run 0cdd8852fb33, observed, not
+  // documented); the page code emits at most maxEmitChars (headroom) or omits PNGs and fails closed
+  maxOutputChars: 1_048_576,
+  maxEmitChars: 900_000,
+  // trimmed measurement dump (kept: geometry + computed styles of what intersects the scope)
+  maxElements: 300,
+  maxTexts: 250,
+  maxImages: 20,
+  maxTextChars: 500,
 } as const;
 // Worst case if the session lives its whole ttl (2 credits per session-minute,
 // code-only, per the operator-read pricing): NOT a provider cap.
@@ -90,7 +98,7 @@ export const SANDBOX = {
 export const SANDBOX_UNSUPPORTED: string[] = [];
 export const SANDBOX_WORST_CASE_CREDITS = Math.ceil(SANDBOX.ttl / 60) * 2;
 // nominal step caps must fit inside the local deadline (overhead is covered by the deadline itself)
-export const SANDBOX_NOMINAL_MS = SANDBOX.navTimeoutMs + SANDBOX.settleMs + SANDBOX.swiperReadyMs + SANDBOX.swiperOpMs * (2 + (SANDBOX.states.length - 1)) + SANDBOX.states.length * (SANDBOX.stateWaitMs + SANDBOX.screenshotMs);
+export const SANDBOX_NOMINAL_MS = SANDBOX.navTimeoutMs + SANDBOX.settleMs + SANDBOX.swiperReadyMs + SANDBOX.swiperOpMs * (2 + (SANDBOX.states.length - 1)) + SANDBOX.states.length * (SANDBOX.stateWaitMs + SANDBOX.frameStableMs + SANDBOX.screenshotMs);
 if (SANDBOX_NOMINAL_MS >= SANDBOX.localDeadlineMs) throw new Error("sandbox step caps exceed the local deadline");
 if (SANDBOX.localDeadlineMs + SANDBOX.closeBoundMs >= SANDBOX.executeTimeoutS * 1000 - 10_000) throw new Error("local deadline + close bound leave under 10 s of headroom");
 if (SANDBOX.ttl < 30 || SANDBOX.ttl > 3600 || SANDBOX.activityTtl < 10 || SANDBOX.activityTtl > 3600) throw new Error("sandbox ttl outside the documented ranges");
@@ -128,7 +136,10 @@ const W2F_SWIPER_DIAG = (sel) => { try {
   const src = (s) => { if (!s.src) return "(inline)"; try { const u = new URL(s.src); return u.host === location.host ? u.pathname.slice(0, 200) : u.protocol + "//" + u.host + "/(other host)"; } catch (e) { return "(invalid)"; } };
   return { matches: els.length, initializedClass: el ? el.classList.contains("swiper-initialized") : null, hasSwiperProp: el ? !!el.swiper : null, windowSwiperType: typeof window.Swiper, configPresent: el ? !!el.querySelector(".swiper-config") : null, slides: el ? el.querySelectorAll(".swiper-slide").length : null, readyState: document.readyState, scripts: Array.from(document.scripts).slice(0, 30).map(src) };
 } catch (e) { return { error: "page function threw: " + String((e && e.message) || e).slice(0, 200) }; } };
-const W2F_INTO_VIEW = (sel) => { const e = document.querySelector(sel); if (!e) return false; e.scrollIntoView({ block: "start", inline: "nearest" }); return true; };
+// INSTANT scroll (never smooth): the position is then confirmed stable by polling W2F_VIEW_RECT
+const W2F_INTO_VIEW = (sel) => { const e = document.querySelector(sel); if (!e) return false; e.scrollIntoView({ block: "start", inline: "nearest", behavior: "instant" }); return true; };
+// DOM-only: viewport rect of exactly one element (null otherwise)
+const W2F_VIEW_RECT = (sel) => { const els = document.querySelectorAll(sel); if (els.length !== 1) return null; const r = els[0].getBoundingClientRect(); return { top: r.top, left: r.left, bottom: r.bottom, right: r.right, width: r.width, height: r.height, inViewport: r.top >= -1 && r.left >= -1 && r.bottom <= window.innerHeight + 1 && r.right <= window.innerWidth + 1 }; };
 const W2F_MEASURE = (a) => {
   const t = document.querySelector(a.scope); if (!t) return { target: null };
   const sx = window.scrollX, sy = window.scrollY, tr = t.getBoundingClientRect();
@@ -156,16 +167,19 @@ const W2F_MEASURE = (a) => {
     let last = null; const runs = [];
     for (const [i, g] of parts) { const r = document.createRange(); r.setStart(n, i); r.setEnd(n, i + g.length); const b = r.getBoundingClientRect(); if (!b.width || !b.height || !hit(b)) continue; const x = b.left + sx, y = b.top + sy;
       if (last && Math.abs(last.y - y) < 1 && Math.abs(last.x + last.w - x) < 3) { last.text += g; last.w = x + b.width - last.x; last.h = Math.max(last.h, b.height); } else { last = { text: g, x, y, w: b.width, h: b.height }; runs.push(last); } }
-    for (const r of runs) if (r.text.trim() && texts.length < a.maxTexts) texts.push({ ...r, text: r.text.slice(0, 2000), style: s, tag: p.tagName.toLowerCase() });
+    for (const r of runs) if (r.text.trim() && texts.length < a.maxTexts) texts.push({ ...r, text: r.text.slice(0, a.maxTextChars), style: s, tag: p.tagName.toLowerCase() });
   }
   // self-contained (Playwright serializes only this function): probe inlined
   const d = document.documentElement, bd = document.body, vv = window.visualViewport;
   const probe = { innerWidth: window.innerWidth, innerHeight: window.innerHeight, rootClientWidth: d.clientWidth, rootClientHeight: d.clientHeight, visualViewport: vv ? { width: vv.width, height: vv.height, scale: vv.scale, offsetTop: vv.offsetTop, pageTop: vv.pageTop } : null, scrollY: window.scrollY, documentHeight: Math.max(d.scrollHeight, bd ? bd.scrollHeight : 0), devicePixelRatio: window.devicePixelRatio, readyState: document.readyState };
-  return { target: { selector: a.scope, viewTop: tr.top, viewBottom: tr.bottom, left: tr.left, width: tr.width, height: tr.height, documentY: tr.top + sy, inViewport: tr.top >= -1 && tr.bottom <= window.innerHeight + 1 }, region, probe, elements, texts, images };
+  // the screenshot box (the slider): exactly one match, viewport coordinates
+  const ce = a.clipSel ? document.querySelectorAll(a.clipSel) : []; const cr = ce.length === 1 ? ce[0].getBoundingClientRect() : null;
+  const clipTarget = cr ? { selector: a.clipSel, viewLeft: cr.left, viewTop: cr.top, width: cr.width, height: cr.height, viewBottom: cr.bottom, inViewport: cr.top >= -1 && cr.left >= -1 && cr.bottom <= window.innerHeight + 1 && cr.right <= window.innerWidth + 1 } : null;
+  return { target: { selector: a.scope, viewTop: tr.top, viewBottom: tr.bottom, left: tr.left, width: tr.width, height: tr.height, documentY: tr.top + sy, inViewport: tr.top >= -1 && tr.bottom <= window.innerHeight + 1 }, clipTarget, region, probe, elements, texts, images };
 };`;
 
 export const SANDBOX_CODE = String.raw`// website-to-figma fixed sandbox code (reviewed; takes no inputs)
-const W = ${JSON.stringify({ url: SANDBOX.url, host: "bootstrapmade.com", vw: SANDBOX.viewport.width, vh: SANDBOX.viewport.height, localDeadlineMs: SANDBOX.localDeadlineMs, closeBoundMs: SANDBOX.closeBoundMs, screenshotMs: SANDBOX.screenshotMs, navTimeoutMs: SANDBOX.navTimeoutMs, settleMs: SANDBOX.settleMs, swiperReadyMs: SANDBOX.swiperReadyMs, swiperOpMs: SANDBOX.swiperOpMs, stateWaitMs: SANDBOX.stateWaitMs, scope: SANDBOX.scope, swiper: SANDBOX.swiper, states: SANDBOX.states, maxPngBytes: SANDBOX.maxPngBytes, max: { maxElements: SANDBOX.maxElements, maxTexts: SANDBOX.maxTexts, maxImages: SANDBOX.maxImages } })};
+const W = ${JSON.stringify({ url: SANDBOX.url, host: "bootstrapmade.com", vw: SANDBOX.viewport.width, vh: SANDBOX.viewport.height, localDeadlineMs: SANDBOX.localDeadlineMs, closeBoundMs: SANDBOX.closeBoundMs, screenshotMs: SANDBOX.screenshotMs, navTimeoutMs: SANDBOX.navTimeoutMs, settleMs: SANDBOX.settleMs, swiperReadyMs: SANDBOX.swiperReadyMs, swiperOpMs: SANDBOX.swiperOpMs, stateWaitMs: SANDBOX.stateWaitMs, frameStableMs: SANDBOX.frameStableMs, framePollMs: SANDBOX.framePollMs, maxEmitChars: SANDBOX.maxEmitChars, scope: SANDBOX.scope, swiper: SANDBOX.swiper, states: SANDBOX.states, maxPngBytes: SANDBOX.maxPngBytes, max: { maxElements: SANDBOX.maxElements, maxTexts: SANDBOX.maxTexts, maxImages: SANDBOX.maxImages, maxTextChars: SANDBOX.maxTextChars } })};
 ${PAGE_FUNCS}
 // stage = the step in progress when an error is thrown; routeInstalled says whether blocked/served/
 // incomplete were OBSERVED by the guard (false => they are unobserved defaults, not evidence)
@@ -204,6 +218,19 @@ try {
   const mainWorld = async (what, fn, arg, cap) => {
     const h = await within(what, () => own.waitForFunction(fn, arg, { timeout: tmo(cap), polling: 100 }), cap);
     try { return await within(what + "-value", () => h.jsonValue()); } finally { try { await h.dispose(); } catch (e) {} }
+  };
+  // bounded: poll the slider's viewport rect until two consecutive reads agree (or frameStableMs /
+  // the poll cap is reached -> not stable); every call stays inside the local deadline
+  const stableFrame = async () => {
+    const t0 = Date.now(); const maxPolls = Math.ceil(W.frameStableMs / W.framePollMs) + 1; let prev = null, polls = 0;
+    for (;;) {
+      const r = await within("frame-stable", () => own.evaluate(W2F_VIEW_RECT, W.swiper)); polls++;
+      if (!r) throw new Error("slider not found for framing");
+      if (prev && Math.abs(r.top - prev.top) < 0.5 && Math.abs(r.left - prev.left) < 0.5) return { top: r.top, left: r.left, inViewport: r.inViewport, polls, ms: Date.now() - t0, stable: true };
+      prev = r;
+      if (polls >= maxPolls || Date.now() - t0 >= W.frameStableMs) return { top: r.top, left: r.left, inViewport: r.inViewport, polls, ms: Date.now() - t0, stable: false };
+      await within("frame-stable-wait", () => own.waitForTimeout(tmo(W.framePollMs)));
+    }
   };
   // ONE structural URL policy for EVERY request and every hop (no DNS lookups here; the hosted DNS
   // exception is not expanded). Returns the refusal reason, or null when allowed.
@@ -313,14 +340,21 @@ try {
     if (seq > 0) { trigger = await mainWorld("swiper-next", W2F_SWIPER, { sel: W.swiper, op: "next" }, W.swiperOpMs); if (!trigger.valid) throw new Error("swiper refused: " + trigger.reason); }
     if (!(await within("into-view", () => own.evaluate(W2F_INTO_VIEW, W.scope)))) throw new Error("scope not found");
     await within("state-wait", () => own.waitForTimeout(tmo(W.stateWaitMs)));
-    const m = await within("measure", () => own.evaluate(W2F_MEASURE, { scope: W.scope, ...W.max }));
+    // EVERY state (incl. state 0) needs a stable, fully in-viewport slider before measuring
+    const framing = await stableFrame();
+    if (!framing.stable) throw new Error("slider position not stable within " + W.frameStableMs + " ms");
+    if (!framing.inViewport) throw new Error("slider not fully in the viewport after a stable scroll (viewTop " + Math.round(framing.top) + ")");
+    const m = await within("measure", () => own.evaluate(W2F_MEASURE, { scope: W.scope, clipSel: W.swiper, ...W.max }));
     if (!m.target) throw new Error("scope not found");
-    const top = Math.max(0, m.target.viewTop);
-    const clip = { x: 0, y: top, width: W.vw, height: Math.min(W.vh - top, Math.max(0, m.target.viewBottom - top)) };
-    if (clip.height < 1) throw new Error("target not visible for the screenshot");
+    if (!m.clipTarget) throw new Error("slider not found for the screenshot");
+    if (!m.clipTarget.inViewport) throw new Error("slider not fully in the viewport at measurement (viewTop " + Math.round(m.clipTarget.viewTop) + ")");
+    // screenshot = the slider box (intersected with the viewport), not a full-width strip
+    const ct = m.clipTarget; const cx = Math.max(0, ct.viewLeft), cy = Math.max(0, ct.viewTop);
+    const clip = { x: cx, y: cy, width: Math.min(W.vw, ct.viewLeft + ct.width) - cx, height: Math.min(W.vh, ct.viewBottom) - cy };
+    if (clip.width < 1 || clip.height < 1) throw new Error("target not visible for the screenshot");
     const png = await within("screenshot", () => own.screenshot({ type: "png", clip, timeout: tmo(W.screenshotMs) }));
-    if (png.length > W.maxPngBytes) throw new Error("screenshot over the byte cap");
-    out.states.push({ seq, name: W.states[seq], trigger, measured: m, clip, png: png.toString("base64") });
+    if (png.length > W.maxPngBytes) throw new Error("screenshot over the byte cap (" + png.length + " > " + W.maxPngBytes + ")");
+    out.states.push({ seq, name: W.states[seq], trigger, framing, measured: m, clip, pngBytes: png.length, png: png.toString("base64") });
   }
 } catch (e) {
   out.error = String((e && e.message) || e).slice(0, 300);
@@ -337,7 +371,33 @@ try {
     finally { clearTimeout(ct); out.close.ms = Date.now() - c0; }
   }
 }
-console.log("W2F_RESULT " + JSON.stringify(out));`;
+// OUTPUT BUDGET: the provider truncates stdout (observed at 1,048,576 chars). The serialized line is
+// measured HERE (max of UTF-16 length and UTF-8 bytes) against W.maxEmitChars. Over budget: PNGs are
+// omitted (sizes reported) and the run fails closed; still over: measurements omitted; still over: a
+// minimal record. The emitted line is ALWAYS complete, valid JSON within the budget.
+const W2F_EMIT = () => {
+  const P = "W2F_RESULT ";
+  const size = (t) => P.length + Math.max(t.length, typeof Buffer !== "undefined" ? Buffer.byteLength(t, "utf8") : t.length * 3);
+  out.budget = { maxEmitChars: W.maxEmitChars, measuredChars: null, pngsOmitted: false, measurementsOmitted: false, omittedPngs: null };
+  let line = JSON.stringify(out);
+  out.budget.measuredChars = size(line);
+  line = JSON.stringify(out);
+  if (size(line) <= W.maxEmitChars) return P + line;
+  out.budget.pngsOmitted = true;
+  out.budget.omittedPngs = out.states.map((st) => ({ seq: st.seq, bytes: st.pngBytes, base64Chars: typeof st.png === "string" ? st.png.length : 0 }));
+  for (const st of out.states) st.png = null;
+  out.error = (out.error ? out.error + "; " : "") + "result line over the " + W.maxEmitChars + "-char output budget (" + out.budget.measuredChars + "): PNGs omitted, capture rejected";
+  line = JSON.stringify(out);
+  if (size(line) <= W.maxEmitChars) return P + line;
+  out.budget.measurementsOmitted = true;
+  for (const st of out.states) st.measured = null;
+  line = JSON.stringify(out);
+  if (size(line) <= W.maxEmitChars) return P + line;
+  line = JSON.stringify({ w2f: "sandbox", v: 1, error: String(out.error).slice(0, 300), stage: out.stage, budget: out.budget, states: [] });
+  if (size(line) <= W.maxEmitChars) return P + line;
+  return P + JSON.stringify({ w2f: "sandbox", v: 1, error: "result line over the output budget", states: [] });
+};
+console.log(W2F_EMIT());`;
 
 export interface SandboxPreview {
   schema: "website-to-figma/sandbox-preview";
@@ -392,6 +452,8 @@ export function buildSandboxPreview(): SandboxPreview {
       "Every request (main document and subresources) passes ONE structural policy: http/https (data:/blob: only for subresources), no credentials, no non-default port, no IP-literal or local-name host, exact hostname bootstrapmade.com (exact raw URL for the main navigation). Allowed http(s) requests are made once by route.fetch({ maxRedirects: 0, maxRetries: 0 }); any 3xx is aborted before anything is served, so no redirect hop is requested (an allowed asset behind a redirect is missing, not followed). route.continue() is used only for data:/blob:. WebSockets are refused via context.routeWebSocket (missing => fail closed). Any aborted subresource marks the capture incomplete.",
       "route.fetch requests are made by Playwright inside the hosted sandbox with the owned context's cookies, not by this tool; no DNS lookups are made by the policy and the hosted DNS exception is not expanded. Remote-browser egress is the provider's (docs/security, docs/features/threat-protection); this tool's local DNS guard covers only its own fetches.",
       "JS worlds: on the hosted browser page.evaluate was observed NOT to see el.swiper / window.Swiper while page.waitForFunction did (run da1ae3f40f44; isolated-world evaluate is a hypothesis, not confirmed by docs). Every read of page-JS state (readiness, diag, stop-autoplay, slideNext) therefore runs through page.waitForFunction (main world) + JSHandle.jsonValue(); the page functions always return a non-null object, so each resolves on its first evaluation. DOM-only steps (probe, into-view, measure, screenshots) stay on page.evaluate. The diag runs in both worlds and records evaluateIsolated; the run fails closed if the main-world diag cannot see el.swiper after readiness. No undocumented evaluate flag is used.",
+      "Output budget: the provider truncated execute stdout at exactly 1,048,576 chars in run 0cdd8852fb33 (observed, not documented). The page code measures the serialized result line itself (max of UTF-16 length and UTF-8 bytes) against 900,000; over budget, PNGs are omitted with their exact sizes reported and the run fails closed (then measurements, then a minimal record), so the emitted line is always complete JSON. The result line is located line-anchored. Measurement dump trimmed (300 elements, 250 text runs of <= 500 chars, 20 images); per-PNG cap 400,000 bytes.",
+      "Screenshots are the slider box (#testimonials .swiper.init-swiper) intersected with the viewport, validated against the measured box and the measured scope target; conversion shifts each state so the clip's left edge is x 0 and uses the clip box as the variant frame (the renderer places reference images at page x 0). Framing: scrollIntoView behavior instant, then a bounded poll (1 s, 100 ms) until the slider's viewport position is unchanged between reads; every state, incl. state 0, must have the slider fully in the viewport, else fail closed.",
       "Swiper readiness: after goto + settle, page.waitForFunction (polling 100 ms, timeout 10 s) waits until the page's own Swiper instance is bound to the source-verified element (#testimonials .swiper.init-swiper); if it never binds the run fails closed with read-only diagnostics (stage, served/blocked requests, page errors, Swiper/script snapshot). Why an earlier run found it unbound is NOT determined.",
       "Failure diagnostics: a well-formed W2F_RESULT is recovered even when the execute envelope fails (success false, killed, truncated, nonzero exit); the run stays rejected/ambiguous. Observed browser fields are kept; unobserved fields are null (guard fields need routeInstalled, page/listener fields need listenersInstalled). Everything persisted or printed (sandbox.json, execute-raw.json, every ledger write via the ledger's single serializer, CLI logs and errors) is sanitized first: API keys, complete Authorization values (scheme + credential), URL userinfo, credential/session/token and long opaque query values, CDP/DevTools/live-view/session/WebSocket URLs, credential key=value pairs, JWTs. execute-raw.json is always valid JSON within 200,000 UTF-8 bytes (serialized size) with explicit per-field truncation metadata. States-run/diagnostic response files are NOT sanitized (they keep signed screenshot URLs needed for the later download step).",
       "Timing: ONE cooperative local deadline (72 s) covers setup, navigation, waits, evaluations and screenshots (each Playwright call is raced against the time left and its own timeout capped to it); the owned-context close is a separate single attempt bounded to 5 s; 13 s of the documented 90 s execute timeout remain for serialization and provider overhead. The record keeps localDeadline, ownedContextClose, providerKilled and transportTimedOut separately. Not a hard bound: synchronous work in the sandbox's Node process cannot be pre-empted, and the provider's own kill is outside this code.",
@@ -455,6 +517,8 @@ export interface SandboxStateOut {
   name: string;
   provenance: "baseline" | "page-api";
   trigger: Obj | null;
+  // instant-scroll stability evidence for this state (null = not observed)
+  framing: Obj | null;
   measured: Obj;
   clip: { x: number; y: number; width: number; height: number };
   png: { sha256: string; width: number; height: number; bytes: number };
@@ -527,7 +591,9 @@ function recoverW2fResult(resp: Obj): { result: Obj | null; why: string | null }
   const text = [resp.stdout, resp.output, resp.result].find((x): x is string => typeof x === "string" && x.includes("W2F_RESULT "));
   if (!text) return { result: null, why: "no W2F_RESULT line in the execute output" };
   if (text.length > SANDBOX.maxOutputChars) return { result: null, why: `execute output ${text.length} chars exceeds ${SANDBOX.maxOutputChars}` };
-  const at = text.lastIndexOf("W2F_RESULT ");
+  // the LAST line that STARTS with the prefix (the prefix may also occur inside JSON string values)
+  const at = text.startsWith("W2F_RESULT ") && !text.includes("\nW2F_RESULT ") ? 0 : text.lastIndexOf("\nW2F_RESULT ") + 1;
+  if (at < 0 || !text.startsWith("W2F_RESULT ", at)) return { result: null, why: "no W2F_RESULT line in the execute output" };
   const end = text.indexOf("\n", at);
   let parsed: unknown;
   try {
@@ -577,8 +643,17 @@ export function parseSandboxOutput(resp: unknown): { ok: true; result: Obj; pngs
     if (!reg || !t || t.selector !== SANDBOX.scope || !clip) return { ok: false, status: "ambiguous", reason: `state ${i} lacks its target measurement or clip`, result };
     const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : NaN);
     if (r0 && (Math.abs(n(reg.x) - n(r0.x)) > 2 || Math.abs(n(reg.w) - n(r0.w)) > 2 || Math.abs(n(reg.y) - n(r0.y)) > 100)) return { ok: false, status: "rejected", reason: `state ${i} measured a different region geometry`, result };
-    const top = Math.max(0, n(t.viewTop));
-    if (Math.abs(n(clip.y) - top) > 1 || n(clip.height) > n(t.viewBottom) - top + 1 || n(clip.width) !== SANDBOX.viewport.width) return { ok: false, status: "rejected", reason: `state ${i} clip is not the measured target`, result };
+    // the clip must be the measured slider box (exactly one element, fully in the viewport), inside the
+    // measured scope target, and equal to that box intersected with the viewport (±1 px)
+    const ct = isObj((s.measured as Obj).clipTarget) ? ((s.measured as Obj).clipTarget as Obj) : null;
+    if (!ct || ct.selector !== SANDBOX.swiper) return { ok: false, status: "ambiguous", reason: `state ${i} lacks the measured slider box`, result };
+    if (ct.inViewport !== true) return { ok: false, status: "rejected", reason: `state ${i} slider box was not fully in the viewport`, result };
+    const ctL = n(ct.viewLeft), ctT = n(ct.viewTop), ctR = ctL + n(ct.width), ctB = n(ct.viewBottom);
+    if (!(ctL >= n(t.left) - 1 && ctT >= n(t.viewTop) - 1 && ctR <= n(t.left) + n(t.width) + 1 && ctB <= n(t.viewBottom) + 1)) return { ok: false, status: "rejected", reason: `state ${i} slider box is outside the measured target`, result };
+    const ex = Math.max(0, ctL), ey = Math.max(0, ctT);
+    const want = { x: ex, y: ey, width: Math.min(SANDBOX.viewport.width, ctR) - ex, height: Math.min(SANDBOX.viewport.height, ctB) - ey };
+    const off = (["x", "y", "width", "height"] as const).some((k) => !(Math.abs(n(clip[k]) - want[k]) <= 1));
+    if (off || want.width < 1 || want.height < 1 || n(clip.x) + n(clip.width) > SANDBOX.viewport.width + 1 || n(clip.y) + n(clip.height) > SANDBOX.viewport.height + 1) return { ok: false, status: "rejected", reason: `state ${i} clip is not the measured slider box`, result };
   }
   return { ok: true, result, pngs };
 }
@@ -923,7 +998,7 @@ async function lifecycleInner(o: SandboxExecuteOptions, secrets: string[]): Prom
     for (const [i, s] of states.entries()) {
       const bytes = parsed.pngs[i]!;
       const info = inspectImage(bytes)!;
-      rec.states.push({ seq: i, name: SANDBOX.states[i]!, provenance: i === 0 ? "baseline" : "page-api", trigger: isObj(s.trigger) ? s.trigger : null, measured: isObj(s.measured) ? s.measured : {}, clip: isObj(s.clip) ? (s.clip as SandboxStateOut["clip"]) : { x: 0, y: 0, width: 0, height: 0 }, png: { sha256: sha256Hex(bytes), width: info.width, height: info.height, bytes: bytes.length } });
+      rec.states.push({ seq: i, name: SANDBOX.states[i]!, provenance: i === 0 ? "baseline" : "page-api", trigger: isObj(s.trigger) ? s.trigger : null, framing: isObj(s.framing) ? s.framing : null, measured: isObj(s.measured) ? s.measured : {}, clip: isObj(s.clip) ? (s.clip as SandboxStateOut["clip"]) : { x: 0, y: 0, width: 0, height: 0 }, png: { sha256: sha256Hex(bytes), width: info.width, height: info.height, bytes: bytes.length } });
       o.savePng?.(i, bytes);
     }
     // honest distinctness: identical PNGs or unmoved Swiper are reported
@@ -1029,7 +1104,8 @@ export async function cleanupSandbox(o: { ledgerPath: string; entryId: string; g
 
 // Offline: sandbox record -> capture + asset manifest for hifi (states of ONE
 // region: same scope selector, same section geometry). PNGs are referenced as
-// state screenshots positioned at the clip (frame top-left).
+// state screenshots positioned at the clip (frame top-left; coordinates shifted so the clip's
+// document x is 0, see below). `region` (the section) is kept in the record for validation.
 export function sandboxToCapture(rec: SandboxRecord, files: string[]): { capture: Obj; manifest: Obj } {
   if (rec.status !== "accepted" || rec.states.length !== SANDBOX.states.length) throw new StateRunPolicyError(`sandbox status ${rec.status}; only accepted runs with 3 states convert`);
   const st = rec.states.map((s) => {
@@ -1037,13 +1113,20 @@ export function sandboxToCapture(rec: SandboxRecord, files: string[]): { capture
     const target = isObj(m.target) ? m.target : {};
     const region = isObj(m.region) ? m.region : {};
     const probe = isObj(m.probe) ? m.probe : {};
-    const measured = { url: SANDBOX_URL, viewport: { width: probe.innerWidth ?? SANDBOX.viewport.width, height: probe.innerHeight ?? SANDBOX.viewport.height }, documentHeight: probe.documentHeight ?? null, title: "Bootslander (sandbox region)", elements: m.elements ?? [], texts: m.texts ?? [], images: m.images ?? [], svgs: [] };
+    // The screenshot is the slider box. The renderer places a state's reference image at page x 0 and
+    // y = screenshotScrollY, so the state is shifted horizontally by the clip's document x and the
+    // variant frame is the clip box: image and layers then share one coordinate system.
+    const clip = s.clip;
+    const docX = clip.x + (typeof probe.scrollX === "number" ? probe.scrollX : 0);
+    const docY = clip.y + (typeof probe.scrollY === "number" ? probe.scrollY : 0);
+    const shiftX = (list: unknown) => (Array.isArray(list) ? list.map((o) => (isObj(o) && typeof o.x === "number" ? { ...o, x: o.x - docX } : o)) : []);
+    const measured = { url: SANDBOX_URL, viewport: { width: probe.innerWidth ?? SANDBOX.viewport.width, height: probe.innerHeight ?? SANDBOX.viewport.height }, documentHeight: probe.documentHeight ?? null, title: "Bootslander (sandbox region)", elements: shiftX(m.elements), texts: shiftX(m.texts), images: shiftX(m.images), svgs: [] };
     return {
       seq: s.seq,
       name: s.name,
       provenance: s.provenance,
-      scope: { x: region.x, y: region.y, w: region.w, h: region.h },
-      screenshotScrollY: (typeof region.y === "number" ? region.y : 0),
+      scope: { x: 0, y: docY, w: clip.width, h: clip.height },
+      screenshotScrollY: docY,
       viewport: { width: probe.innerWidth, height: probe.innerHeight },
       documentHeight: probe.documentHeight ?? null,
       measured,

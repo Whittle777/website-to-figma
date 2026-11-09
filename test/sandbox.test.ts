@@ -48,7 +48,7 @@ const UPSTREAM: Record<string, { status: number; location?: string }> = {
   "https://bootstrapmade.com/content/vendors/redirector.js": { status: 302, location: "https://evil.example/payload.js" },
   "https://bootstrapmade.com/content/vendors/moved.js": { status: 301, location: "/content/vendors/moved-here.js" },
 };
-function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: boolean; main3xx?: boolean; serviceWorker?: boolean; popup?: boolean; noBrowser?: boolean; newContextThrows?: boolean; noRouteWebSocket?: boolean; subresources?: string[]; swiperBindAfterMs?: number; pageError?: string; hangAt?: "goto" | "screenshot"; closeHangs?: boolean; sharedWorld?: boolean; unbindAfterReady?: boolean; slideNextThrows?: boolean } = {}) {
+function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: boolean; main3xx?: boolean; serviceWorker?: boolean; popup?: boolean; noBrowser?: boolean; newContextThrows?: boolean; noRouteWebSocket?: boolean; subresources?: string[]; swiperBindAfterMs?: number; pageError?: string; hangAt?: "goto" | "screenshot"; closeHangs?: boolean; sharedWorld?: boolean; unbindAfterReady?: boolean; slideNextThrows?: boolean; jitter?: boolean; noScrollSeq0?: boolean; pngPad?: number } = {}) {
   const calls: string[] = [];
   const html = `<!doctype html><html><body><section id="hero">Hero</section><section id="testimonials"><div class="swiper init-swiper"><div class="swiper-wrapper"><div class="swiper-slide"><h3 id="slide">Slide 0</h3></div></div></div></section></body></html>`;
   const d = new JSDOM(html, { runScripts: "outside-only", virtualConsole: new VirtualConsole(), url: SANDBOX_URL });
@@ -67,8 +67,22 @@ function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: 
   w.Element.prototype.getBoundingClientRect = function () {
     return toView(docRect(this));
   };
-  w.Element.prototype.scrollIntoView = function () {
-    scrollY = docRect(this).y;
+  // scroll model: "instant" lands at once; anything else (smooth) approaches over several reads;
+  // jitter never settles; noScrollSeq0 ignores the first scroll (state 0 left below the fold)
+  let smooth: { to: number; left: number } | null = null;
+  let scrolls = 0;
+  w.Element.prototype.scrollIntoView = function (opts?: { behavior?: string }) {
+    calls.push(`scrollIntoView:${opts?.behavior ?? "auto"}`);
+    if (o.noScrollSeq0 && scrolls++ === 0) return;
+    const to = docRect(this).y;
+    if (opts?.behavior === "instant") scrollY = to;
+    else smooth = { to, left: 4 };
+  };
+  let jit = 0;
+  const tick = () => {
+    if (smooth && smooth.left > 0) scrollY = smooth.to - 60 * smooth.left--;
+    else if (smooth) scrollY = smooth.to;
+    if (o.jitter) scrollY += (jit++ % 2 ? 3 : -3);
   };
   w.Range.prototype.getBoundingClientRect = function (this: any) {
     const base = docRect(this.startContainer.parentElement);
@@ -225,6 +239,7 @@ function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: 
     // sharedWorld: true models stock Playwright (evaluate in the main world).
     evaluate: async (fn: (a: unknown) => unknown, arg: unknown) => {
       calls.push(`evaluate:${fn.name}`);
+      tick();
       const run = () => w.eval(`(${fn.toString()})`)(JSON.parse(JSON.stringify(arg ?? null)));
       if (o.sharedWorld) return run();
       const had = { swiper: el.swiper, Swiper: w.Swiper };
@@ -240,7 +255,8 @@ function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: 
     screenshot: async (s: { clip: { width: number; height: number } }) => {
       calls.push(`screenshot:${s.clip.width}x${Math.round(s.clip.height)}`);
       if (o.hangAt === "screenshot") await new Promise(() => {});
-      return Buffer.from(syntheticPng(s.clip.width, Math.max(1, Math.round(s.clip.height)), [idx * 40, 30, 60], [200, 200, 200]));
+      const png = Buffer.from(syntheticPng(s.clip.width, Math.max(1, Math.round(s.clip.height)), [idx * 40, 30, 60], [200, 200, 200]));
+      return o.pngPad ? Buffer.concat([png, Buffer.alloc(o.pngPad, 7)]) : png;
     },
   };
   return { page: defaultPage, calls, guard, network };
@@ -436,7 +452,7 @@ describe("the fixed page code against a fake Playwright page", () => {
     const r = JSON.parse(good.stdout.slice(good.stdout.indexOf("W2F_RESULT ") + 11));
     const big = clone(r);
     big.states[0].png = "A".repeat(Math.ceil(SANDBOX.maxPngBytes / 3) * 4 + 4);
-    expect(parseSandboxOutput({ ...good, stdout: "W2F_RESULT " + JSON.stringify(big) })).toMatchObject({ ok: false, reason: expect.stringMatching(/over 1500000 bytes/) });
+    expect(parseSandboxOutput({ ...good, stdout: "W2F_RESULT " + JSON.stringify(big) })).toMatchObject({ ok: false, reason: expect.stringMatching(/over 400000 bytes/) });
     const notPng = clone(r);
     notPng.states[0].png = Buffer.from("GIF89a-not-a-png!!!").toString("base64");
     expect(parseSandboxOutput({ ...good, stdout: "W2F_RESULT " + JSON.stringify(notPng) })).toMatchObject({ ok: false });
@@ -445,7 +461,7 @@ describe("the fixed page code against a fake Playwright page", () => {
     expect(parseSandboxOutput({ ...good, stdout: "W2F_RESULT " + JSON.stringify(moved) })).toMatchObject({ ok: false, reason: expect.stringMatching(/different region geometry/) });
     const badClip = clone(r);
     badClip.states[1].clip.y += 50;
-    expect(parseSandboxOutput({ ...good, stdout: "W2F_RESULT " + JSON.stringify(badClip) })).toMatchObject({ ok: false, reason: expect.stringMatching(/clip is not the measured target/) });
+    expect(parseSandboxOutput({ ...good, stdout: "W2F_RESULT " + JSON.stringify(badClip) })).toMatchObject({ ok: false, reason: expect.stringMatching(/clip is not the measured slider box/) });
     const tooTall = clone(r);
     tooTall.states[0].png = Buffer.from(syntheticPng(1920, 1200, [0, 0, 0], [1, 1, 1])).toString("base64");
     expect(parseSandboxOutput({ ...good, stdout: "W2F_RESULT " + JSON.stringify(tooTall) })).toMatchObject({ ok: false, reason: expect.stringMatching(/outside the pixel caps/) });
@@ -1042,8 +1058,8 @@ describe("FINDING4: one local in-browser deadline; bounded single close; deadlin
   };
   it("budget: nominal step caps fit inside the local deadline; deadline + close bound leave >= 10 s of the documented 90 s", () => {
     // readiness + 4 main-world Swiper calls (diag, stop-autoplay, 2 x next) are inside the budget
-    const nominal = SANDBOX.navTimeoutMs + SANDBOX.settleMs + SANDBOX.swiperReadyMs + SANDBOX.swiperOpMs * 4 + SANDBOX.states.length * (SANDBOX.stateWaitMs + SANDBOX.screenshotMs);
-    expect(nominal).toBe(67_400);
+    const nominal = SANDBOX.navTimeoutMs + SANDBOX.settleMs + SANDBOX.swiperReadyMs + SANDBOX.swiperOpMs * 4 + SANDBOX.states.length * (SANDBOX.stateWaitMs + SANDBOX.frameStableMs + SANDBOX.screenshotMs);
+    expect(nominal).toBe(70_400);
     expect(nominal).toBe(SANDBOX_NOMINAL_MS);
     expect(nominal).toBeLessThan(SANDBOX.localDeadlineMs);
     expect(SANDBOX.localDeadlineMs + SANDBOX.closeBoundMs).toBe(77_000);
@@ -1315,7 +1331,7 @@ describe("MAIN-WORLD Swiper access (hosted evaluate observed isolated; run da1ae
   });
   it("no page-JS-state read is left on page.evaluate (only DOM-only functions and the evaluate half of the diag)", () => {
     const evals = [...SANDBOX_CODE.matchAll(/own\.evaluate\((\w+|\(\) =>)/g)].map((m) => m[1]);
-    expect(new Set(evals)).toEqual(new Set(["W2F_PROBE", "() =>", "W2F_SWIPER_DIAG", "W2F_INTO_VIEW", "W2F_MEASURE"]));
+    expect(new Set(evals)).toEqual(new Set(["W2F_PROBE", "() =>", "W2F_SWIPER_DIAG", "W2F_INTO_VIEW", "W2F_VIEW_RECT", "W2F_MEASURE"]));
     expect(SANDBOX_CODE.match(/own\.evaluate\(W2F_SWIPER_DIAG/g)).toHaveLength(1);
   });
   it("the dual-world diag is kept (sanitized) in the run record and execute-raw stays within the on-disk byte cap", async () => {
@@ -1326,5 +1342,164 @@ describe("MAIN-WORLD Swiper access (hosted evaluate observed isolated; run da1ae
     writeExecuteRawFile(path, raws[0]!);
     expect(statSync(path).size).toBeLessThanOrEqual(RAW_EXECUTE_CAP_BYTES);
     expect(JSON.parse(readFileSync(path, "utf8")).schema).toBe("website-to-figma/execute-raw");
+  });
+});
+
+// ---------------- run 0cdd8852fb33: output budget + framing ----------------
+describe("OUTPUT BUDGET: measured in-browser against maxEmitChars; never relies on provider truncation", () => {
+  const lineOf = (stdout: string) => stdout.slice(stdout.indexOf("W2F_RESULT "));
+  const emitted = (stdout: string) => { const l = lineOf(stdout); return Math.max(l.length, Buffer.byteLength(l, "utf8")); };
+  const withEmit = (to: number) => {
+    const needle = `"maxEmitChars":${SANDBOX.maxEmitChars}`;
+    expect(SANDBOX_CODE).toContain(needle);
+    return SANDBOX_CODE.replace(needle, `"maxEmitChars":${to}`);
+  };
+  const runMut2 = async (p: ReturnType<typeof fakePage>, code: string) => {
+    const lines: string[] = [];
+    await new AsyncFunction("page", "console", code)(p.page, { log: (x: string) => lines.push(x) });
+    return { success: true, exitCode: 0, killed: false, truncated: false, stdout: lines.join("\n") };
+  };
+  it("constants: provider cap 1,048,576 (observed), emit budget 900,000 with headroom", () => {
+    expect(SANDBOX.maxOutputChars).toBe(1_048_576);
+    expect(SANDBOX.maxEmitChars).toBe(900_000);
+    expect(SANDBOX.maxOutputChars - SANDBOX.maxEmitChars).toBeGreaterThanOrEqual(100_000);
+  });
+  it("within budget: complete, valid JSON; budget recorded; PNGs kept and parsed", async () => {
+    const out = await runCode(fakePage({ pngPad: 150_000 })); // ~200k base64 per state, ~600k total
+    expect(emitted(out.stdout)).toBeLessThanOrEqual(SANDBOX.maxEmitChars);
+    const parsed = parseSandboxOutput(out);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect((parsed.result as any).budget).toMatchObject({ maxEmitChars: 900_000, pngsOmitted: false, measurementsOmitted: false });
+    expect((parsed.result as any).budget.measuredChars).toBeGreaterThan(600_000);
+    expect((parsed.result as any).budget.measuredChars).toBeLessThanOrEqual(SANDBOX.maxEmitChars);
+    expect(parsed.pngs.map((b) => b.length)).toEqual((parsed.result as any).states.map((s2: any) => s2.pngBytes));
+  });
+  it("over budget (3 x ~440k base64, like run 0cdd8852fb33): valid JSON within budget, PNGs omitted with exact sizes, fail closed", async () => {
+    const out = await runCode(fakePage({ pngPad: 330_000 }));
+    expect(emitted(out.stdout)).toBeLessThanOrEqual(SANDBOX.maxEmitChars);
+    const r = JSON.parse(lineOf(out.stdout).slice("W2F_RESULT ".length)); // complete JSON, never truncated
+    expect(r.budget.pngsOmitted).toBe(true);
+    expect(r.budget.measuredChars).toBeGreaterThan(SANDBOX.maxEmitChars);
+    expect(r.budget.omittedPngs.map((x: any) => x.seq)).toEqual([0, 1, 2]);
+    for (const x of r.budget.omittedPngs) {
+      expect(x.bytes).toBeGreaterThan(330_000);
+      expect(x.base64Chars).toBe(Math.ceil(x.bytes / 3) * 4);
+    }
+    expect(r.states.every((s2: any) => s2.png === null && s2.measured)).toBe(true);
+    const parsed = parseSandboxOutput(out);
+    expect(parsed).toMatchObject({ ok: false, status: "rejected" });
+    expect((parsed as any).reason).toMatch(/^in-browser step failed at stage done: result line over the 900000-char output budget \(\d+\): PNGs omitted, capture rejected$/);
+  });
+  it("lifecycle: an over-budget run is rejected with diagnostics and NO PNG saved; no replay", async () => {
+    const { rec, events } = await runWith(await runCode(fakePage({ pngPad: 330_000 })));
+    expect(rec.status).toBe("rejected");
+    expect(rec.states).toEqual([]);
+    expect(events.filter((e) => e.startsWith("execute"))).toHaveLength(1);
+    expect(events.filter((e) => e.startsWith("delete"))).toHaveLength(1);
+  });
+  it("progressive omission (budgets derived from the measured size): PNGs, then measurements, then a minimal record; always valid JSON within the budget", async () => {
+    const full = JSON.parse(lineOf((await runCode(fakePage())).stdout).slice("W2F_RESULT ".length));
+    const X = full.budget.measuredChars as number;
+    const P = full.states.reduce((n: number, s2: any) => n + s2.png.length, 0);
+    for (const [budget, level] of [[X - 10, "pngs"], [X - P - 200, "measurements"], [600, "minimal"], [120, "minimal"]] as const) {
+      const out = await runMut2(fakePage(), withEmit(budget));
+      expect(emitted(out.stdout)).toBeLessThanOrEqual(budget);
+      const r = JSON.parse(lineOf(out.stdout).slice("W2F_RESULT ".length));
+      expect(r.error).toMatch(/output budget/);
+      if (level === "pngs") expect(r.states.every((s2: any) => s2.png === null && s2.measured !== null)).toBe(true);
+      if (level === "measurements") expect(r.states.every((s2: any) => s2.png === null && s2.measured === null)).toBe(true);
+      if (level === "minimal") expect(r.states).toEqual([]);
+      expect(parseSandboxOutput(out)).toMatchObject({ ok: false, status: "rejected" });
+    }
+  });
+});
+
+describe("CLIP: the slider box, validated against the measured geometry", () => {
+  const good = async () => {
+    const out = await runCode(fakePage());
+    return { out, r: JSON.parse(out.stdout.slice(out.stdout.indexOf("W2F_RESULT ") + 11)) };
+  };
+  const reparse = (out: any, r: any) => parseSandboxOutput({ ...out, stdout: "W2F_RESULT " + JSON.stringify(r) });
+  it("the tighter slider-box clip (not a full-width strip) is produced and accepted", async () => {
+    const { out, r } = await good();
+    expect(r.states.map((s2: any) => s2.clip)).toEqual(Array(3).fill({ x: 300, y: 100, width: 600, height: 40 }));
+    expect(r.states[0].measured.clipTarget).toMatchObject({ selector: SANDBOX.swiper, viewLeft: 300, viewTop: 100, width: 600, inViewport: true });
+    expect(reparse(out, r).ok).toBe(true);
+  });
+  it("mismatched clips are rejected: shifted, wider than the box, full-width strip, box outside the target, box not in viewport", async () => {
+    const { out, r } = await good();
+    const cases: [(x: any) => void, RegExp][] = [
+      [(x) => (x.states[1].clip.x += 20), /state 1 clip is not the measured slider box/],
+      [(x) => (x.states[0].clip.width += 50), /state 0 clip is not the measured slider box/],
+      [(x) => (x.states[2].clip = { x: 0, y: 100, width: 1920, height: 40 }), /state 2 clip is not the measured slider box/],
+      [(x) => (x.states[0].measured.clipTarget.viewLeft = -400), /state 0 slider box is outside the measured target/],
+      [(x) => (x.states[0].measured.clipTarget.inViewport = false), /state 0 slider box was not fully in the viewport/],
+      [(x) => delete x.states[1].measured.clipTarget, /state 1 lacks the measured slider box/],
+    ];
+    for (const [mut, re] of cases) {
+      const c = clone(r);
+      mut(c);
+      const res = reparse(out, c);
+      expect(res.ok).toBe(false);
+      expect((res as any).reason).toMatch(re);
+    }
+  });
+  it("conversion: frame = the clip box with the state shifted so the screenshot's left edge is x 0 (renderer places the image at -frame.x)", async () => {
+    const { rec } = await runWith(await runCode(fakePage()));
+    expect(rec.status).toBe("accepted");
+    const { capture } = sandboxToCapture(rec, ["s0.png", "s1.png", "s2.png"]);
+    const st = (capture as any).pages[0].states;
+    expect(st.map((x: any) => [x.scope, x.screenshotScrollY])).toEqual(Array(3).fill([{ x: 0, y: 4100, w: 600, h: 40 }, 4100]));
+    const slide = st[0].measured.texts.find((t: any) => t.text.startsWith("Slide"));
+    expect(slide.x).toBe(0); // was 300 in page coordinates
+  });
+});
+
+describe("FRAMING: instant scroll + stable viewTop; state 0 held to the same in-viewport rule", () => {
+  it("every state scrolls with behavior instant and records a stable framing", async () => {
+    const p = fakePage();
+    const parsed = parseSandboxOutput(await runCode(p));
+    expect(parsed.ok).toBe(true);
+    expect(p.calls.filter((c) => c.startsWith("scrollIntoView"))).toEqual(Array(3).fill("scrollIntoView:instant"));
+    const r = (parsed as any).result;
+    for (const s2 of r.states) expect(s2.framing).toMatchObject({ stable: true, inViewport: true, polls: 2 });
+  });
+  it("MUTATION: smooth scrolling (the previous call) needs several polls to settle; the poll waits it out", async () => {
+    const mutant = SANDBOX_CODE.replace('behavior: "instant"', 'behavior: "smooth"');
+    expect(mutant).not.toBe(SANDBOX_CODE);
+    const p = fakePage();
+    const lines: string[] = [];
+    await new AsyncFunction("page", "console", mutant)(p.page, { log: (x: string) => lines.push(x) });
+    const r = JSON.parse(lines.join("\n").slice(lines.join("\n").indexOf("W2F_RESULT ") + 11));
+    expect(r.error).toBeNull();
+    expect(r.states[0].framing.polls).toBeGreaterThan(2); // it moved between reads before settling
+  });
+  it("never-stable position: fails closed (bounded polls), context closed", async () => {
+    const p = fakePage({ jitter: true });
+    const res = parseSandboxOutput(await runCode(p));
+    expect(res.ok).toBe(false);
+    expect((res as any).reason).toBe(`in-browser step failed at stage state-0: slider position not stable within ${SANDBOX.frameStableMs} ms`);
+    expect(p.calls.filter((c) => c === "evaluate:W2F_VIEW_RECT")).toHaveLength(Math.ceil(SANDBOX.frameStableMs / SANDBOX.framePollMs) + 1);
+    expect(p.calls.some((c) => c.startsWith("screenshot"))).toBe(false);
+    expect(p.calls.at(-1)).toBe("context.close");
+  });
+  it("state 0 out of the viewport (like run 0cdd8852fb33's viewTop 635 framing) is rejected before any screenshot", async () => {
+    const p = fakePage({ noScrollSeq0: true });
+    const res = parseSandboxOutput(await runCode(p));
+    expect(res.ok).toBe(false);
+    expect((res as any).reason).toMatch(/^in-browser step failed at stage state-0: slider not fully in the viewport after a stable scroll \(viewTop \d+\)$/);
+    expect(p.calls.some((c) => c.startsWith("screenshot"))).toBe(false);
+  });
+});
+
+describe("result-line parsing is line-anchored", () => {
+  it("a W2F_RESULT prefix inside a JSON string value (or an earlier log line) is never taken as the result line", () => {
+    const line = "W2F_RESULT " + JSON.stringify({ w2f: "sandbox", v: 1, error: "x W2F_RESULT {broken", stage: "done", states: [] });
+    for (const stdout of [line, `log W2F_RESULT {"nope"\n${line}`, `a\nb\n${line}\n`]) {
+      const r = parseSandboxOutput({ success: true, exitCode: 0, stdout });
+      expect(r).toMatchObject({ ok: false, status: "rejected", reason: "in-browser step failed at stage done: x W2F_RESULT {broken" });
+    }
+    expect(parseSandboxOutput({ success: true, exitCode: 0, stdout: 'log W2F_RESULT {"w2f":"sandbox","v":1}' })).toMatchObject({ ok: false, status: "ambiguous", reason: "no W2F_RESULT line in the execute output" });
   });
 });

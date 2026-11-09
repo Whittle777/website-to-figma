@@ -641,7 +641,15 @@ reach the Browser through `page.context().browser()`, and it is never navigated.
    `JSHandle.jsonValue()`. On the hosted browser, `page.evaluate` was observed not to see `el.swiper`
    or `window.Swiper` (an isolated world is the hypothesis). DOM-only steps stay on `page.evaluate`.
    The diagnostic runs in both worlds and records `evaluateIsolated`
-9. captures **all three states on that same owned page**
+9. captures **all three states on that same owned page**. For each state it:
+   - scrolls the section with `behavior: "instant"`
+   - polls (bounded: 1 s) until the slider's position is stable and fully in the viewport, or
+     fails closed
+   - screenshots only the slider box, which the parser checks against the measured geometry
+
+   The page code measures its own result line against a 900,000-char budget; the provider was
+   observed to truncate stdout at 1,048,576. Over budget, the PNGs are omitted with their sizes
+   reported and the run fails closed. A truncated result line is never relied on.
 
 The owned context is closed in `finally`.
 
