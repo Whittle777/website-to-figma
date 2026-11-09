@@ -12,22 +12,26 @@
 // nothing is re-created automatically. Billing per the docs: code-only 2
 // credits per browser-minute, 1-minute minimum; there is no provider hard cap.
 //
-// Page code (fixed, no inputs): a CONTEXT-level route guard (covers popups;
-// new pages are closed); setViewportSize BEFORE navigation; the main
+// Page code (fixed, no inputs): from the preconnected page, reach the Browser
+// (page.context().browser(), documented) and create ONE owned incognito
+// context with serviceWorkers: "block" and the 1920x1080 viewport BEFORE any
+// page exists; a context route guard (covers popups; new pages are closed);
+// all three states on the SAME owned page; the owned context is closed in
+// `finally` and the sandbox session is deleted in `finally`. The default
+// preconnected page is never navigated. The main
 // navigation to the EXACT raw URL is performed by the documented
 // route.fetch({ maxRedirects: 0, maxRetries: 0, timeout }) and any 3xx is
 // aborted BEFORE route.fulfill({ response }) - no redirected request is made;
 // every other navigation is aborted; autoplay of the ONE validated Swiper is
 // stopped (recorded MODIFICATION); three states of ONE region (#testimonials).
 //
-// HARD HOLD (no acceptance flag): Service Worker requests are not intercepted
-// by page/context routing (Playwright docs), and blocking service workers is a
-// browser-context OPTION (serviceWorkers: "block") that the preconnected
-// sandbox page does not expose through any documented API. Until that is
-// resolved, executeSandbox refuses before any key read, ledger write or
-// request. Also stated, not claimed away: subresource requests are not
-// DNS-pinned or private-host checked in the remote browser (only IP-literal
-// and local-name hosts are aborted, best effort); Swiper states rely on the
+// Service workers: blocked by the owned context option (Playwright Browser
+// docs). Hosted compatibility of browser.newContext inside the Firecrawl
+// sandbox is NOT proven: the code fails closed if the Browser or newContext is
+// unavailable (the session is still deleted). Also stated, not claimed away:
+// subresource requests are not DNS-pinned or private-host checked in the
+// remote browser (only IP-literal and local-name hosts are aborted, best
+// effort); Swiper states rely on the
 // known page's semantics (no side-effect-free promise); slideNext(0) states
 // are not observed animation completions; creditsBilled is undocumented.
 import { assertHostedFirecrawlUrl, systemResolver, type Resolver } from "../security/urlGuard";
@@ -63,9 +67,9 @@ export const SANDBOX = {
 // Worst case if the session lives its whole ttl (2 credits per session-minute,
 // code-only, per the operator-read pricing): NOT a provider cap.
 // Conditions under which execution is REFUSED outright (no flag can bypass).
-export const SANDBOX_UNSUPPORTED: string[] = [
-  "service-workers: Service Worker requests bypass page/context routing (Playwright docs), and serviceWorkers: \"block\" is a browser-context option the preconnected sandbox page does not expose through any documented API; required request guards cannot be preserved",
-];
+// (empty: the service-worker condition is addressed by the owned context with
+// serviceWorkers: "block"; any future unsupported condition goes here)
+export const SANDBOX_UNSUPPORTED: string[] = [];
 export const SANDBOX_WORST_CASE_CREDITS = Math.ceil(SANDBOX.ttl / 60) * 2;
 if (SANDBOX.ttl < 30 || SANDBOX.ttl > 3600 || SANDBOX.activityTtl < 10 || SANDBOX.activityTtl > 3600) throw new Error("sandbox ttl outside the documented ranges");
 export const SANDBOX_WALL_MS = { create: 60_000, execute: SANDBOX.executeTimeoutS * 1000 + 30_000, delete: 60_000 };
@@ -129,15 +133,21 @@ const W2F_MEASURE = (a) => {
 export const SANDBOX_CODE = String.raw`// website-to-figma fixed sandbox code (reviewed; takes no inputs)
 const W = ${JSON.stringify({ url: SANDBOX.url, vw: SANDBOX.viewport.width, vh: SANDBOX.viewport.height, navTimeoutMs: SANDBOX.navTimeoutMs, settleMs: SANDBOX.settleMs, stateWaitMs: SANDBOX.stateWaitMs, scope: SANDBOX.scope, swiper: SANDBOX.swiper, states: SANDBOX.states, maxPngBytes: SANDBOX.maxPngBytes, max: { maxElements: SANDBOX.maxElements, maxTexts: SANDBOX.maxTexts, maxImages: SANDBOX.maxImages } })};
 ${PAGE_FUNCS}
-const out = { w2f: "sandbox", v: 1, error: null, viewportSet: null, mainFetch: null, nav: null, env: null, autoplay: null, modifications: [], blocked: [], popupsClosed: 0, serviceWorker: null, states: [] };
+const out = { w2f: "sandbox", v: 1, error: null, ownedContext: null, ownedContextClosed: null, mainFetch: null, nav: null, env: null, autoplay: null, modifications: [], blocked: [], popupsClosed: 0, serviceWorker: null, states: [] };
+let ctx = null;
 try {
-  if (typeof page === "undefined" || !page) throw new Error("no Playwright page in this session");
-  const ctx = page.context();
-  ctx.on("page", (p) => { out.popupsClosed++; p.close().catch(() => {}); });
+  // Reach the Browser through documented public APIs; never navigate the preconnected default page.
+  if (typeof page === "undefined" || !page || typeof page.context !== "function") throw new Error("no Playwright page in this session");
+  const browser = page.context().browser();
+  if (!browser || typeof browser.newContext !== "function") throw new Error("Browser object unavailable: cannot create the owned context");
+  // ONE owned incognito context: service-worker registration blocked, viewport fixed BEFORE any page exists.
+  ctx = await browser.newContext({ serviceWorkers: "block", viewport: { width: W.vw, height: W.vh } });
+  out.ownedContext = { serviceWorkers: "block", viewport: { width: W.vw, height: W.vh } };
+  let own = null;
   await ctx.route("**/*", async (route) => {
     const req = route.request(); let u = null; try { u = new URL(req.url()); } catch (e) {}
     let nav = false, main = false;
-    try { nav = req.isNavigationRequest(); main = nav && req.frame() === page.mainFrame(); } catch (e) {}
+    try { nav = req.isNavigationRequest(); main = nav && !!own && req.frame() === own.mainFrame(); } catch (e) {}
     let why = null;
     if (!u) why = "invalid-url";
     else if (nav && !(main && req.url() === W.url)) why = "navigation-not-exact-target"; // raw string, no normalization; popups/frames refused
@@ -158,38 +168,41 @@ try {
     }
     return route.continue();
   });
-  await page.setViewportSize({ width: W.vw, height: W.vh });
-  out.viewportSet = { width: W.vw, height: W.vh };
-  const resp = await page.goto(W.url, { waitUntil: "load", timeout: W.navTimeoutMs });
+  own = await ctx.newPage();
+  ctx.on("page", (p) => { if (p !== own) { out.popupsClosed++; p.close().catch(() => {}); } });
+  const resp = await own.goto(W.url, { waitUntil: "load", timeout: W.navTimeoutMs });
   const chain = []; let r = resp ? resp.request() : null;
   while (r && chain.length < 10) { chain.unshift(r.url()); r = r.redirectedFrom(); }
-  out.nav = { status: resp ? resp.status() : null, finalUrl: page.url(), chain };
+  out.nav = { status: resp ? resp.status() : null, finalUrl: own.url(), chain };
   if (!out.mainFetch || out.mainFetch.status < 200 || out.mainFetch.status > 299) throw new Error("main document was not fetched with a 2xx by the route guard");
-  if (page.url() !== W.url || chain.length !== 1 || chain[0] !== W.url) throw new Error("navigation left the exact target URL (redirect or rewrite)");
-  await page.waitForTimeout(W.settleMs);
-  out.env = await page.evaluate(W2F_PROBE);
-  out.serviceWorker = await page.evaluate(() => !!(navigator.serviceWorker && navigator.serviceWorker.controller));
+  if (own.url() !== W.url || chain.length !== 1 || chain[0] !== W.url) throw new Error("navigation left the exact target URL (redirect or rewrite)");
+  await own.waitForTimeout(W.settleMs);
+  out.env = await own.evaluate(W2F_PROBE);
+  out.serviceWorker = await own.evaluate(() => !!(navigator.serviceWorker && navigator.serviceWorker.controller));
   if (out.serviceWorker) throw new Error("a service worker controls the page (its requests bypass routing)");
   if (out.env.innerWidth !== W.vw || out.env.innerHeight !== W.vh) throw new Error("viewport not applied: " + out.env.innerWidth + "x" + out.env.innerHeight);
-  out.autoplay = await page.evaluate(W2F_SWIPER, { sel: W.swiper, op: "stop-autoplay" });
+  out.autoplay = await own.evaluate(W2F_SWIPER, { sel: W.swiper, op: "stop-autoplay" });
   if (!out.autoplay.valid) throw new Error("swiper refused: " + out.autoplay.reason);
   if (out.autoplay.before && out.autoplay.before.autoplayRunning) out.modifications.push("stopped autoplay of " + W.swiper + " via its own Swiper API (not the page's original behavior)");
+  // All three states on the SAME owned page.
   for (let seq = 0; seq < W.states.length; seq++) {
     let trigger = null;
-    if (seq > 0) { trigger = await page.evaluate(W2F_SWIPER, { sel: W.swiper, op: "next" }); if (!trigger.valid) throw new Error("swiper refused: " + trigger.reason); }
-    if (!(await page.evaluate(W2F_INTO_VIEW, W.scope))) throw new Error("scope not found");
-    await page.waitForTimeout(W.stateWaitMs);
-    const m = await page.evaluate(W2F_MEASURE, { scope: W.scope, ...W.max });
+    if (seq > 0) { trigger = await own.evaluate(W2F_SWIPER, { sel: W.swiper, op: "next" }); if (!trigger.valid) throw new Error("swiper refused: " + trigger.reason); }
+    if (!(await own.evaluate(W2F_INTO_VIEW, W.scope))) throw new Error("scope not found");
+    await own.waitForTimeout(W.stateWaitMs);
+    const m = await own.evaluate(W2F_MEASURE, { scope: W.scope, ...W.max });
     if (!m.target) throw new Error("scope not found");
     const top = Math.max(0, m.target.viewTop);
     const clip = { x: 0, y: top, width: W.vw, height: Math.min(W.vh - top, Math.max(0, m.target.viewBottom - top)) };
     if (clip.height < 1) throw new Error("target not visible for the screenshot");
-    const png = await page.screenshot({ type: "png", clip, timeout: 15000 });
+    const png = await own.screenshot({ type: "png", clip, timeout: 15000 });
     if (png.length > W.maxPngBytes) throw new Error("screenshot over the byte cap");
     out.states.push({ seq, name: W.states[seq], trigger, measured: m, clip, png: png.toString("base64") });
   }
 } catch (e) {
   out.error = String((e && e.message) || e).slice(0, 300);
+} finally {
+  if (ctx) { try { await ctx.close(); out.ownedContextClosed = true; } catch (e) { out.ownedContextClosed = false; } }
 }
 console.log("W2F_RESULT " + JSON.stringify(out));`;
 
@@ -230,11 +243,15 @@ export function buildSandboxPreview(): SandboxPreview {
       "https://docs.firecrawl.dev/features/browser (create/execute/delete, ttl 30-3600 s default 600, activityTtl 10-3600 s default 300, preconnected page, code-only 2 credits/browser-minute, 1-minute minimum)",
       "https://playwright.dev/docs/api/class-page#page-route (route does not intercept redirect hops)",
       "https://playwright.dev/docs/api/class-route#route-fetch (maxRedirects: 0, maxRetries: 0; then route.fulfill({ response }))",
-      "https://playwright.dev/docs/api/class-browsercontext#browser-context-route (context routing covers popups; service worker requests are not intercepted)",
+      "https://playwright.dev/docs/api/class-browser#browser-new-context (serviceWorkers: 'block' blocks all registration of Service Workers; viewport)",
+      "https://playwright.dev/docs/api/class-browsercontext (browser(); route(): not for Service-Worker-intercepted requests; newPage(); close(); 'page' event fires for popups)",
+      "https://docs.firecrawl.dev/features/browser (CDP example uses browser.contexts()/newPage(); newContext/service workers not mentioned)",
       "https://playwright.dev/docs/api/class-page#page-set-viewport-size (set before navigation)",
     ],
     hardHold: SANDBOX_UNSUPPORTED,
     gaps: [
+      "Hosted compatibility is NOT proven: whether page.context().browser() and browser.newContext({ serviceWorkers: 'block', viewport }) are available inside the Firecrawl sandbox is not documented by Firecrawl; the code fails closed if not (the session is still deleted).",
+      "`page` in execute is used only to reach the Browser; the Firecrawl examples use it without defining it, but the docs do not state it; missing => fail closed.",
       "Subresource requests are not DNS-pinned or private-host checked in the remote browser (IP-literal and local-name hosts are aborted, best effort); this tool's local DNS guard covers only its own fetches.",
       "Swiper states rely on the known page's semantics; method names/selectors are not a safety guarantee; no side-effect-free promise. slideNext(0) states are not observed animation completions.",
       "creditsBilled is not in the current docs: recorded only if present; missing => ambiguous.",
@@ -313,6 +330,8 @@ export interface SandboxRecord {
   sessionDurationMs: number | null;
   reservation: number;
   viewportSet: Obj | null;
+  ownedContext: Obj | null;
+  ownedContextClosed: boolean | null;
   mainFetch: Obj | null;
   popupsClosed: number;
   modifications: string[];
@@ -422,6 +441,8 @@ export async function runSandboxLifecycle(o: SandboxExecuteOptions): Promise<San
     sessionDurationMs: null,
     reservation: gate.reservation,
     viewportSet: null,
+    ownedContext: null,
+    ownedContextClosed: null,
     mainFetch: null,
     popupsClosed: 0,
     modifications: [],
@@ -524,6 +545,9 @@ export async function runSandboxLifecycle(o: SandboxExecuteOptions): Promise<San
     const r = parsed.result;
     rec.viewportSet = isObj(r.viewportSet) ? r.viewportSet : null;
     rec.mainFetch = isObj(r.mainFetch) ? r.mainFetch : null;
+    rec.ownedContext = isObj(r.ownedContext) ? r.ownedContext : null;
+    rec.ownedContextClosed = typeof r.ownedContextClosed === "boolean" ? r.ownedContextClosed : null;
+    if (rec.ownedContextClosed !== true) rec.warnings.push("the owned browser context was not confirmed closed (the session delete still runs)");
     rec.popupsClosed = typeof r.popupsClosed === "number" ? r.popupsClosed : 0;
     rec.modifications = Array.isArray(r.modifications) ? r.modifications.filter((x): x is string => typeof x === "string").slice(0, 10).map((x) => x.slice(0, 200)) : [];
     rec.nav = isObj(r.nav) ? r.nav : null;

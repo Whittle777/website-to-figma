@@ -96,8 +96,8 @@ const USAGE = `Usage:
       Offline: the fixed Browser Sandbox preview (viewport before navigation; 3 same-region states).
   website-to-figma sandbox-run --preview FILE --out DIR --ledger FILE --operator-credits-per-request N
         --operator-reported-balance N --confirm-existing-credits --confirm-no-topup [--yes]
-      PAID: create -> execute -> delete (always), one attempt each (documented /v2/interact).
-      Currently a HARD HOLD (service workers bypass request routing); refused even with --yes.
+      PAID: create -> execute -> delete (always), one attempt each (documented /v2/interact); HOLDS
+      without --yes. Runs in ONE owned browser context (serviceWorkers "block"), closed in finally.
   website-to-figma sandbox-cleanup --ledger FILE --id LEDGER_ID [--yes]
       One explicit DELETE for a recorded session whose cleanup was not confirmed; HOLDS without --yes.
   website-to-figma sandbox-convert --run RUN_DIR --out DIR
@@ -375,7 +375,7 @@ async function main(argv: string[]): Promise<number> {
     const g = assertSandboxGates(gates);
     console.log(`Exact sandbox lifecycle (preview sha256 ${validated.previewSha256}; request sha256 ${validated.requestSha256}), one attempt per operation, no replay:`);
     console.log(`  create  POST https://api.firecrawl.dev/v2/interact { ttl ${SANDBOX.ttl}, activityTtl ${SANDBOX.activityTtl} } (seconds; no profile; vendor defaults kept)`);
-    console.log(`  execute POST https://api.firecrawl.dev/v2/interact/{id}/execute { language node, timeout ${SANDBOX.executeTimeoutS}, fixed reviewed code } -> context route guard, setViewportSize ${SANDBOX.viewport.width}x${SANDBOX.viewport.height}, goto ${SANDBOX.url}; 3 states of ${SANDBOX.scope}`);
+    console.log(`  execute POST https://api.firecrawl.dev/v2/interact/{id}/execute { language node, timeout ${SANDBOX.executeTimeoutS}, fixed reviewed code } -> browser.newContext({ serviceWorkers "block", viewport ${SANDBOX.viewport.width}x${SANDBOX.viewport.height} }), context route guard, newPage, goto ${SANDBOX.url}; 3 states of ${SANDBOX.scope} on that page; context closed in finally`);
     console.log("  delete  DELETE https://api.firecrawl.dev/v2/interact/{id} (always, in finally)");
     console.log("Main document: route.fetch({ maxRedirects: 0, maxRetries: 0 }) then route.fulfill; any 3xx aborted before fulfilling (no redirected request). Other navigations, popups' navigations, IP-literal/local hosts and non-http(s) schemes aborted.");
     if (SANDBOX_UNSUPPORTED.length) {
@@ -384,6 +384,7 @@ async function main(argv: string[]): Promise<number> {
     }
     console.log(`Reservation ${g.reservation} (worst case for the full ttl: ${SANDBOX_WORST_CASE_CREDITS}; NOT a provider cap). Ledger committed ${g.committed}, remaining local allowance ${g.remaining}.`);
     console.log("Stops: preview mismatch; missing gate; unresolved/duplicate/over-ceiling ledger; create ambiguous (no re-create) or failed; execute error/killed/truncated/partial/oversize; in-browser redirect/viewport/swiper refusal; delete not confirmed (blocking); missing creditsBilled (ambiguous).");
+    console.log("Not proven: hosted availability of page.context().browser() / browser.newContext inside the Firecrawl sandbox (fails closed; the session is still deleted).");
     if (!flags.has("yes")) {
       console.log("HOLD: nothing was sent and no key was read. Re-run with --yes only after origin review.");
       return 3;

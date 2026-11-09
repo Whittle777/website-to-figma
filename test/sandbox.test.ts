@@ -30,7 +30,7 @@ const fakeIp = (asked: string[] = []) => async (h: string) => (asked.push(h), ["
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 
 // ---------------- fake Playwright page over jsdom ----------------
-function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: boolean; main3xx?: boolean; serviceWorker?: boolean; popup?: boolean } = {}) {
+function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: boolean; main3xx?: boolean; serviceWorker?: boolean; popup?: boolean; noBrowser?: boolean; newContextThrows?: boolean } = {}) {
   const calls: string[] = [];
   const html = `<!doctype html><html><body><section id="hero">Hero</section><section id="testimonials"><div class="swiper init-swiper"><div class="swiper-wrapper"><div class="swiper-slide"><h3 id="slide">Slide 0</h3></div></div></div></section></body></html>`;
   const d = new JSDOM(html, { runScripts: "outside-only", virtualConsole: new VirtualConsole(), url: SANDBOX_URL });
@@ -82,7 +82,8 @@ function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: 
     });
     return outcome;
   };
-  const context = {
+  // the OWNED context (created by browser.newContext) and its single page
+  const ownedContext = {
     route: async (_p: string, h: (r: any) => unknown) => {
       calls.push("context.route");
       routeHandler = h;
@@ -90,16 +91,31 @@ function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: 
     on: (ev: string, h: (p: any) => void) => {
       if (ev === "page") pageHandler = h;
     },
+    newPage: async () => {
+      calls.push("newPage");
+      return page;
+    },
+    close: async () => {
+      calls.push("context.close");
+    },
+  };
+  const browser = {
+    newContext: async (opts: { serviceWorkers: string; viewport: { width: number; height: number } }) => {
+      calls.push(`newContext:${JSON.stringify(opts)}`);
+      if (o.newContextThrows) throw new Error("newContext not permitted");
+      if (!o.ignoreViewport) {
+        vw = opts.viewport.width;
+        vh = opts.viewport.height;
+      }
+      return ownedContext;
+    },
+  };
+  // the preconnected DEFAULT page: only used to reach the Browser; must never navigate
+  const defaultPage = {
+    context: () => ({ browser: () => (o.noBrowser ? null : browser) }),
+    goto: async () => calls.push("DEFAULT-PAGE-NAVIGATED"),
   };
   const page = {
-    context: () => context,
-    setViewportSize: async (s: { width: number; height: number }) => {
-      calls.push(`viewport:${s.width}x${s.height}`);
-      if (!o.ignoreViewport) {
-        vw = s.width;
-        vh = s.height;
-      }
-    },
     goto: async (url: string) => {
       calls.push(`goto:${url}`);
       if ((await route(url, true)) === "abort") throw new Error("net::ERR_FAILED (main document aborted by route)");
@@ -127,7 +143,7 @@ function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: 
       return Buffer.from(syntheticPng(s.clip.width, Math.max(1, Math.round(s.clip.height)), [idx * 40, 30, 60], [200, 200, 200]));
     },
   };
-  return { page, calls, guard, network };
+  return { page: defaultPage, calls, guard, network };
 }
 async function runCode(p: ReturnType<typeof fakePage>) {
   const lines: string[] = [];
@@ -144,17 +160,22 @@ describe("fixed sandbox preview", () => {
     expect(p.reservation.worstCaseCredits).toBe(SANDBOX_WORST_CASE_CREDITS);
     expect(SANDBOX_WORST_CASE_CREDITS).toBe(4);
     const code = p.execute.code;
-    expect(code.indexOf("page.setViewportSize")).toBeLessThan(code.indexOf("page.goto"));
-    expect(code.indexOf("ctx.route")).toBeLessThan(code.indexOf("page.goto"));
+    expect(code).toContain(`browser.newContext({ serviceWorkers: "block", viewport: { width: W.vw, height: W.vh } })`);
+    expect(code.indexOf("browser.newContext")).toBeLessThan(code.indexOf("ctx.route"));
+    expect(code.indexOf("ctx.route")).toBeLessThan(code.indexOf("ctx.newPage"));
+    expect(code.indexOf("ctx.newPage")).toBeLessThan(code.indexOf("own.goto"));
+    expect(code).toContain("await ctx.close()");
     expect(code).toContain("route.fetch({ maxRedirects: 0, maxRetries: 0, timeout: W.navTimeoutMs })");
     expect(code.indexOf("route.fetch(")).toBeLessThan(code.indexOf("route.fulfill("));
-    for (const gone of ["page.request", "accept-redirect-gap", "serviceWorkers:", "newContext", "launch("]) expect(code).not.toContain(gone);
-    expect(p.hardHold).toEqual(SANDBOX_UNSUPPORTED);
-    expect(SANDBOX_UNSUPPORTED[0]).toMatch(/^service-workers: /);
+    for (const gone of ["page.request", "accept-redirect-gap", "launch(", "page.goto", "setViewportSize", "persistent", "storageState"]) expect(code).not.toContain(gone);
+    expect(p.hardHold).toEqual([]);
+    expect(SANDBOX_UNSUPPORTED).toEqual([]);
     expect(code).toContain(JSON.stringify(SANDBOX_URL));
-    for (const banned of ["realViewport", "profile", ".click(", ".fill(", "keyboard", ".type(", "prompt", "newPage", "addInitScript", "exposeFunction", "require(", "process.", "connectOverCDP"]) expect(code).not.toContain(banned);
-    // the only fetch capability is route.fetch of the exact main document
+    for (const banned of ["realViewport", "profile", ".click(", ".fill(", "keyboard", ".type(", "prompt", "addInitScript", "exposeFunction", "require(", "process.", "connectOverCDP"]) expect(code).not.toContain(banned);
+    // the only fetch capability is route.fetch of the exact main document; exactly one owned context and page
     expect(code.match(/fetch\(/g)).toHaveLength(1);
+    expect(code.match(/newContext\(/g)).toHaveLength(1);
+    expect(code.match(/newPage\(/g)).toHaveLength(1);
     expect(sandboxPreviewSha256()).toMatch(/^[0-9a-f]{64}$/);
   });
   it("accepts only the exact preview", () => {
@@ -177,7 +198,9 @@ describe("the fixed page code against a fake Playwright page", () => {
     const parsed = parseSandboxOutput(raw);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    expect(p.calls.slice(0, 4)).toEqual(["context.route", "viewport:1920x1080", `goto:${SANDBOX_URL}`, `route.fetch:${SANDBOX_URL}:maxRedirects=0:maxRetries=0`]);
+    expect(p.calls.slice(0, 5)).toEqual([`newContext:{"serviceWorkers":"block","viewport":{"width":1920,"height":1080}}`, "context.route", "newPage", `goto:${SANDBOX_URL}`, `route.fetch:${SANDBOX_URL}:maxRedirects=0:maxRetries=0`]);
+    expect(p.calls.at(-1)).toBe("context.close");
+    expect(p.calls).not.toContain("DEFAULT-PAGE-NAVIGATED");
     expect(p.network).toEqual([SANDBOX_URL]); // exactly one upstream main-document request, no pre-check duplicate
     expect(p.calls).toContain("autoplay.stop");
     expect(p.calls.filter((c) => c.startsWith("slideNext"))).toEqual(["slideNext:0", "slideNext:0"]);
@@ -196,6 +219,7 @@ describe("the fixed page code against a fake Playwright page", () => {
     expect(r.env).toMatchObject({ innerWidth: 1920, innerHeight: 1080 });
     expect(r.blocked.map((b: any) => b.why)).toEqual(["navigation-not-exact-target", "ip-literal", "local-name", "navigation-not-exact-target", "navigation-not-exact-target", "navigation-not-exact-target", "scheme"]);
     expect(r.mainFetch).toEqual({ status: 200, url: SANDBOX_URL });
+    expect(r).toMatchObject({ ownedContext: { serviceWorkers: "block", viewport: { width: 1920, height: 1080 } }, ownedContextClosed: true });
     expect(r.modifications[0]).toMatch(/stopped autoplay of #testimonials \.swiper\.init-swiper via its own Swiper API/);
     expect(r.states.map((s: any) => [s.seq, s.name, s.measured.target.selector, s.measured.region.y])).toEqual([[0, "Default", "#testimonials", 4000], [1, "Testimonial next", "#testimonials", 4000], [2, "Testimonial next 2", "#testimonials", 4000]]);
     expect(r.states.map((s: any) => s.measured.texts.find((t: any) => t.text.startsWith("Slide")).text)).toEqual(["Slide 0", "Slide 1", "Slide 2"]);
@@ -208,6 +232,8 @@ describe("the fixed page code against a fake Playwright page", () => {
       [{ redirect: true }, /navigation left the exact target URL/],
       [{ main3xx: true }, /main document aborted by route/],
       [{ serviceWorker: true }, /a service worker controls the page/],
+      [{ noBrowser: true }, /Browser object unavailable/],
+      [{ newContextThrows: true }, /newContext not permitted/],
       [{ ignoreViewport: true }, /viewport not applied: 1920x100000/],
       [{ noSwiper: true }, /swiper refused: no Swiper instance bound/],
     ] as const) {
@@ -223,6 +249,17 @@ describe("the fixed page code against a fake Playwright page", () => {
     expect(p.network).toEqual([SANDBOX_URL]);
     expect(p.guard).toEqual([`abort ${SANDBOX_URL}`]);
     expect(p.calls.some((c) => c.includes("elsewhere"))).toBe(false);
+  });
+  it("the owned context is closed in finally even when a step fails", async () => {
+    for (const o of [{ main3xx: true }, { noSwiper: true }, { ignoreViewport: true }]) {
+      const p = fakePage(o);
+      const r = parseSandboxOutput(await runCode(p));
+      expect(r.ok).toBe(false);
+      expect(p.calls.at(-1)).toBe("context.close");
+    }
+    const nb = fakePage({ noBrowser: true });
+    await runCode(nb);
+    expect(nb.calls.filter((c) => c.startsWith("newContext") || c === "context.close")).toEqual([]);
   });
   it("popups are closed", async () => {
     const p = fakePage({ popup: true });
@@ -291,13 +328,13 @@ function client(events: string[], ledgerPath: string, o: { create?: unknown; exe
   };
 }
 
-describe("hard HOLD: the only execution entry point refuses (no override)", () => {
-  it("executeSandbox refuses before key, client, DNS or ledger", async () => {
+describe("execution entry point", () => {
+  it("no unsupported condition remains: executeSandbox runs the gated lifecycle (fake client)", async () => {
     const s = setup();
-    const events: string[] = [];
-    await expect(executeSandbox({ ...s, resolver: fakeIp(events), getApiKey: () => (events.push("key"), KEY), createClient: async () => (events.push("client"), client(events, s.ledgerPath)) })).rejects.toThrow(SandboxHardHold);
-    expect(events).toEqual([]);
-    expect(readLedger(s.ledgerPath).entries).toHaveLength(1);
+    const rec = await executeSandbox({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async () => client([], s.ledgerPath) });
+    expect(rec.status).toBe("accepted");
+    expect(rec.ownedContextClosed).toBe(true);
+    void SandboxHardHold;
   });
 });
 
