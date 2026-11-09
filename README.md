@@ -633,7 +633,7 @@ reach the Browser through `page.context().browser()`, and it is never navigated.
    capture `incomplete: true` (missing, never substituted)
 6. sets `setViewportSize(1920x1080)` on that owned page **before** `goto`
 7. stops the run if a service worker controls the page, and verifies the viewport
-8. waits (bounded: `page.waitForFunction`, 10 s, polling 100 ms) until the page's own Swiper is bound
+8. waits (bounded: `page.waitForFunction`, 8 s, polling 100 ms) until the page's own Swiper is bound
    to the source-verified `#testimonials .swiper.init-swiper`. If it never binds, the run fails
    closed with read-only diagnostics, and the cause is not guessed. Then it stops autoplay on that
    one Swiper (a recorded modification)
@@ -641,17 +641,36 @@ reach the Browser through `page.context().browser()`, and it is never navigated.
 
 The owned context is closed in `finally`.
 
-**Diagnostics.** If the `W2F_RESULT` line parses, on success or on failure, the run record keeps
-what the browser observed:
+**Diagnostics.** A well-formed `W2F_RESULT` line is recovered even when the execute envelope fails
+(`success:false`, killed, truncated, nonzero exit); the run is still rejected or ambiguous. The
+record keeps what the browser observed:
 - the stage reached when it stopped, and the main fetch and navigation
 - viewport probe and Swiper readiness snapshot
 - blocked and served requests (bounded lists plus totals) and the `incomplete` flag
 - page and console errors, the owned-context state and any modifications
 
-Anything not observed is `null`, never a `false` or `[]` default: for example, `blocked` and
-`incomplete` are only evidence when the guard reports `routeInstalled: true`. The private run
-directory also gets `execute-raw.json`, a copy of the raw execute response capped at 200 KB, with
-PNG base64 elided and the key redacted.
+Anything not observed is `null`, never a `false`/`[]`/`0` default:
+- `blocked`, `served` and `incomplete` count only when the guard reports `routeInstalled: true`
+- page errors, console errors, popups and modifications count only when it reports
+  `listenersInstalled: true`
+
+**Sanitization.** Everything persisted or logged is sanitized first: `sandbox.json`,
+`execute-raw.json`, ledger notes and logs. Masked:
+- API keys and authorization/bearer values
+- URL userinfo, credential/session/token query values and long opaque query values
+- CDP/DevTools/live-view/session/WebSocket URLs (removed whole)
+- credential `key=value` pairs and JWTs
+
+Non-secret URLs and geometry are kept byte-for-byte. `execute-raw.json` is always valid JSON
+within 200 KB: PNG base64 is elided, and each field carries `originalChars`/`keptChars`/`truncated`.
+
+**Timing.** One cooperative local deadline (72 s) covers setup, navigation, waits, evaluations and
+screenshots: every Playwright call is raced against the time left, with its timeout capped to it.
+The owned-context close is a separate single attempt bounded to 5 s. That leaves 13 s of the
+documented 90 s execute timeout for serialization and provider overhead. The record keeps four
+limits separate: `localDeadline`, `ownedContextClose`, `providerKilled` and `transportTimedOut`.
+None is a hard bound: synchronous work in the sandbox's Node process can't be pre-empted, and the
+provider's own kill is outside this code.
 
 **Cleanup.** Once any valid session id is known, exactly **one** DELETE is sent in `finally`. The id
 counts even when create returned `success !== true`, or came in an HTTP error body. Ledger write

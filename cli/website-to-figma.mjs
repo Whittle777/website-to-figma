@@ -41548,12 +41548,9 @@ function canonicalJson(v) {
   return JSON.stringify(v);
 }
 function redact(text, secrets) {
-  return redactAll(text, secrets).slice(0, 500);
-}
-function redactAll(text, secrets) {
   let out = text;
   for (const s of secrets) if (s && s.length >= 4) out = out.split(s).join("[REDACTED]");
-  return out.replace(/\bfc-[A-Za-z0-9_-]{8,}\b/g, "[REDACTED]").replace(/(authorization|bearer)\s*[:=]?\s*\S+/gi, "$1 [REDACTED]");
+  return out.replace(/\bfc-[A-Za-z0-9_-]{8,}\b/g, "[REDACTED]").replace(/(authorization|bearer)\s*[:=]?\s*\S+/gi, "$1 [REDACTED]").slice(0, 500);
 }
 function validateForExecution(planJson, previewJson) {
   const plan = parseStatePlan(planJson);
@@ -42317,6 +42314,92 @@ var init_diagnostic = __esm({
   }
 });
 
+// src/states/sanitize.ts
+function sanitizeUrl(raw) {
+  const m = /^(.*?)([).,;:!\]]*)$/.exec(raw);
+  const urlText = m[1];
+  const tail = m[2] ?? "";
+  if (SESSION_URL.test(urlText)) return `[REDACTED-SESSION-URL]${tail}`;
+  let u;
+  try {
+    u = new URL(urlText);
+  } catch {
+    return urlText.replace(/\/\/[^/@\s]*@/, `//${REDACTED2}@`) + tail;
+  }
+  let changed = false;
+  if (u.username || u.password) {
+    u.username = REDACTED2;
+    u.password = "";
+    changed = true;
+  }
+  if (u.search) {
+    const p = new URLSearchParams(u.search);
+    const out = new URLSearchParams();
+    for (const [k, v] of p) {
+      const mask = SENSITIVE_KEY.test(k) || OPAQUE.test(v);
+      changed ||= mask;
+      out.append(k, mask ? REDACTED2 : v);
+    }
+    if (changed) u.search = out.toString();
+  }
+  if (u.hash && (u.hash.includes("=") || OPAQUE.test(u.hash.slice(1)))) {
+    u.hash = `#${REDACTED2}`;
+    changed = true;
+  }
+  return changed ? u.href.replace(/%5BREDACTED%5D/g, REDACTED2) + tail : raw;
+}
+function sanitizeString(text, secrets = []) {
+  let out = text;
+  for (const s of secrets) if (s && s.length >= 4) out = out.split(s).join(REDACTED2);
+  out = out.replace(URL_RE, (u) => sanitizeUrl(u));
+  out = out.replace(/\bfc-[A-Za-z0-9_-]{8,}\b/g, REDACTED2);
+  out = out.replace(/\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/g, "[REDACTED-JWT]");
+  out = out.replace(/\b(authorization|bearer)\b(\s*[:=]?\s*)(?!\[REDACTED)[^\s"',;]+/gi, `$1$2${REDACTED2}`);
+  out = out.replace(/(["']?)\b((?:access|refresh|id)?[_-]?token|api[_-]?key|apikey|secret|client[_-]?secret|password|passwd|pwd|session[_-]?id|sessionid|cookie|credentials?)\1(\s*[:=]\s*)(["']?)(?!\[REDACTED)[^\s"'&,;}]+/gi, `$1$2$1$3$4${REDACTED2}`);
+  return out;
+}
+function sanitizeValue2(v, secrets = [], lim = RECORD_LIMITS, truncations = [], path = "$", depth = 0) {
+  if (v === null || typeof v === "boolean") return v;
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "string") {
+    const s = sanitizeString(v, secrets);
+    if (s.length <= lim.maxString) return s;
+    truncations.push(`${path}: string ${s.length} chars kept ${lim.maxString}`);
+    return s.slice(0, lim.maxString);
+  }
+  if (typeof v !== "object") return null;
+  if (depth >= lim.maxDepth) {
+    truncations.push(`${path}: depth limit ${lim.maxDepth}`);
+    return null;
+  }
+  if (Array.isArray(v)) {
+    if (v.length > lim.maxArray) truncations.push(`${path}: array ${v.length} items kept ${lim.maxArray}`);
+    return v.slice(0, lim.maxArray).map((x, i) => sanitizeValue2(x, secrets, lim, truncations, `${path}[${i}]`, depth + 1));
+  }
+  const out = {};
+  const keys2 = Object.keys(v);
+  if (keys2.length > lim.maxKeys) truncations.push(`${path}: ${keys2.length} keys kept ${lim.maxKeys}`);
+  for (const k of keys2.slice(0, lim.maxKeys)) {
+    const sk = sanitizeString(k, secrets).slice(0, 200);
+    const val = v[k];
+    out[sk] = SENSITIVE_OBJ_KEY.test(k) && typeof val === "string" && val !== "" ? REDACTED2 : sanitizeValue2(val, secrets, lim, truncations, `${path}.${sk}`, depth + 1);
+  }
+  return out;
+}
+var SENSITIVE_KEY, SENSITIVE_OBJ_KEY, SESSION_URL, OPAQUE, URL_RE, REDACTED2, RECORD_LIMITS;
+var init_sanitize = __esm({
+  "src/states/sanitize.ts"() {
+    "use strict";
+    SENSITIVE_KEY = /(^|[_-])(token|access[_-]?token|refresh[_-]?token|id[_-]?token|auth|authorization|bearer|api[_-]?key|apikey|key|secret|client[_-]?secret|password|passwd|pwd|pass|credential|credentials|session|sessionid|session[_-]?id|sid|sig|signature|jwt|code|ticket|cookie)$/i;
+    SENSITIVE_OBJ_KEY = /^(token|access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|apikey|secret|client[_-]?secret|password|passwd|pwd|authorization|cookie|set-cookie|credentials?)$/i;
+    SESSION_URL = /(^wss?:|^devtools:|^chrome-devtools:|\/devtools\/|\/json\/version|\/cdp\b|[?&/]cdp[=/]|live[-_]?view|liveview|\/session[s]?\/|[?&]session[_-]?id=|\/v[0-9]+\/(interact|browser)\/)/i;
+    OPAQUE = /^[A-Za-z0-9_\-.~+/=%]{24,}$/;
+    URL_RE = /\b[a-z][a-z0-9+.-]{1,15}:\/\/[^\s"'<>`\\]+/gi;
+    REDACTED2 = "[REDACTED]";
+    RECORD_LIMITS = { maxString: 2e4, maxArray: 5e3, maxKeys: 500, maxDepth: 12 };
+  }
+});
+
 // src/states/sandboxTransport.ts
 function createInteractClient(apiKey, opts = {}) {
   const apiUrl = (opts.apiUrl ?? INTERACT_API_URL).replace(/\/$/, "");
@@ -42455,7 +42538,8 @@ function buildSandboxPreview() {
       "Every request (main document and subresources) passes ONE structural policy: http/https (data:/blob: only for subresources), no credentials, no non-default port, no IP-literal or local-name host, exact hostname bootstrapmade.com (exact raw URL for the main navigation). Allowed http(s) requests are made once by route.fetch({ maxRedirects: 0, maxRetries: 0 }); any 3xx is aborted before anything is served, so no redirect hop is requested (an allowed asset behind a redirect is missing, not followed). route.continue() is used only for data:/blob:. WebSockets are refused via context.routeWebSocket (missing => fail closed). Any aborted subresource marks the capture incomplete.",
       "route.fetch requests are made by Playwright inside the hosted sandbox with the owned context's cookies, not by this tool; no DNS lookups are made by the policy and the hosted DNS exception is not expanded. Remote-browser egress is the provider's (docs/security, docs/features/threat-protection); this tool's local DNS guard covers only its own fetches.",
       "Swiper readiness: after goto + settle, page.waitForFunction (polling 100 ms, timeout 10 s) waits until the page's own Swiper instance is bound to the source-verified element (#testimonials .swiper.init-swiper); if it never binds the run fails closed with read-only diagnostics (stage, served/blocked requests, page errors, Swiper/script snapshot). Why an earlier run found it unbound is NOT determined.",
-      "Failure diagnostics: whenever W2F_RESULT parses (success or failure) the observed browser fields are kept in the run record; unobserved fields are null (never false/[] defaults). A size-capped, PNG-elided, key-redacted copy of the raw execute output is saved privately as execute-raw.json.",
+      "Failure diagnostics: a well-formed W2F_RESULT is recovered even when the execute envelope fails (success false, killed, truncated, nonzero exit); the run stays rejected/ambiguous. Observed browser fields are kept; unobserved fields are null (guard fields need routeInstalled, page/listener fields need listenersInstalled). Everything persisted (sandbox.json, execute-raw.json, ledger notes, logs) is sanitized first: API keys, URL userinfo, credential/session/token and long opaque query values, CDP/DevTools/live-view/session/WebSocket URLs, credential key=value pairs, JWTs. execute-raw.json is always valid JSON within 200 KB with explicit per-field truncation metadata.",
+      "Timing: ONE cooperative local deadline (72 s) covers setup, navigation, waits, evaluations and screenshots (each Playwright call is raced against the time left and its own timeout capped to it); the owned-context close is a separate single attempt bounded to 5 s; 13 s of the documented 90 s execute timeout remain for serialization and provider overhead. The record keeps localDeadline, ownedContextClose, providerKilled and transportTimedOut separately. Not a hard bound: synchronous work in the sandbox's Node process cannot be pre-empted, and the provider's own kill is outside this code.",
       "Swiper states rely on the known page's semantics; method names/selectors are not a safety guarantee; no side-effect-free promise. slideNext(0) states are not observed animation completions.",
       "creditsBilled is not in the current docs: informational only; the charge is reconciled from a documented account source."
     ]
@@ -42492,25 +42576,32 @@ function assertSandboxGates(g) {
 async function createSandboxClient(apiKey, apiUrl = INTERACT_API_URL) {
   return createInteractClient(apiKey, { apiUrl });
 }
-function parseSandboxOutput(resp) {
-  if (!isObj8(resp)) return { ok: false, status: "ambiguous", reason: "execute response is not an object" };
-  if (resp.success === false) return { ok: false, status: "rejected", reason: `execute reported failure: ${String(resp.error ?? "").slice(0, 200)}` };
-  if (resp.truncated === true) return { ok: false, status: "ambiguous", reason: "execute output was truncated by the provider" };
-  if (resp.killed === true) return { ok: false, status: "ambiguous", reason: "execute was killed (timeout)" };
-  if (typeof resp.exitCode === "number" && resp.exitCode !== 0) return { ok: false, status: "rejected", reason: `execute exit code ${resp.exitCode}` };
+function recoverW2fResult(resp) {
   const text = [resp.stdout, resp.output, resp.result].find((x) => typeof x === "string" && x.includes("W2F_RESULT "));
-  if (!text) return { ok: false, status: "ambiguous", reason: "no W2F_RESULT line in the execute output" };
-  if (text.length > SANDBOX.maxOutputChars) return { ok: false, status: "rejected", reason: `execute output ${text.length} chars exceeds ${SANDBOX.maxOutputChars}` };
+  if (!text) return { result: null, why: "no W2F_RESULT line in the execute output" };
+  if (text.length > SANDBOX.maxOutputChars) return { result: null, why: `execute output ${text.length} chars exceeds ${SANDBOX.maxOutputChars}` };
   const at = text.lastIndexOf("W2F_RESULT ");
   const end = text.indexOf("\n", at);
-  const line = text.slice(at + "W2F_RESULT ".length, end < 0 ? void 0 : end);
-  let result;
+  let parsed;
   try {
-    result = JSON.parse(line);
+    parsed = JSON.parse(text.slice(at + "W2F_RESULT ".length, end < 0 ? void 0 : end));
   } catch {
-    return { ok: false, status: "ambiguous", reason: "W2F_RESULT is not valid JSON (partial output?)" };
+    return { result: null, why: "W2F_RESULT is not valid JSON (partial output?)" };
   }
-  if (!isObj8(result) || result.w2f !== "sandbox" || result.v !== 1) return { ok: false, status: "ambiguous", reason: "W2F_RESULT has the wrong schema" };
+  if (!isObj8(parsed) || parsed.w2f !== "sandbox" || parsed.v !== 1) return { result: null, why: "W2F_RESULT has the wrong schema" };
+  return { result: parsed, why: null };
+}
+function parseSandboxOutput(resp) {
+  if (!isObj8(resp)) return { ok: false, status: "ambiguous", reason: "execute response is not an object" };
+  const rec = recoverW2fResult(resp);
+  const kept = rec.result ? { result: rec.result } : {};
+  const note2 = rec.result ? " (W2F_RESULT diagnostics recovered)" : "";
+  if (resp.success === false) return { ok: false, status: "rejected", reason: `execute reported failure: ${String(resp.error ?? "").slice(0, 200)}${note2}`, ...kept };
+  if (resp.truncated === true) return { ok: false, status: "ambiguous", reason: `execute output was truncated by the provider${note2}`, ...kept };
+  if (resp.killed === true) return { ok: false, status: "ambiguous", reason: `execute was killed (provider timeout)${note2}`, ...kept };
+  if (typeof resp.exitCode === "number" && resp.exitCode !== 0) return { ok: false, status: "rejected", reason: `execute exit code ${resp.exitCode}${note2}`, ...kept };
+  if (!rec.result) return { ok: false, status: rec.why.includes("exceeds") ? "rejected" : "ambiguous", reason: rec.why };
+  const result = rec.result;
   if (typeof result.error === "string" && result.error) return { ok: false, status: "rejected", reason: `in-browser step failed${typeof result.stage === "string" ? ` at stage ${result.stage.slice(0, 40)}` : ""}: ${result.error.slice(0, 200)}`, result };
   const states = Array.isArray(result.states) ? result.states : [];
   if (states.length !== SANDBOX.states.length) return { ok: false, status: "ambiguous", reason: `expected ${SANDBOX.states.length} states, got ${states.length}`, result };
@@ -42558,34 +42649,67 @@ function copyObserved(rec, r) {
   rec.mainFetch = isObj8(r.mainFetch) ? r.mainFetch : null;
   rec.ownedContext = isObj8(r.ownedContext) ? r.ownedContext : null;
   rec.ownedContextClosed = typeof r.ownedContextClosed === "boolean" ? r.ownedContextClosed : null;
-  rec.popupsClosed = num2(r.popupsClosed);
-  rec.modifications = strs(r.modifications, 10, 200);
+  const listeners = r.listenersInstalled === true;
+  rec.popupsClosed = listeners ? num2(r.popupsClosed) : null;
+  rec.modifications = listeners ? strs(r.modifications, 10, 200) : null;
   rec.nav = isObj8(r.nav) ? r.nav : null;
   rec.env = isObj8(r.env) ? r.env : null;
   rec.swiperReady = isObj8(r.swiperReady) ? r.swiperReady : null;
   rec.autoplay = isObj8(r.autoplay) ? r.autoplay : null;
   rec.serviceWorker = typeof r.serviceWorker === "boolean" ? r.serviceWorker : null;
-  rec.pageErrors = strs(r.pageErrors, 10, 300);
-  rec.consoleErrors = strs(r.consoleErrors, 10, 300);
+  rec.pageErrors = listeners ? strs(r.pageErrors, 10, 300) : null;
+  rec.consoleErrors = listeners ? strs(r.consoleErrors, 10, 300) : null;
+  rec.timing.localDeadline = isObj8(r.deadline) ? r.deadline : null;
+  rec.timing.ownedContextClose = isObj8(r.close) ? r.close : null;
 }
 function rawExecuteProvenance(resp, secrets) {
-  const o = { note: "PRIVATE raw execute provenance: PNG base64 elided, fields size-capped, secrets redacted" };
-  const cap = (t, n) => t.length > n ? `${t.slice(0, n)}...[truncated ${t.length - n} chars]` : t;
-  const elide = (t) => t.replace(/"png":"([A-Za-z0-9+/=]{64,})"/g, (_m, b) => `"png":"<elided ${b.length} base64 chars>"`);
-  if (!isObj8(resp)) o.type = resp === null ? "null" : typeof resp;
+  const prepared = {};
+  const envelope = {};
+  let otherKeys = [];
+  let type2 = null;
+  if (!isObj8(resp)) type2 = resp === null ? "null" : typeof resp;
   else {
-    for (const k of ["success", "exitCode", "killed", "truncated"]) if (k in resp && (typeof resp[k] !== "object" || resp[k] === null)) o[k] = resp[k];
-    for (const k of ["error", "stderr"]) if (typeof resp[k] === "string") o[`${k}Chars`] = resp[k].length, o[k] = cap(resp[k], 16e3);
-    for (const k of ["stdout", "result", "output"]) if (typeof resp[k] === "string") o[`${k}Chars`] = resp[k].length, o[k] = cap(elide(resp[k]), 5e4);
-    o.otherKeys = Object.keys(resp).filter((k) => !["success", "exitCode", "killed", "truncated", "error", "stderr", "stdout", "result", "output"].includes(k)).slice(0, 20).map((k) => k.slice(0, 40));
+    for (const k of ["success", "exitCode", "killed", "truncated"]) {
+      const v = resp[k];
+      if (v === null || typeof v === "boolean" || typeof v === "number" && Number.isFinite(v)) envelope[k] = v;
+      else if (typeof v === "string") envelope[k] = sanitizeString(v, secrets).slice(0, 200);
+    }
+    for (const k of Object.keys(RAW_FIELD_BUDGET)) {
+      const v = resp[k];
+      if (typeof v !== "string") continue;
+      let pngElided = 0;
+      const elided = v.replace(/"png":"([A-Za-z0-9+/=]{64,})"/g, (_m, b64) => (pngElided++, `"png":"<elided ${b64.length} base64 chars>"`));
+      prepared[k] = { originalChars: v.length, pngElided, text: sanitizeString(elided, secrets) };
+    }
+    otherKeys = Object.keys(resp).filter((k) => !(k in RAW_FIELD_BUDGET) && !["success", "exitCode", "killed", "truncated"].includes(k)).slice(0, 20).map((k) => sanitizeString(k, secrets).slice(0, 40));
   }
-  return redactAll(JSON.stringify(o, null, 2), secrets).slice(0, RAW_EXECUTE_CAP);
+  for (let scale = 1; ; scale /= 2) {
+    const fields = {};
+    for (const [k, f] of Object.entries(prepared)) {
+      const budget = Math.floor(RAW_FIELD_BUDGET[k] * scale);
+      const kept = f.text.slice(0, budget);
+      fields[k] = { originalChars: f.originalChars, pngElided: f.pngElided, sanitizedChars: f.text.length, keptChars: kept.length, truncated: kept.length < f.text.length, text: kept };
+    }
+    const doc = { schema: "website-to-figma/execute-raw", schemaVersion: 1, note: "PRIVATE raw execute provenance: PNG base64 elided, sanitized (keys, URL userinfo, token/session query values, CDP/live-view/session URLs), bounded per field; truncation is explicit", capChars: RAW_EXECUTE_CAP, budgetScale: scale, ...type2 ? { type: type2 } : {}, envelope, fields, otherKeys };
+    const text = JSON.stringify(doc, null, 2);
+    if (text.length <= RAW_EXECUTE_CAP) return text;
+    if (scale < 1 / 1024) return JSON.stringify({ schema: "website-to-figma/execute-raw", schemaVersion: 1, capChars: RAW_EXECUTE_CAP, error: "provenance did not fit the cap at the minimum budget; fields omitted", envelope, fieldSizes: Object.fromEntries(Object.entries(prepared).map(([k, f]) => [k, f.originalChars])) });
+  }
+}
+function sanitizeRecord(rec, secrets = []) {
+  const truncations = [];
+  const out = sanitizeValue2(rec, secrets, void 0, truncations);
+  if (truncations.length) out.warnings = [...out.warnings ?? [], `record sanitization truncated: ${truncations.slice(0, 10).join("; ")}`];
+  return out;
 }
 async function runSandboxLifecycle(o) {
+  const secrets = [];
+  return sanitizeRecord(await lifecycleInner(o, secrets), secrets);
+}
+async function lifecycleInner(o, secrets) {
   const now = o.now ?? (() => /* @__PURE__ */ new Date());
   const resolver = o.resolver ?? systemResolver;
   const gate = assertSandboxGates(o.gates);
-  const secrets = [];
   const ledgerPath = o.gates.ledgerPath;
   const rec = {
     schema: "website-to-figma/sandbox-run",
@@ -42624,14 +42748,15 @@ async function runSandboxLifecycle(o) {
     consoleErrors: null,
     swiperReady: null,
     serviceWorker: null,
+    timing: { limits: { localDeadlineMs: SANDBOX.localDeadlineMs, closeBoundMs: SANDBOX.closeBoundMs, providerExecuteTimeoutS: SANDBOX.executeTimeoutS, transportExecuteWallMs: SANDBOX_WALL_MS.execute }, localDeadline: null, ownedContextClose: null, providerKilled: null, transportTimedOut: null },
     rawExecute: null,
     states: [],
     errors: [],
     warnings: []
   };
-  const log = (m) => o.log?.(`[sandbox] ${redact(m, secrets)}`);
+  const log = (m) => o.log?.(`[sandbox] ${redact500(m, secrets)}`);
   const L = { reserveAttempt, recordOp, settleAttempt, settlePendingReconciliation, ...o.ledger ?? {} };
-  const msg = (err) => redact(err instanceof Error ? err.message : String(err), secrets);
+  const msg = (err) => redact500(err instanceof Error ? err.message : String(err), secrets);
   try {
     await assertHostedFirecrawlUrl(SANDBOX_URL, resolver);
   } catch (err) {
@@ -42649,7 +42774,7 @@ async function runSandboxLifecycle(o) {
   try {
     client = await (o.createClient ?? createSandboxClient)(key);
   } catch (err) {
-    rec.reason = redact(`client could not be created: ${err instanceof Error ? err.message : String(err)}`, secrets);
+    rec.reason = redact500(`client could not be created: ${err instanceof Error ? err.message : String(err)}`, secrets);
     return rec;
   }
   let entryId;
@@ -42662,7 +42787,7 @@ async function runSandboxLifecycle(o) {
   rec.ledgerEntryId = entryId;
   const opStrict = (name3, status, detail) => {
     try {
-      L.recordOp(ledgerPath, entryId, { op: name3, status, detail: redact(detail, secrets) }, now);
+      L.recordOp(ledgerPath, entryId, { op: name3, status, detail: redact500(detail, secrets) }, now);
     } catch (err) {
       rec.errors.push({ stage: `${name3}-${status}`, kind: "ledger", detail: `ledger write failed at ${name3}-${status}: ${msg(err)}` });
       throw err;
@@ -42682,7 +42807,7 @@ async function runSandboxLifecycle(o) {
     }
   };
   const op = (name3, status, detail) => ledgerSafe(`${name3}-${status}`, () => {
-    L.recordOp(ledgerPath, entryId, { op: name3, status, detail: redact(detail, secrets) }, now);
+    L.recordOp(ledgerPath, entryId, { op: name3, status, detail: redact500(detail, secrets) }, now);
     log(`${name3} ${status}${detail ? `: ${detail}` : ""}`);
   });
   const primary = (stage, d) => {
@@ -42740,12 +42865,15 @@ async function runSandboxLifecycle(o) {
     } catch (err) {
       const k = classify(err);
       const d = `execute ${k}: ${msg(err)}`;
+      rec.timing.transportTimedOut = isObj8(err) && err.w2fTimeout === true || /no response within/.test(err instanceof Error ? err.message : "");
       rec.ops.push({ op: "execute", attempts: 1, status: k, detail: d });
       op("execute", k, d);
       overall = k === "failed" ? "failed" : "ambiguous";
       primary("execute", d);
       return rec;
     }
+    rec.timing.transportTimedOut = false;
+    rec.timing.providerKilled = isObj8(resp) && typeof resp.killed === "boolean" ? resp.killed : null;
     try {
       const raw = rawExecuteProvenance(resp, secrets);
       o.saveRaw?.(raw);
@@ -42845,7 +42973,7 @@ async function cleanupSandbox(o) {
     try {
       recordOp(o.ledgerPath, o.entryId, { op: "delete", status, detail: detail2 }, o.now);
     } catch (err) {
-      ledgerErrors.push(`ledger write failed (delete ${status}): ${redact(err instanceof Error ? err.message : String(err), [key])}`);
+      ledgerErrors.push(`ledger write failed (delete ${status}): ${redact500(err instanceof Error ? err.message : String(err), [key])}`);
     }
   };
   rec("attempting", `manual cleanup of session ${created}`);
@@ -42856,7 +42984,7 @@ async function cleanupSandbox(o) {
     ok = isObj8(del) && del.success === true;
     detail = `manual cleanup ${ok ? "ok" : "not confirmed"}; creditsBilled ${isObj8(del) && typeof del.creditsBilled === "number" ? del.creditsBilled : "not reported"}`;
   } catch (err) {
-    detail = redact(`manual cleanup ${classify(err)}: ${err instanceof Error ? err.message : String(err)}`, [key]);
+    detail = redact500(`manual cleanup ${classify(err)}: ${err instanceof Error ? err.message : String(err)}`, [key]);
   }
   rec(ok ? "ok" : detail.startsWith("manual cleanup failed") ? "failed" : "ambiguous", detail);
   return { ok, detail: ledgerErrors.length ? `${detail}; ${ledgerErrors.join("; ")}` : detail };
@@ -42894,13 +43022,14 @@ function sandboxToCapture(rec, files) {
     manifest: { schema: "website-to-figma/asset-manifest", schemaVersion: 1, assets: rec.states.map((s, i) => ({ id: `sandbox-s${i}`, kind: "reference", file: files[i], sha256: s.png.sha256, pageUrl: SANDBOX_URL, state: s.name })) }
   };
 }
-var isObj8, SANDBOX_URL, SANDBOX, SANDBOX_UNSUPPORTED, SANDBOX_WORST_CASE_CREDITS, SANDBOX_WALL_MS, PAGE_FUNCS, SANDBOX_CODE, sandboxPreviewSha256, B642, SandboxHardHold, strs, objs, num2, RAW_EXECUTE_CAP;
+var isObj8, SANDBOX_URL, SANDBOX, SANDBOX_UNSUPPORTED, SANDBOX_WORST_CASE_CREDITS, SANDBOX_WALL_MS, PAGE_FUNCS, SANDBOX_CODE, sandboxPreviewSha256, B642, SandboxHardHold, redact500, strs, objs, num2, RAW_EXECUTE_CAP, RAW_FIELD_BUDGET;
 var init_sandbox = __esm({
   "src/states/sandbox.ts"() {
     "use strict";
     init_urlGuard();
     init_imageInfo();
     init_execute();
+    init_sanitize();
     init_sandboxTransport();
     init_ledger();
     isObj8 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -42912,10 +43041,17 @@ var init_sandbox = __esm({
       ttl: 120,
       activityTtl: 60,
       executeTimeoutS: 90,
-      navTimeoutMs: 3e4,
+      // Execute budget (provider timeout is executeTimeoutS 90, a documented request field; not raised):
+      // ONE local in-browser deadline covers setup, navigation, waits, evaluations and screenshots; the
+      // owned-context close is a separate bounded single attempt after it; the rest is headroom for
+      // serialization/console output and provider overhead: 72 + 5 = 77 s of 90 s (13 s headroom).
+      localDeadlineMs: 72e3,
+      closeBoundMs: 5e3,
+      screenshotMs: 8e3,
+      navTimeoutMs: 25e3,
       settleMs: 2e3,
       // bounded wait (page.waitForFunction) for the page's own Swiper to bind to the source-verified element
-      swiperReadyMs: 1e4,
+      swiperReadyMs: 8e3,
       stateWaitMs: 800,
       scope: "#testimonials",
       swiper: "#testimonials .swiper.init-swiper",
@@ -42929,6 +43065,8 @@ var init_sandbox = __esm({
     };
     SANDBOX_UNSUPPORTED = [];
     SANDBOX_WORST_CASE_CREDITS = Math.ceil(SANDBOX.ttl / 60) * 2;
+    if (SANDBOX.navTimeoutMs + SANDBOX.settleMs + SANDBOX.swiperReadyMs + SANDBOX.states.length * (SANDBOX.stateWaitMs + SANDBOX.screenshotMs) >= SANDBOX.localDeadlineMs) throw new Error("sandbox step caps exceed the local deadline");
+    if (SANDBOX.localDeadlineMs + SANDBOX.closeBoundMs >= SANDBOX.executeTimeoutS * 1e3 - 1e4) throw new Error("local deadline + close bound leave under 10 s of headroom");
     if (SANDBOX.ttl < 30 || SANDBOX.ttl > 3600 || SANDBOX.activityTtl < 10 || SANDBOX.activityTtl > 3600) throw new Error("sandbox ttl outside the documented ranges");
     SANDBOX_WALL_MS = { create: 6e4, execute: SANDBOX.executeTimeoutS * 1e3 + 3e4, delete: 6e4 };
     PAGE_FUNCS = String.raw`
@@ -42994,12 +43132,27 @@ const W2F_MEASURE = (a) => {
   return { target: { selector: a.scope, viewTop: tr.top, viewBottom: tr.bottom, left: tr.left, width: tr.width, height: tr.height, documentY: tr.top + sy, inViewport: tr.top >= -1 && tr.bottom <= window.innerHeight + 1 }, region, probe, elements, texts, images };
 };`;
     SANDBOX_CODE = String.raw`// website-to-figma fixed sandbox code (reviewed; takes no inputs)
-const W = ${JSON.stringify({ url: SANDBOX.url, host: "bootstrapmade.com", vw: SANDBOX.viewport.width, vh: SANDBOX.viewport.height, navTimeoutMs: SANDBOX.navTimeoutMs, settleMs: SANDBOX.settleMs, swiperReadyMs: SANDBOX.swiperReadyMs, stateWaitMs: SANDBOX.stateWaitMs, scope: SANDBOX.scope, swiper: SANDBOX.swiper, states: SANDBOX.states, maxPngBytes: SANDBOX.maxPngBytes, max: { maxElements: SANDBOX.maxElements, maxTexts: SANDBOX.maxTexts, maxImages: SANDBOX.maxImages } })};
+const W = ${JSON.stringify({ url: SANDBOX.url, host: "bootstrapmade.com", vw: SANDBOX.viewport.width, vh: SANDBOX.viewport.height, localDeadlineMs: SANDBOX.localDeadlineMs, closeBoundMs: SANDBOX.closeBoundMs, screenshotMs: SANDBOX.screenshotMs, navTimeoutMs: SANDBOX.navTimeoutMs, settleMs: SANDBOX.settleMs, swiperReadyMs: SANDBOX.swiperReadyMs, stateWaitMs: SANDBOX.stateWaitMs, scope: SANDBOX.scope, swiper: SANDBOX.swiper, states: SANDBOX.states, maxPngBytes: SANDBOX.maxPngBytes, max: { maxElements: SANDBOX.maxElements, maxTexts: SANDBOX.maxTexts, maxImages: SANDBOX.maxImages } })};
 ${PAGE_FUNCS}
 // stage = the step in progress when an error is thrown; routeInstalled says whether blocked/served/
 // incomplete were OBSERVED by the guard (false => they are unobserved defaults, not evidence)
-const out = { w2f: "sandbox", v: 1, error: null, stage: "start", routeInstalled: false, incomplete: false, ownedContext: null, ownedContextClosed: null, mainFetch: null, nav: null, env: null, swiperReady: null, autoplay: null, modifications: [], blocked: [], blockedTotal: 0, served: [], servedTotal: 0, pageErrors: [], consoleErrors: [], popupsClosed: 0, serviceWorker: null, states: [] };
+// listenersInstalled: pageErrors/consoleErrors/popupsClosed/modifications are observations only once true
+const out = { w2f: "sandbox", v: 1, error: null, stage: "start", routeInstalled: false, listenersInstalled: false, deadline: { localDeadlineMs: W.localDeadlineMs, hit: false, at: null, elapsedMs: null }, close: { attempted: false, ok: null, timedOut: false, boundMs: W.closeBoundMs, ms: null }, incomplete: false, ownedContext: null, ownedContextClosed: null, mainFetch: null, nav: null, env: null, swiperReady: null, autoplay: null, modifications: [], blocked: [], blockedTotal: 0, served: [], servedTotal: 0, pageErrors: [], consoleErrors: [], popupsClosed: 0, serviceWorker: null, states: [] };
 let ctx = null;
+// ONE local deadline for the whole capture path. Every Playwright call is raced against the time left
+// (and its own timeout option is capped to it); past the deadline nothing new is started.
+const T0 = Date.now();
+const left = () => W.localDeadlineMs - (Date.now() - T0);
+const tmo = (cap) => Math.max(1, Math.min(cap, left()));
+const deadlineErr = (what) => { out.deadline.hit = true; out.deadline.at = what; return new Error("local deadline " + W.localDeadlineMs + " ms reached during " + what); };
+const within = async (what, thunk, cap) => {
+  const ms = Math.min(cap === undefined ? Infinity : cap, left());
+  if (ms <= 0) throw deadlineErr(what);
+  const pr = Promise.resolve().then(thunk); pr.catch(() => {});
+  let t = null;
+  const timer = new Promise((_, rej) => { t = setTimeout(() => rej(deadlineErr(what)), ms); });
+  try { return await Promise.race([pr, timer]); } finally { clearTimeout(t); }
+};
 try {
   // Reach the Browser through documented public APIs; never navigate the preconnected default page.
   if (typeof page === "undefined" || !page || typeof page.context !== "function") throw new Error("no Playwright page in this session");
@@ -43007,7 +43160,7 @@ try {
   if (!browser || typeof browser.newContext !== "function") throw new Error("Browser object unavailable: cannot create the owned context");
   // ONE owned incognito context: service-worker registration blocked, viewport fixed BEFORE any page exists.
   out.stage = "newContext";
-  ctx = await browser.newContext({ serviceWorkers: "block", viewport: { width: W.vw, height: W.vh } });
+  ctx = await within("newContext", () => browser.newContext({ serviceWorkers: "block", viewport: { width: W.vw, height: W.vh } }));
   out.ownedContext = { serviceWorkers: "block", viewport: { width: W.vw, height: W.vh } };
   let own = null;
   // ONE structural URL policy for EVERY request and every hop (no DNS lookups here; the hosted DNS
@@ -43032,7 +43185,7 @@ try {
     if (out.blocked.length < 50) out.blocked.push({ origin: originOf(raw), why, ...(extra || {}) });
     return route.abort();
   };
-  await ctx.route("**/*", async (route) => {
+  await within("route", () => ctx.route("**/*", async (route) => {
     const req = route.request(); const raw = req.url();
     let nav = false, main = false;
     try { nav = req.isNavigationRequest(); main = nav && !!own && req.frame() === own.mainFrame(); } catch (e) {}
@@ -43045,7 +43198,8 @@ try {
     // ever requested; route.continue() is never used for network requests (its redirect hops would
     // bypass this handler).
     let resp = null;
-    try { resp = await route.fetch({ maxRedirects: 0, maxRetries: 0, timeout: W.navTimeoutMs }); } catch (e) { return deny(route, raw, nav, "fetch-error"); }
+    if (left() <= 0) return deny(route, raw, nav, "local-deadline");
+    try { resp = await route.fetch({ maxRedirects: 0, maxRetries: 0, timeout: tmo(W.navTimeoutMs) }); } catch (e) { return deny(route, raw, nav, "fetch-error"); }
     const st = resp.status();
     if (main) out.mainFetch = { status: st, url: resp.url() };
     if (st >= 300 && st < 400) {
@@ -43056,32 +43210,33 @@ try {
     out.servedTotal++;
     if (out.served.length < 60) { let path = "(invalid)"; try { path = new URL(raw).pathname.slice(0, 200); } catch (e) {} out.served.push({ path, status: st, nav }); }
     return route.fulfill({ response: resp });
-  });
+  }));
   out.routeInstalled = true;
   // WebSockets are not seen by context.route: every one is refused (never connected to a server).
   if (typeof ctx.routeWebSocket !== "function") throw new Error("context.routeWebSocket unavailable: cannot refuse WebSocket connections");
   out.stage = "routeWebSocket";
-  await ctx.routeWebSocket(/.*/, (ws) => { out.blockedTotal++; if (out.blocked.length < 50) out.blocked.push({ origin: originOf(ws.url()), why: "websocket" }); out.incomplete = true; ws.close(); });
+  await within("routeWebSocket", () => ctx.routeWebSocket(/.*/, (ws) => { out.blockedTotal++; if (out.blocked.length < 50) out.blocked.push({ origin: originOf(ws.url()), why: "websocket" }); out.incomplete = true; ws.close(); }));
   out.stage = "newPage";
-  own = await ctx.newPage();
+  own = await within("newPage", () => ctx.newPage());
   // page script errors are recorded (bounded) as diagnostics only
   own.on("pageerror", (e) => { if (out.pageErrors.length < 10) out.pageErrors.push(String((e && e.message) || e).slice(0, 300)); });
   own.on("console", (m) => { try { if (m.type() === "error" && out.consoleErrors.length < 10) out.consoleErrors.push(String(m.text()).slice(0, 300)); } catch (e) {} });
   ctx.on("page", (p) => { if (p !== own) { out.popupsClosed++; p.close().catch(() => {}); } });
+  out.listenersInstalled = true;
   // Viewport set on the SAME page used for all three states, BEFORE navigation.
-  await own.setViewportSize({ width: W.vw, height: W.vh });
+  await within("setViewportSize", () => own.setViewportSize({ width: W.vw, height: W.vh }));
   out.stage = "goto";
-  const resp = await own.goto(W.url, { waitUntil: "load", timeout: W.navTimeoutMs });
+  const resp = await within("goto", () => own.goto(W.url, { waitUntil: "load", timeout: tmo(W.navTimeoutMs) }));
   const chain = []; let r = resp ? resp.request() : null;
   while (r && chain.length < 10) { chain.unshift(r.url()); r = r.redirectedFrom(); }
   out.nav = { status: resp ? resp.status() : null, finalUrl: own.url(), chain };
   if (!out.mainFetch || out.mainFetch.status < 200 || out.mainFetch.status > 299) throw new Error("main document was not fetched with a 2xx by the route guard");
   if (own.url() !== W.url || chain.length !== 1 || chain[0] !== W.url) throw new Error("navigation left the exact target URL (redirect or rewrite)");
   out.stage = "settle";
-  await own.waitForTimeout(W.settleMs);
+  await within("settle", () => own.waitForTimeout(tmo(W.settleMs)));
   out.stage = "probe";
-  out.env = await own.evaluate(W2F_PROBE);
-  out.serviceWorker = await own.evaluate(() => !!(navigator.serviceWorker && navigator.serviceWorker.controller));
+  out.env = await within("probe", () => own.evaluate(W2F_PROBE));
+  out.serviceWorker = await within("serviceWorker", () => own.evaluate(() => !!(navigator.serviceWorker && navigator.serviceWorker.controller)));
   if (out.serviceWorker) throw new Error("a service worker controls the page (its requests bypass routing)");
   if (out.env.innerWidth !== W.vw || out.env.innerHeight !== W.vh) throw new Error("viewport not applied: " + out.env.innerWidth + "x" + out.env.innerHeight);
   // Bounded readiness: wait (supported page.waitForFunction) until the page's OWN Swiper is bound to the
@@ -43089,30 +43244,31 @@ try {
   out.stage = "swiper-ready";
   const t0 = Date.now();
   try {
-    await own.waitForFunction(W2F_SWIPER_BOUND, W.swiper, { timeout: W.swiperReadyMs, polling: 100 });
+    await within("swiper-ready", () => own.waitForFunction(W2F_SWIPER_BOUND, W.swiper, { timeout: tmo(W.swiperReadyMs), polling: 100 }));
     out.swiperReady = { ready: true, waitedMs: Date.now() - t0, timeoutMs: W.swiperReadyMs };
   } catch (e) {
     out.swiperReady = { ready: false, waitedMs: Date.now() - t0, timeoutMs: W.swiperReadyMs, error: String((e && e.message) || e).slice(0, 200) };
   }
-  try { out.swiperReady.diag = await own.evaluate(W2F_SWIPER_DIAG, W.swiper); } catch (e) { out.swiperReady.diag = { error: String((e && e.message) || e).slice(0, 200) }; }
+  if (out.deadline.hit) throw new Error("local deadline " + W.localDeadlineMs + " ms reached during swiper-ready");
+  try { out.swiperReady.diag = await within("swiper-diag", () => own.evaluate(W2F_SWIPER_DIAG, W.swiper)); } catch (e) { out.swiperReady.diag = { error: String((e && e.message) || e).slice(0, 200) }; }
   if (!out.swiperReady.ready) throw new Error("swiper not bound within " + W.swiperReadyMs + " ms (see swiperReady.diag)");
   out.stage = "autoplay";
-  out.autoplay = await own.evaluate(W2F_SWIPER, { sel: W.swiper, op: "stop-autoplay" });
+  out.autoplay = await within("autoplay", () => own.evaluate(W2F_SWIPER, { sel: W.swiper, op: "stop-autoplay" }));
   if (!out.autoplay.valid) throw new Error("swiper refused: " + out.autoplay.reason);
   if (out.autoplay.before && out.autoplay.before.autoplayRunning) out.modifications.push("stopped autoplay of " + W.swiper + " via its own Swiper API (not the page's original behavior)");
   // All three states on the SAME owned page.
   for (let seq = 0; seq < W.states.length; seq++) {
     out.stage = "state-" + seq;
     let trigger = null;
-    if (seq > 0) { trigger = await own.evaluate(W2F_SWIPER, { sel: W.swiper, op: "next" }); if (!trigger.valid) throw new Error("swiper refused: " + trigger.reason); }
-    if (!(await own.evaluate(W2F_INTO_VIEW, W.scope))) throw new Error("scope not found");
-    await own.waitForTimeout(W.stateWaitMs);
-    const m = await own.evaluate(W2F_MEASURE, { scope: W.scope, ...W.max });
+    if (seq > 0) { trigger = await within("swiper-next", () => own.evaluate(W2F_SWIPER, { sel: W.swiper, op: "next" })); if (!trigger.valid) throw new Error("swiper refused: " + trigger.reason); }
+    if (!(await within("into-view", () => own.evaluate(W2F_INTO_VIEW, W.scope)))) throw new Error("scope not found");
+    await within("state-wait", () => own.waitForTimeout(tmo(W.stateWaitMs)));
+    const m = await within("measure", () => own.evaluate(W2F_MEASURE, { scope: W.scope, ...W.max }));
     if (!m.target) throw new Error("scope not found");
     const top = Math.max(0, m.target.viewTop);
     const clip = { x: 0, y: top, width: W.vw, height: Math.min(W.vh - top, Math.max(0, m.target.viewBottom - top)) };
     if (clip.height < 1) throw new Error("target not visible for the screenshot");
-    const png = await own.screenshot({ type: "png", clip, timeout: 15000 });
+    const png = await within("screenshot", () => own.screenshot({ type: "png", clip, timeout: tmo(W.screenshotMs) }));
     if (png.length > W.maxPngBytes) throw new Error("screenshot over the byte cap");
     out.states.push({ seq, name: W.states[seq], trigger, measured: m, clip, png: png.toString("base64") });
   }
@@ -43120,17 +43276,28 @@ try {
   out.error = String((e && e.message) || e).slice(0, 300);
 } finally {
   if (!out.error) out.stage = "done";
-  if (ctx) { try { await ctx.close(); out.ownedContextClosed = true; } catch (e) { out.ownedContextClosed = false; } }
+  out.deadline.elapsedMs = Date.now() - T0;
+  // the owned context is closed exactly once, OUTSIDE the capture deadline, bounded by closeBoundMs
+  if (ctx) {
+    out.close.attempted = true; const c0 = Date.now(); let ct = null;
+    try {
+      const r = await Promise.race([ctx.close().then(() => "closed"), new Promise((res) => { ct = setTimeout(() => res("timeout"), W.closeBoundMs); })]);
+      out.close.ok = r === "closed"; out.close.timedOut = r === "timeout"; out.ownedContextClosed = r === "closed";
+    } catch (e) { out.close.ok = false; out.ownedContextClosed = false; }
+    finally { clearTimeout(ct); out.close.ms = Date.now() - c0; }
+  }
 }
 console.log("W2F_RESULT " + JSON.stringify(out));`;
     sandboxPreviewSha256 = (p = buildSandboxPreview()) => sha256(canonicalJson(p));
     B642 = /^[A-Za-z0-9+/]*={0,2}$/;
     SandboxHardHold = class extends StateRunPolicyError {
     };
+    redact500 = (t, secrets) => sanitizeString(t, secrets).slice(0, 500);
     strs = (v, n, len) => Array.isArray(v) ? v.filter((x) => typeof x === "string").slice(0, n).map((x) => x.slice(0, len)) : null;
     objs = (v, n) => Array.isArray(v) ? v.filter(isObj8).slice(0, n) : null;
     num2 = (v) => typeof v === "number" && Number.isFinite(v) ? v : null;
     RAW_EXECUTE_CAP = 2e5;
+    RAW_FIELD_BUDGET = { stdout: 5e4, result: 5e4, output: 5e4, error: 16e3, stderr: 16e3 };
   }
 });
 
@@ -44038,7 +44205,7 @@ async function main2(argv) {
       saveRaw: (text) => writeExclusive(join2(runDir, "execute-raw.json"), text + "\n"),
       log: (m) => console.error(m)
     });
-    writeExclusive(join2(runDir, "sandbox.json"), JSON.stringify(rec, null, 2) + "\n");
+    writeExclusive(join2(runDir, "sandbox.json"), JSON.stringify(sanitizeRecord(rec), null, 2) + "\n");
     console.log(`Wrote ${runDir} (PRIVATE). status ${rec.status}${rec.reason ? ` (${rec.reason})` : ""}; charge ${rec.chargeStatus}; response creditsBilled ${rec.creditsBilled ?? "absent"} (undocumented, informational)${rec.incomplete ? "; capture INCOMPLETE" : rec.incomplete === null ? "; completeness NOT OBSERVED" : ""}${rec.stage ? `; in-browser stage ${rec.stage}` : ""}${rec.rawExecute?.saved ? "; raw execute provenance: execute-raw.json" : ""}`);
     for (const w of rec.warnings) console.log(`  warning: ${w}`);
     return rec.status === "accepted" ? 0 : 4;

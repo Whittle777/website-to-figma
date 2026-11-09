@@ -8,7 +8,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { copyObserved, rawExecuteProvenance, RAW_EXECUTE_CAP } from "../src/states/sandbox";
+import { copyObserved, rawExecuteProvenance, RAW_EXECUTE_CAP, sanitizeRecord, SANDBOX_WALL_MS } from "../src/states/sandbox";
+import { sanitizeString } from "../src/states/sanitize";
+import { redact as legacyRedact } from "../src/states/execute";
 import { buildSandboxPreview, createSandboxClient, executeSandbox, runSandboxLifecycle, SandboxHardHold, SANDBOX_UNSUPPORTED, parseSandboxOutput, sandboxPreviewSha256, sandboxToCapture, validateSandboxPreview, cleanupSandbox, SANDBOX, SANDBOX_CODE, SANDBOX_URL, SANDBOX_WORST_CASE_CREDITS, type SandboxClient } from "../src/states/sandbox";
 import { StateRunPolicyError } from "../src/states/execute";
 import { createInteractClient } from "../src/states/sandboxTransport";
@@ -43,7 +45,7 @@ const UPSTREAM: Record<string, { status: number; location?: string }> = {
   "https://bootstrapmade.com/content/vendors/redirector.js": { status: 302, location: "https://evil.example/payload.js" },
   "https://bootstrapmade.com/content/vendors/moved.js": { status: 301, location: "/content/vendors/moved-here.js" },
 };
-function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: boolean; main3xx?: boolean; serviceWorker?: boolean; popup?: boolean; noBrowser?: boolean; newContextThrows?: boolean; noRouteWebSocket?: boolean; subresources?: string[]; swiperBindAfterMs?: number; pageError?: string } = {}) {
+function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: boolean; main3xx?: boolean; serviceWorker?: boolean; popup?: boolean; noBrowser?: boolean; newContextThrows?: boolean; noRouteWebSocket?: boolean; subresources?: string[]; swiperBindAfterMs?: number; pageError?: string; hangAt?: "goto" | "screenshot"; closeHangs?: boolean } = {}) {
   const calls: string[] = [];
   const html = `<!doctype html><html><body><section id="hero">Hero</section><section id="testimonials"><div class="swiper init-swiper"><div class="swiper-wrapper"><div class="swiper-slide"><h3 id="slide">Slide 0</h3></div></div></div></section></body></html>`;
   const d = new JSDOM(html, { runScripts: "outside-only", virtualConsole: new VirtualConsole(), url: SANDBOX_URL });
@@ -127,6 +129,7 @@ function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: 
     },
     close: async () => {
       calls.push("context.close");
+      if (o.closeHangs) await new Promise(() => {});
     },
   };
   if (!o.noRouteWebSocket)
@@ -160,6 +163,7 @@ function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: 
     },
     goto: async (url: string) => {
       calls.push(`goto:${url}`);
+      if (o.hangAt === "goto") await new Promise(() => {});
       if ((await route(url, true)) === "abort") throw new Error("net::ERR_FAILED (main document aborted by route)");
       if (o.pageError) pageEvents.pageerror?.(new Error(o.pageError));
       if (o.subresources) {
@@ -207,6 +211,7 @@ function fakePage(o: { redirect?: boolean; ignoreViewport?: boolean; noSwiper?: 
     evaluate: async (fn: (a: unknown) => unknown, arg: unknown) => w.eval(`(${fn.toString()})`)(JSON.parse(JSON.stringify(arg ?? null))),
     screenshot: async (s: { clip: { width: number; height: number } }) => {
       calls.push(`screenshot:${s.clip.width}x${Math.round(s.clip.height)}`);
+      if (o.hangAt === "screenshot") await new Promise(() => {});
       return Buffer.from(syntheticPng(s.clip.width, Math.max(1, Math.round(s.clip.height)), [idx * 40, 30, 60], [200, 200, 200]));
     },
   };
@@ -231,8 +236,8 @@ describe("fixed sandbox preview", () => {
     expect(code.indexOf("browser.newContext")).toBeLessThan(code.indexOf("ctx.route"));
     expect(code.indexOf("ctx.route")).toBeLessThan(code.indexOf("ctx.newPage"));
     expect(code.indexOf("ctx.newPage")).toBeLessThan(code.indexOf("own.goto"));
-    expect(code).toContain("await ctx.close()");
-    expect(code).toContain("route.fetch({ maxRedirects: 0, maxRetries: 0, timeout: W.navTimeoutMs })");
+    expect(code).toContain("ctx.close()");
+    expect(code).toContain("route.fetch({ maxRedirects: 0, maxRetries: 0, timeout: tmo(W.navTimeoutMs) })");
     expect(code.indexOf("route.fetch(")).toBeLessThan(code.indexOf("route.fulfill("));
     for (const gone of ["page.request", "accept-redirect-gap", "launch(", "page.goto", "page.setViewportSize", "persistent", "storageState"]) expect(code).not.toContain(gone);
     expect(code.indexOf("own.setViewportSize")).toBeLessThan(code.indexOf("own.goto"));
@@ -315,7 +320,7 @@ describe("the fixed page code against a fake Playwright page", () => {
       [{ noBrowser: true }, /Browser object unavailable/],
       [{ newContextThrows: true }, /newContext not permitted/],
       [{ ignoreViewport: true }, /viewport not applied: 1920x100000/],
-      [{ noSwiper: true }, /at stage swiper-ready: swiper not bound within 10000 ms/],
+      [{ noSwiper: true }, /at stage swiper-ready: swiper not bound within 8000 ms/],
       [{ noRouteWebSocket: true }, /context.routeWebSocket unavailable/],
     ] as const) {
       const parsed = parseSandboxOutput(await runCode(fakePage(o)));
@@ -802,9 +807,9 @@ describe("Swiper readiness (bounded page.waitForFunction on the source-verified 
     if (!parsed.ok) return;
     const r = parsed.result as any;
     expect(p.calls).toContain(`waitForFunction:timeout=${SANDBOX.swiperReadyMs}:polling=100`);
-    expect(SANDBOX.swiperReadyMs).toBe(10_000);
+    expect(SANDBOX.swiperReadyMs).toBe(8_000);
     expect(SANDBOX.swiper).toBe("#testimonials .swiper.init-swiper"); // unchanged (source-verified)
-    expect(r.swiperReady).toMatchObject({ ready: true, timeoutMs: 10_000, diag: { matches: 1, hasSwiperProp: true } });
+    expect(r.swiperReady).toMatchObject({ ready: true, timeoutMs: 8_000, diag: { matches: 1, hasSwiperProp: true } });
     expect(r.stage).toBe("done");
     // readiness wait happens after settle and before the autoplay stop / first state
     const iw = p.calls.findIndex((c) => c.startsWith("waitForFunction"));
@@ -817,9 +822,9 @@ describe("Swiper readiness (bounded page.waitForFunction on the source-verified 
     expect(parsed.ok).toBe(false);
     if (parsed.ok) return;
     expect(parsed.status).toBe("rejected");
-    expect(parsed.reason).toBe("in-browser step failed at stage swiper-ready: swiper not bound within 10000 ms (see swiperReady.diag)");
+    expect(parsed.reason).toBe("in-browser step failed at stage swiper-ready: swiper not bound within 8000 ms (see swiperReady.diag)");
     const r = parsed.result as any;
-    expect(r.swiperReady).toMatchObject({ ready: false, timeoutMs: 10_000, error: "page.waitForFunction: Timeout 10000ms exceeded." });
+    expect(r.swiperReady).toMatchObject({ ready: false, timeoutMs: 8_000, error: "page.waitForFunction: Timeout 8000ms exceeded." });
     expect(r.swiperReady.diag).toMatchObject({ matches: 1, hasSwiperProp: false, initializedClass: false, windowSwiperType: "undefined", slides: 1 });
     expect(r.pageErrors).toEqual(["Swiper is not defined"]);
     expect(r.routeInstalled).toBe(true);
@@ -840,7 +845,7 @@ describe("failure diagnostics are preserved (never discarded, never defaulted)",
   };
   it("synthetic W2F_RESULT with error + blocked/incomplete/env/autoplay: all observed fields kept on reject; errors[] primary", async () => {
     const { rec, events, raws } = await lifecycle(
-      w2f({ error: "swiper refused: no Swiper instance bound to this element", stage: "autoplay", routeInstalled: true, incomplete: true, blocked: [{ origin: "https://fonts.googleapis.com", why: "third-party-host" }], blockedTotal: 7, served: [{ path: "/content/vendors/swiper/swiper-bundle.min.js", status: 200, nav: false }], servedTotal: 12, env: { innerWidth: 1920, innerHeight: 1080 }, autoplay: { valid: false, reason: "no Swiper instance bound to this element" }, mainFetch: { status: 200, url: SANDBOX_URL }, nav: { status: 200, finalUrl: SANDBOX_URL, chain: [SANDBOX_URL] }, ownedContext: { serviceWorkers: "block" }, ownedContextClosed: true, serviceWorker: false, modifications: [], pageErrors: ["TypeError: x"], consoleErrors: [], popupsClosed: 0, swiperReady: { ready: true } }),
+      w2f({ error: "swiper refused: no Swiper instance bound to this element", stage: "autoplay", routeInstalled: true, incomplete: true, blocked: [{ origin: "https://fonts.googleapis.com", why: "third-party-host" }], blockedTotal: 7, served: [{ path: "/content/vendors/swiper/swiper-bundle.min.js", status: 200, nav: false }], servedTotal: 12, env: { innerWidth: 1920, innerHeight: 1080 }, autoplay: { valid: false, reason: "no Swiper instance bound to this element" }, mainFetch: { status: 200, url: SANDBOX_URL }, nav: { status: 200, finalUrl: SANDBOX_URL, chain: [SANDBOX_URL] }, ownedContext: { serviceWorkers: "block" }, ownedContextClosed: true, serviceWorker: false, listenersInstalled: true, modifications: [], pageErrors: ["TypeError: x"], consoleErrors: [], popupsClosed: 0, swiperReady: { ready: true } }),
     );
     expect(rec.status).toBe("rejected");
     expect(rec).toMatchObject({
@@ -889,20 +894,168 @@ describe("failure diagnostics are preserved (never discarded, never defaulted)",
     expect(d.rec).toMatchObject({ observation: "none", rawExecute: null, incomplete: null, blocked: null });
     expect(d.raws).toEqual([]);
   });
-  it("raw provenance is size-capped, elides PNG base64 and redacts the key", () => {
+  it("raw provenance is ALWAYS valid JSON within the cap, with explicit truncation metadata, PNG elision and key redaction", () => {
     const png = "A".repeat(500_000);
-    const raw = rawExecuteProvenance({ success: true, exitCode: 0, stdout: `${KEY} W2F_RESULT {"states":[{"png":"${png}"}]}`, stderr: "e".repeat(40_000), weird: 1 }, [KEY]);
+    const raw = rawExecuteProvenance({ success: true, exitCode: 0, stdout: `${KEY} W2F_RESULT {"states":[{"png":"${png}"}]}` + " log".repeat(30_000), stderr: "e".repeat(40_000), weird: 1 }, [KEY]);
     expect(raw.length).toBeLessThanOrEqual(RAW_EXECUTE_CAP);
-    expect(raw).not.toContain(KEY);
-    expect(raw).toContain("<elided 500000 base64 chars>");
-    expect(raw).not.toContain("A".repeat(100));
     const j = JSON.parse(raw);
-    expect(j).toMatchObject({ success: true, exitCode: 0, stderrChars: 40_000, otherKeys: ["weird"] });
-    expect(j.stderr).toMatch(/\.\.\.\[truncated 24000 chars\]$/);
+    expect(raw).not.toContain(KEY);
+    expect(raw).not.toContain("A".repeat(100));
+    expect(j).toMatchObject({ schema: "website-to-figma/execute-raw", schemaVersion: 1, capChars: RAW_EXECUTE_CAP, envelope: { success: true, exitCode: 0 }, otherKeys: ["weird"] });
+    expect(j.fields.stdout).toMatchObject({ pngElided: 1, truncated: true, keptChars: 50_000 });
+    expect(j.fields.stdout.text).toContain("<elided 500000 base64 chars>");
+    expect(j.fields.stderr).toMatchObject({ originalChars: 40_000, truncated: true, keptChars: 16_000 });
+  });
+  it("raw provenance stays valid JSON for adversarial content (escape-heavy text shrinks budgets, never chops JSON)", () => {
+    for (const nasty of ['"'.repeat(200_000), "\u0001".repeat(200_000), "\\".repeat(100_000) + '"}]', "\u2028😀".repeat(80_000)]) {
+      const raw = rawExecuteProvenance({ stdout: nasty, stderr: nasty, error: nasty, result: nasty, output: nasty }, [KEY]);
+      expect(raw.length).toBeLessThanOrEqual(RAW_EXECUTE_CAP);
+      const j = JSON.parse(raw);
+      expect(j.schema).toBe("website-to-figma/execute-raw");
+      if (j.fields) for (const f of Object.values(j.fields) as any[]) expect(f.keptChars).toBe(f.text.length);
+    }
+    for (const x of [null, 5, "str", undefined]) expect(() => JSON.parse(rawExecuteProvenance(x, []))).not.toThrow();
   });
   it("copyObserved ignores malformed types (no coercion into observations)", () => {
-    const rec = { observation: "none" } as any;
-    copyObserved(rec, { routeInstalled: "yes", incomplete: "true", blocked: "x", env: 5, pageErrors: [1, "ok"] });
+    const rec = { observation: "none", timing: {} } as any;
+    copyObserved(rec, { routeInstalled: "yes", listenersInstalled: true, incomplete: "true", blocked: "x", env: 5, pageErrors: [1, "ok"] });
     expect(rec).toMatchObject({ routeInstalled: null, incomplete: null, blocked: null, env: null, pageErrors: ["ok"] });
+  });
+});
+
+// ---------------- review 6bc32dda findings ----------------
+const SECRETS = ["hunter2", "SEKRET123TOKEN", "SESSIONID777", "LIVEVIEWTOKEN42", "sk_live_ABC999", "QUERYOPAQUEVALUE0123456789ABCDEF"];
+const PLANTED = `Failed https://u:hunter2@bootstrapmade.com/x.js?token=SEKRET123TOKEN&ver=2 cdp ws://10.0.0.5:9222/devtools/browser/SESSIONID777 view https://liveview.firecrawl.dev/s/LIVEVIEWTOKEN42 api_key=sk_live_ABC999 img https://bootstrapmade.com/i.png?x=QUERYOPAQUEVALUE0123456789ABCDEF ${KEY}`;
+const w2fLine = (o: Record<string, unknown>) => "W2F_RESULT " + JSON.stringify({ w2f: "sandbox", v: 1, states: [], ...o });
+const runWith = async (execute: unknown) => {
+  const s = setup();
+  const events: string[] = [];
+  const raws: string[] = [];
+  const rec = await runSandboxLifecycle({ ...s, resolver: fakeIp(), getApiKey: () => KEY, createClient: async () => client(events, s.ledgerPath, { execute }), saveRaw: (t) => raws.push(t) });
+  return { rec, events, raws };
+};
+
+describe("FINDING1: centralized sanitization before persistence (raw AND structured record)", () => {
+  it("URL password, query token, CDP/live-view session URLs, api_key and the key are removed from execute-raw.json AND sandbox.json (pageErrors, nested nav/swiperReady, reason/errors)", async () => {
+    const exec = await runCode(fakePage({ noSwiper: true, pageError: PLANTED }));
+    exec.stdout = exec.stdout.replace(/"finalUrl":"[^"]*"/, `"finalUrl":"https://u:hunter2@bootstrapmade.com/?token=SEKRET123TOKEN"`);
+    const { rec, raws } = await runWith({ ...exec, stderr: PLANTED, error: PLANTED });
+    const persisted = JSON.stringify(sanitizeRecord(rec)); // exactly what the CLI writes
+    for (const out of [JSON.stringify(rec), persisted, raws[0]!]) {
+      for (const sec of [...SECRETS, KEY]) expect(out).not.toContain(sec);
+      expect(out).toContain("[REDACTED-SESSION-URL]");
+    }
+    expect(rec.pageErrors![0]).toMatch(/^Failed https:\/\/\[REDACTED\]@bootstrapmade\.com\/x\.js\?token=\[REDACTED\]&ver=2 cdp \[REDACTED-SESSION-URL\] view \[REDACTED-SESSION-URL\] api_key=\[REDACTED\]/);
+    expect((rec.nav as any).finalUrl).toBe("https://[REDACTED]@bootstrapmade.com/?token=[REDACTED]");
+    // useful non-secret diagnostics survive unchanged
+    expect(rec).toMatchObject({ stage: "swiper-ready", routeInstalled: true, env: { innerWidth: 1920, innerHeight: 1080 }, swiperReady: { ready: false, diag: { matches: 1, hasSwiperProp: false } } });
+    expect(rec.blocked!.map((b: any) => b.origin)).toContain("https://fonts.googleapis.com");
+    expect(rec.served!.map((x: any) => x.path)).toContain("/content/vendors/aos/aos.js");
+    expect(JSON.parse(raws[0]!).fields.stderr.text).toContain("[REDACTED-SESSION-URL]");
+  });
+  it("MUTATION: without the new sanitizer the planted secrets remain (old redact, unsanitized record, raw JSON)", async () => {
+    // the previous redaction (execute.ts redact) misses URL userinfo/query tokens/session URLs
+    const old = legacyRedact(PLANTED, [KEY]);
+    for (const sec of SECRETS) expect(old).toContain(sec);
+    // the structured record BEFORE the persistence boundary still holds them
+    const rec: any = { observation: "none", timing: {} };
+    copyObserved(rec, { routeInstalled: true, listenersInstalled: true, pageErrors: [PLANTED], nav: { finalUrl: "https://u:hunter2@x.com/" } });
+    const before = JSON.stringify(rec);
+    for (const sec of SECRETS) expect(before).toContain(sec);
+    const after = JSON.stringify(sanitizeRecord(rec, [KEY]));
+    for (const sec of SECRETS) expect(after).not.toContain(sec);
+    // and the new sanitizer covers each planted form individually
+    for (const sec of SECRETS) expect(sanitizeString(PLANTED, [KEY])).not.toContain(sec);
+  });
+  it("non-secret URLs and text are kept byte-for-byte", () => {
+    for (const t of ["GET https://bootstrapmade.com/content/demo/Bootslander/ 200", "https://fonts.googleapis.com", "https://bootstrapmade.com/a.js?ver=5.1.3", "/content/vendors/swiper/swiper-bundle.min.js", "swiper not bound within 8000 ms"]) expect(sanitizeString(t, [KEY])).toBe(t);
+  });
+});
+
+describe("FINDING3: envelope failures keep a recoverable W2F_RESULT (still rejected/ambiguous)", () => {
+  const diag = { error: "swiper refused", stage: "autoplay", routeInstalled: true, listenersInstalled: true, incomplete: true, blocked: [{ origin: "https://fonts.googleapis.com", why: "third-party-host" }], env: { innerWidth: 1920, innerHeight: 1080 }, pageErrors: ["TypeError: y"] };
+  for (const [env, status, re] of [
+    [{ success: false, error: "execution failed" }, "rejected", /^execute reported failure: execution failed \(W2F_RESULT diagnostics recovered\)/],
+    [{ success: true, killed: true }, "ambiguous", /^execute was killed \(provider timeout\) \(W2F_RESULT diagnostics recovered\)/],
+    [{ success: true, exitCode: 1 }, "rejected", /^execute exit code 1 \(W2F_RESULT diagnostics recovered\)/],
+    [{ success: true, truncated: true }, "ambiguous", /^execute output was truncated by the provider \(W2F_RESULT diagnostics recovered\)/],
+  ] as const) {
+    it(`${JSON.stringify(env)} + valid W2F_RESULT: ${status}, diagnostics kept`, async () => {
+      const { rec } = await runWith({ ...env, stdout: "log\n" + w2fLine(diag) });
+      expect(rec.status).toBe(status);
+      expect(rec.reason).toMatch(re);
+      expect(rec).toMatchObject({ observation: "w2f-result", stage: "autoplay", incomplete: true, blocked: [{ why: "third-party-host" }], env: { innerWidth: 1920 }, pageErrors: ["TypeError: y"] });
+    });
+  }
+  it("a truncated, partial W2F_RESULT is not recovered (nothing invented)", async () => {
+    const { rec } = await runWith({ success: true, truncated: true, stdout: w2fLine(diag).slice(0, 60) });
+    expect(rec).toMatchObject({ status: "ambiguous", observation: "none", blocked: null, incomplete: null, pageErrors: null });
+  });
+  it("early newContext failure: page/listener fields stay null (unknown), not [] / 0", async () => {
+    const { rec } = await runWith(await runCode(fakePage({ newContextThrows: true })));
+    expect(rec).toMatchObject({ status: "rejected", observation: "w2f-result", stage: "newContext", routeInstalled: false, pageErrors: null, consoleErrors: null, modifications: null, popupsClosed: null, blocked: null, served: null, incomplete: null });
+  });
+  it("a W2F_RESULT without listenersInstalled (pre-listener/legacy) never yields [] or 0 observations", async () => {
+    const { rec } = await runWith({ success: true, exitCode: 0, stdout: w2fLine({ error: "x", routeInstalled: true, pageErrors: [], consoleErrors: [], modifications: [], popupsClosed: 0 }) });
+    expect(rec).toMatchObject({ pageErrors: null, consoleErrors: null, modifications: null, popupsClosed: null });
+  });
+});
+
+describe("FINDING4: one local in-browser deadline; bounded single close; deadline kinds distinguished", () => {
+  const withConst = (k: string, from: number, to: number) => {
+    const needle = `"${k}":${from}`;
+    expect(SANDBOX_CODE).toContain(needle);
+    return SANDBOX_CODE.replace(needle, `"${k}":${to}`);
+  };
+  const runMut = async (p: ReturnType<typeof fakePage>, code: string) => {
+    const lines: string[] = [];
+    await new AsyncFunction("page", "console", code)(p.page, { log: (x: string) => lines.push(x) });
+    return { success: true, stdout: lines.join("\n"), exitCode: 0, killed: false };
+  };
+  it("budget: nominal step caps fit inside the local deadline; deadline + close bound leave >= 10 s of the documented 90 s", () => {
+    const nominal = SANDBOX.navTimeoutMs + SANDBOX.settleMs + SANDBOX.swiperReadyMs + SANDBOX.states.length * (SANDBOX.stateWaitMs + SANDBOX.screenshotMs);
+    expect(nominal).toBe(61_400);
+    expect(nominal).toBeLessThan(SANDBOX.localDeadlineMs);
+    expect(SANDBOX.localDeadlineMs + SANDBOX.closeBoundMs).toBe(77_000);
+    expect(SANDBOX.executeTimeoutS).toBe(90); // not raised
+    expect(SANDBOX.executeTimeoutS * 1000 - SANDBOX.localDeadlineMs - SANDBOX.closeBoundMs).toBeGreaterThanOrEqual(10_000);
+  });
+  for (const hangAt of ["goto", "screenshot"] as const) {
+    it(`a hang at ${hangAt} hits the local deadline: capture stops, context still closed once, W2F_RESULT emitted`, async () => {
+      const p = fakePage({ hangAt });
+      const t0 = Date.now();
+      const res = parseSandboxOutput(await runMut(p, withConst("localDeadlineMs", SANDBOX.localDeadlineMs, 300)));
+      expect(Date.now() - t0).toBeLessThan(5_000);
+      expect(res.ok).toBe(false);
+      if (res.ok) return;
+      expect(res.reason).toMatch(new RegExp(`local deadline 300 ms reached during ${hangAt}`));
+      const r = res.result as any;
+      expect(r.deadline).toMatchObject({ localDeadlineMs: 300, hit: true, at: hangAt });
+      expect(r.close).toMatchObject({ attempted: true, ok: true, timedOut: false });
+      expect(r.states).toEqual([]);
+      expect(p.calls.filter((c) => c === "context.close")).toHaveLength(1);
+      expect(p.calls.at(-1)).toBe("context.close");
+    });
+  }
+  it("a hanging context close is bounded separately (one attempt) and reported, result still emitted", async () => {
+    const p = fakePage({ closeHangs: true, hangAt: "goto" });
+    const code = withConst("closeBoundMs", SANDBOX.closeBoundMs, 100).replace(`"localDeadlineMs":${SANDBOX.localDeadlineMs}`, `"localDeadlineMs":200`);
+    const res = parseSandboxOutput(await runMut(p, code));
+    expect(res.ok).toBe(false);
+    const r = (res as any).result;
+    expect(r.close).toMatchObject({ attempted: true, ok: false, timedOut: true, boundMs: 100 });
+    expect(r.ownedContextClosed).toBe(false);
+    expect(p.calls.filter((c) => c === "context.close")).toHaveLength(1);
+  });
+  it("record separates localDeadline / ownedContextClose / providerKilled / transportTimedOut", async () => {
+    const local = await runWith({ success: true, exitCode: 0, killed: false, stdout: w2fLine({ error: "local deadline 72000 ms reached during goto", stage: "goto", deadline: { localDeadlineMs: 72000, hit: true, at: "goto", elapsedMs: 72001 }, close: { attempted: true, ok: true, timedOut: false, boundMs: 5000, ms: 12 } }) });
+    expect(local.rec.timing).toMatchObject({ limits: { localDeadlineMs: 72_000, closeBoundMs: 5_000, providerExecuteTimeoutS: 90, transportExecuteWallMs: SANDBOX_WALL_MS.execute }, localDeadline: { hit: true, at: "goto" }, ownedContextClose: { ok: true }, providerKilled: false, transportTimedOut: false });
+    const killed = await runWith({ success: true, killed: true, stdout: "" });
+    const unknown = await runWith({ success: true, exitCode: 0, stdout: w2fLine({ error: "x" }) });
+    expect(unknown.rec.timing.providerKilled).toBeNull(); // absent envelope field = unknown, not false
+    expect(killed.rec.timing).toMatchObject({ providerKilled: true, transportTimedOut: false, localDeadline: null });
+    const transport = await runWith(Object.assign(new Error("execute did not finish within 120000 ms (wall clock)"), { w2fTimeout: true }));
+    expect(transport.rec.timing).toMatchObject({ transportTimedOut: true, providerKilled: null, localDeadline: null });
+    expect(transport.events.filter((e) => e.startsWith("delete"))).toHaveLength(1); // session DELETE still once
   });
 });
